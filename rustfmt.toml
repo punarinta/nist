@@ -1,0 +1,3 @@
+# Reduce aggressive wrapping by allowing longer lines and preferring horizontal layouts.
+# See: https://rust-lang.github.io/rustfmt/?version=v1.8.0&search=
+max_width = 160

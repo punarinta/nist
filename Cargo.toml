@@ -1,0 +1,43 @@
+[package]
+name = "nist"
+version = "1.0.0"
+edition = "2021"
+
+[[bin]]
+name = "nist"
+path = "src/main.rs"
+
+[features]
+default = ["test-server"]
+test-server = []
+
+[dependencies]
+portable-pty = "0.9.0"
+ansi_term = "0.12.1"
+num = "0.4.3"
+arboard = "3.4"
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tinyjson = "2.5"
+sysinfo = "0.30"
+image = "0.24"
+directories = "5.0"
+
+# SDL2 for Linux (uses system libraries)
+[target.'cfg(target_os = "linux")'.dependencies]
+sdl2 = { version = "0.37.0", features = ["ttf", "gfx"] }
+
+# SDL2 for macOS (uses system library from Homebrew via pkg-config)
+[target.'cfg(target_os = "macos")'.dependencies]
+sdl2 = { version = "0.37.0", features = ["ttf", "gfx", "use-pkgconfig"], default-features = false }
+
+# SDL2 without static-link for Windows (uses downloaded MinGW libraries)
+[target.'cfg(target_os = "windows")'.dependencies]
+sdl2 = { version = "0.37.0", features = ["ttf", "gfx"] }
+
+[target.'cfg(target_os = "macos")'.dependencies.libproc]
+version = "0.14"
+
+[build-dependencies]
+chrono = "0.4"
