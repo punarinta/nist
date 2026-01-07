@@ -113,6 +113,11 @@ impl Terminal {
         // Set up the command
         let mut cmd = CommandBuilder::new(&shell_config.command);
 
+        // Add command arguments (e.g., -NoLogo for PowerShell)
+        for arg in &shell_config.args {
+            cmd.arg(arg);
+        }
+
         // Set environment variables
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLUMNS", initial_width.to_string());

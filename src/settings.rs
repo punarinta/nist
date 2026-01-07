@@ -113,12 +113,6 @@ pub fn save_settings(settings: &Settings) -> Result<(), String> {
     Ok(())
 }
 
-/// Initialize settings - ensures the settings file exists with defaults
-#[allow(dead_code)]
-pub fn init_settings() -> Result<Settings, String> {
-    load_settings()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

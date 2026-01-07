@@ -22,10 +22,15 @@ use sdl2::gfx::primitives::DrawRenderer;
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
 use sdl2::video::Window;
+#[cfg(not(target_os = "windows"))]
 use signal_hook::consts::signal::*;
+#[cfg(not(target_os = "windows"))]
 use signal_hook::iterator::Signals;
 use std::collections::HashMap;
-use std::sync::mpsc::{channel, Receiver, Sender};
+#[cfg(not(target_os = "windows"))]
+use std::sync::mpsc::channel;
+#[cfg(target_os = "linux")]
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use sysinfo::System;
@@ -206,17 +211,21 @@ fn main() -> Result<(), String> {
 
     // Set up signal handlers to save state on OS termination (reboot, kill, etc.)
     // Create a Signals iterator for SIGTERM, SIGINT, and SIGHUP
-    let mut signals = Signals::new(&[SIGTERM, SIGINT, SIGHUP]).map_err(|e| format!("Failed to register signal handlers: {}", e))?;
-    eprintln!("[MAIN] Registered signal handlers for SIGTERM, SIGINT, SIGHUP");
+    #[cfg(not(target_os = "windows"))]
+    let signal_rx = {
+        let mut signals = Signals::new(&[SIGTERM, SIGINT, SIGHUP]).map_err(|e| format!("Failed to register signal handlers: {}", e))?;
+        eprintln!("[MAIN] Registered signal handlers for SIGTERM, SIGINT, SIGHUP");
 
-    // Move signals iterator to a thread that can interrupt the main loop
-    let (signal_tx, signal_rx) = channel::<i32>();
-    std::thread::spawn(move || {
-        for sig in signals.forever() {
-            eprintln!("[SIGNAL] Received signal: {}", sig);
-            let _ = signal_tx.send(sig);
-        }
-    });
+        // Move signals iterator to a thread that can interrupt the main loop
+        let (signal_tx, signal_rx) = channel::<i32>();
+        std::thread::spawn(move || {
+            for sig in signals.forever() {
+                eprintln!("[SIGNAL] Received signal: {}", sig);
+                let _ = signal_tx.send(sig);
+            }
+        });
+        signal_rx
+    };
 
     let (window_width, window_height) = (2376_u32, 1593_u32);
 
@@ -611,6 +620,7 @@ Searched directories:
 
     'running: loop {
         // Check for termination signals (SIGTERM, SIGINT, SIGHUP from OS)
+        #[cfg(not(target_os = "windows"))]
         if let Ok(sig) = signal_rx.try_recv() {
             eprintln!("[MAIN] Termination signal {} received, saving state and exiting...", sig);
             if let Ok(gui) = tab_bar_gui.try_lock() {
