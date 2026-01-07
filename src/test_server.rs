@@ -412,7 +412,7 @@ impl TestServer {
 
                 // Get cwd from active terminal before creating new tab
                 let start_dir = if let Ok(gui) = self.tab_bar_gui.lock() {
-                    let terminal = gui.get_active_terminal().map(|t| t.clone());
+                    let terminal = gui.get_active_terminal();
                     drop(gui); // Release GUI lock before locking terminal
                     terminal.and_then(|t| t.lock().unwrap().get_cwd())
                 } else {
@@ -626,7 +626,7 @@ impl TestServer {
 
                     // Get cwd from active terminal before splitting
                     let start_dir = {
-                        let terminal = gui.get_active_terminal().map(|t| t.clone());
+                        let terminal = gui.get_active_terminal();
                         drop(gui); // Release GUI lock before locking terminal
                         terminal.and_then(|t| t.lock().unwrap().get_cwd())
                     };

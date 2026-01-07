@@ -115,7 +115,7 @@ pub fn render_frame<'a, T>(
                 let pane_rects = pane_layout.pane_layout.get_pane_rects(0, pane_area_y, window_w, pane_area_height);
                 let pane_count = pane_rects.len();
                 let dividers = pane_layout.pane_layout.get_divider_rects(0, pane_area_y, window_w, pane_area_height);
-                let context_menu_data = pane_layout.pane_layout.context_menu_open.clone();
+                let context_menu_data = pane_layout.pane_layout.context_menu_open;
                 let copy_animation_data = pane_layout.pane_layout.copy_animation.clone();
                 let context_menu_images = pane_layout.pane_layout.context_menu_images.clone();
 
@@ -173,6 +173,7 @@ pub fn render_frame<'a, T>(
 /// - Only renders visible rows (no off-screen content)
 /// - Uses glyph caching
 /// - Skips rendering of spaces with default background
+///
 /// Returns true if the terminal content was dirty
 fn render_pane<'a, T>(
     canvas: &mut Canvas<Window>,
@@ -339,9 +340,9 @@ fn render_glyph<'a, T>(
 }
 
 /// Render scrollback position indicator
-fn render_scrollback_indicator<'a, T>(
+fn render_scrollback_indicator<T>(
     canvas: &mut Canvas<Window>,
-    texture_creator: &'a TextureCreator<T>,
+    texture_creator: &TextureCreator<T>,
     font: &Font,
     rect: Rect,
     scroll_offset: usize,
@@ -377,9 +378,9 @@ fn render_dividers(canvas: &mut Canvas<Window>, dividers: &[(crate::pane_layout:
 }
 
 /// Render context menu
-fn render_context_menu<'a, T>(
+fn render_context_menu<T>(
     canvas: &mut Canvas<Window>,
-    texture_creator: &'a TextureCreator<T>,
+    texture_creator: &TextureCreator<T>,
     menu_font: &Font,
     menu_x: i32,
     menu_y: i32,

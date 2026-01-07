@@ -375,6 +375,7 @@ impl Default for TerminalSettings {
 
 /// Settings structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct Settings {
     pub external: Vec<String>,
     pub terminal: TerminalSettings,
@@ -382,15 +383,6 @@ pub struct Settings {
     pub hotkeys: Hotkeys,
 }
 
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            external: Vec::new(),
-            terminal: TerminalSettings::default(),
-            hotkeys: Hotkeys::default(),
-        }
-    }
-}
 
 /// Get the path to the settings file based on build profile
 ///
@@ -416,7 +408,7 @@ fn get_settings_file_path() -> Result<PathBuf, String> {
 
     // Create directory if it doesn't exist
     if !config_dir.exists() {
-        fs::create_dir_all(&config_dir).map_err(|e| format!("Failed to create config directory: {}", e))?;
+        fs::create_dir_all(config_dir).map_err(|e| format!("Failed to create config directory: {}", e))?;
     }
 
     Ok(config_dir.join("settings.json"))

@@ -166,13 +166,31 @@ impl ScreenBuffer {
 
     pub fn move_cursor_up(&mut self, n: usize) {
         self.pending_wrap = false;
-        self.cursor_y = self.cursor_y.saturating_sub(n);
+
+        // Respect scroll region boundaries if one is set
+        if let Some((top, _bottom)) = self.scroll_region {
+            // Cursor should not move above the top of the scroll region
+            self.cursor_y = self.cursor_y.saturating_sub(n).max(top);
+        } else {
+            // No scroll region, cursor can move to row 0
+            self.cursor_y = self.cursor_y.saturating_sub(n);
+        }
+
         self.dirty = true;
     }
 
     pub fn move_cursor_down(&mut self, n: usize) {
         self.pending_wrap = false;
-        self.cursor_y = (self.cursor_y + n).min(self.height - 1);
+
+        // Respect scroll region boundaries if one is set
+        if let Some((_top, bottom)) = self.scroll_region {
+            // Cursor should not move below the bottom of the scroll region
+            self.cursor_y = (self.cursor_y + n).min(bottom);
+        } else {
+            // No scroll region, cursor is limited by screen height
+            self.cursor_y = (self.cursor_y + n).min(self.height - 1);
+        }
+
         self.dirty = true;
     }
 
@@ -586,6 +604,10 @@ impl ScreenBuffer {
 
     pub fn scrollback_limit(&self) -> usize {
         self.scrollback_limit
+    }
+
+    pub fn get_scroll_region(&self) -> Option<(usize, usize)> {
+        self.scroll_region
     }
 
     pub fn is_dirty(&self) -> bool {

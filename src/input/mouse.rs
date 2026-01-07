@@ -744,7 +744,7 @@ pub fn handle_mouse_motion(
 
         // Throttle: process every 3rd motion event to reduce lock contention
         mouse_state.drag_motion_counter = mouse_state.drag_motion_counter.wrapping_add(1);
-        if mouse_state.drag_motion_counter % 3 == 0 {
+        if mouse_state.drag_motion_counter.is_multiple_of(3) {
             let pane_area_y = tab_bar_height as i32;
             let pane_area_height = window_height - tab_bar_height;
 

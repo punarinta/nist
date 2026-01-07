@@ -288,13 +288,11 @@ impl Terminal {
             if app_cursor_mode && is_arrow_key {
                 // Translate ESC [ X to ESC O X for application cursor keys mode
                 let translated = [27, b'O', keys[2]];
-                eprintln!("[TERMINAL] send_key: Writing translated arrow key: {:?}", translated);
                 if let Err(err) = writer.write_all(&translated) {
                     eprintln!("[TERMINAL] Failed to write key to PTY: {}", err);
                 }
             } else {
                 // Send keys as-is
-                eprintln!("[TERMINAL] send_key: Writing keys as-is: {:?}", keys);
                 if let Err(err) = writer.write_all(keys) {
                     eprintln!("[TERMINAL] Failed to write key to PTY: {}", err);
                 }
@@ -874,13 +872,35 @@ impl Terminal {
                             }
                             'D' => {
                                 // IND (Index) - move cursor down one line
+                                // If at bottom of scroll region, scroll up instead
                                 chars.next(); // consume 'D'
-                                sb.move_cursor_down(1);
+
+                                let scroll_bottom = if let Some((_, bottom)) = sb.get_scroll_region() {
+                                    bottom
+                                } else {
+                                    sb.height() - 1
+                                };
+
+                                if sb.cursor_y == scroll_bottom {
+                                    // At bottom of scroll region, scroll up
+                                    sb.scroll_up(1);
+                                } else {
+                                    sb.move_cursor_down(1);
+                                }
                             }
                             'M' => {
                                 // RI (Reverse Index) - move cursor up one line
+                                // If at top of scroll region, scroll down instead
                                 chars.next(); // consume 'M'
-                                sb.move_cursor_up(1);
+
+                                let scroll_top = if let Some((top, _)) = sb.get_scroll_region() { top } else { 0 };
+
+                                if sb.cursor_y == scroll_top {
+                                    // At top of scroll region, scroll down
+                                    sb.scroll_down(1);
+                                } else {
+                                    sb.move_cursor_up(1);
+                                }
                             }
                             'E' => {
                                 // NEL (Next Line)

@@ -102,7 +102,7 @@ pub fn show_confirmation_dialog(canvas: &mut Canvas<Window>, event_pump: &mut Ev
                     // Scale mouse coordinates from logical to physical pixels for hit testing
                     // Only scale when window size != drawable size (handles platform differences)
                     mouse_pos = if mouse_coords_need_scaling {
-                        ((x as f32 * scale_factor) as i32, (y as f32 * scale_factor) as i32)
+                        ((x * scale_factor) as i32, (y * scale_factor) as i32)
                     } else {
                         (x as i32, y as i32)
                     };
@@ -116,7 +116,7 @@ pub fn show_confirmation_dialog(canvas: &mut Canvas<Window>, event_pump: &mut Ev
                     // Scale mouse coordinates from logical to physical pixels for hit testing
                     // Only scale when window size != drawable size (handles platform differences)
                     let point = if mouse_coords_need_scaling {
-                        ((x as f32 * scale_factor) as i32, (y as f32 * scale_factor) as i32)
+                        ((x * scale_factor) as i32, (y * scale_factor) as i32)
                     } else {
                         (x as i32, y as i32)
                     };

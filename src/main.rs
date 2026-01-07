@@ -210,7 +210,7 @@ fn main() -> Result<(), String> {
     // Create a Signals iterator for SIGTERM, SIGINT, and SIGHUP
     #[cfg(not(target_os = "windows"))]
     let signal_rx = {
-        let mut signals = Signals::new(&[SIGTERM, SIGINT, SIGHUP]).map_err(|e| format!("Failed to register signal handlers: {}", e))?;
+        let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP]).map_err(|e| format!("Failed to register signal handlers: {}", e))?;
         eprintln!("[MAIN] Registered signal handlers for SIGTERM, SIGINT, SIGHUP");
 
         // Move signals iterator to a thread that can interrupt the main loop
@@ -885,7 +885,7 @@ Searched directories:
                                 #[cfg(target_os = "linux")]
                                 let result = {
                                     // Open the file and get the child process
-                                    let gio_result = std::process::Command::new("gio").args(&["open", path.to_str().unwrap_or("")]).spawn();
+                                    let gio_result = std::process::Command::new("gio").args(["open", path.to_str().unwrap_or("")]).spawn();
 
                                     let child_result = match gio_result {
                                         Ok(child) => Ok(child),
@@ -904,7 +904,7 @@ Searched directories:
 
                                                 // Try wmctrl first (most reliable)
                                                 if std::process::Command::new("wmctrl")
-                                                    .args(&["-a", filename])
+                                                    .args(["-a", filename])
                                                     .output()
                                                     .map(|o| o.status.success())
                                                     .unwrap_or(false)
@@ -915,7 +915,7 @@ Searched directories:
                                                 // Try common editor window names
                                                 for editor in &["Text Editor", "gedit", "kate", "GNOME Text Editor"] {
                                                     if std::process::Command::new("wmctrl")
-                                                        .args(&["-a", editor])
+                                                        .args(["-a", editor])
                                                         .output()
                                                         .map(|o| o.status.success())
                                                         .unwrap_or(false)
@@ -925,11 +925,11 @@ Searched directories:
                                                 }
 
                                                 // Try xdotool as fallback
-                                                if let Ok(output) = std::process::Command::new("xdotool").args(&["search", "--name", filename]).output() {
+                                                if let Ok(output) = std::process::Command::new("xdotool").args(["search", "--name", filename]).output() {
                                                     if let Ok(stdout) = String::from_utf8(output.stdout) {
                                                         if let Some(wid) = stdout.lines().last() {
                                                             if !wid.is_empty() {
-                                                                let _ = std::process::Command::new("xdotool").args(&["windowactivate", wid]).output();
+                                                                let _ = std::process::Command::new("xdotool").args(["windowactivate", wid]).output();
                                                                 break;
                                                             }
                                                         }
@@ -975,7 +975,7 @@ Searched directories:
                                         #[cfg(target_os = "linux")]
                                         {
                                             let _ = std::process::Command::new("notify-send")
-                                                .args(&[
+                                                .args([
                                                     "-u",
                                                     "normal",
                                                     "-t",
@@ -999,7 +999,7 @@ Searched directories:
                     }
                     input::events::EventAction::ChangeFontSize(delta) => {
                         // Update font size in settings
-                        settings.terminal.font_size = (settings.terminal.font_size + delta).max(6.0).min(72.0);
+                        settings.terminal.font_size = (settings.terminal.font_size + delta).clamp(6.0, 72.0);
                         eprintln!("[MAIN] Font size changed to: {}", settings.terminal.font_size);
 
                         // Save updated settings

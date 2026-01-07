@@ -366,8 +366,8 @@ fn handle_mouse_wheel_event(
     let mouse_state_sdl = event_pump.mouse_state();
     let (mouse_x, mouse_y) = if mouse_coords_need_scaling {
         (
-            (mouse_state_sdl.x() as f32 * scale_factor) as i32,
-            (mouse_state_sdl.y() as f32 * scale_factor) as i32,
+            (mouse_state_sdl.x() * scale_factor) as i32,
+            (mouse_state_sdl.y() * scale_factor) as i32,
         )
     } else {
         (mouse_state_sdl.x() as i32, mouse_state_sdl.y() as i32)

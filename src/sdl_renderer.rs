@@ -151,9 +151,7 @@ impl TabBar {
             let tab_center_x = tab_rect.rect.x() + (tab_rect.rect.width() as i32 / 2);
 
             // If dragged tab center is past this tab's center, we should swap
-            if dragging_idx < idx && dragged_center_x > tab_center_x {
-                return Some((dragging_idx, idx));
-            } else if dragging_idx > idx && dragged_center_x < tab_center_x {
+            if (dragging_idx < idx && dragged_center_x > tab_center_x) || (dragging_idx > idx && dragged_center_x < tab_center_x) {
                 return Some((dragging_idx, idx));
             }
         }
@@ -509,7 +507,7 @@ impl TabBar {
         let min_rect = Rect::new(right_x, button_y, button_size as u32, button_size as u32);
         canvas.set_draw_color(TEXT_WHITE);
         // Draw a narrow horizontal line positioned slightly below center
-        let line_width = (button_size * 5 / 10) as i32; // 50% of button width
+        let line_width = button_size * 5 / 10; // 50% of button width
         let line_x_start = right_x + (button_size - line_width) / 2;
         let line_y = (self.height * 13 / 20) as i32; // Positioned at 65% from top
         let line_thickness = 2;

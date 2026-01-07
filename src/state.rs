@@ -174,7 +174,7 @@ fn get_state_file_path() -> Result<PathBuf, String> {
 
     // Create directory if it doesn't exist
     if !config_dir.exists() {
-        fs::create_dir_all(&config_dir).map_err(|e| format!("Failed to create config directory: {}", e))?;
+        fs::create_dir_all(config_dir).map_err(|e| format!("Failed to create config directory: {}", e))?;
     }
 
     Ok(config_dir.join("state.json"))

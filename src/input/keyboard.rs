@@ -514,7 +514,6 @@ pub fn handle_normal_key(keycode: Keycode, tab_bar_gui: &Arc<Mutex<TabBarGui>>) 
             Keycode::Tab => t.send_key(b"\t"),
             Keycode::Escape => t.send_key(b"\x1b"),
             Keycode::Up => {
-                eprintln!("[KEYBOARD] Sending Up arrow (app_cursor_mode: {})", app_cursor_mode);
                 if app_cursor_mode {
                     t.send_key(b"\x1bOA")
                 } else {
@@ -522,7 +521,6 @@ pub fn handle_normal_key(keycode: Keycode, tab_bar_gui: &Arc<Mutex<TabBarGui>>) 
                 }
             }
             Keycode::Down => {
-                eprintln!("[KEYBOARD] Sending Down arrow (app_cursor_mode: {})", app_cursor_mode);
                 if app_cursor_mode {
                     t.send_key(b"\x1bOB")
                 } else {
@@ -530,7 +528,6 @@ pub fn handle_normal_key(keycode: Keycode, tab_bar_gui: &Arc<Mutex<TabBarGui>>) 
                 }
             }
             Keycode::Right => {
-                eprintln!("[KEYBOARD] Sending Right arrow (app_cursor_mode: {})", app_cursor_mode);
                 if app_cursor_mode {
                     t.send_key(b"\x1bOC")
                 } else {
@@ -538,7 +535,6 @@ pub fn handle_normal_key(keycode: Keycode, tab_bar_gui: &Arc<Mutex<TabBarGui>>) 
                 }
             }
             Keycode::Left => {
-                eprintln!("[KEYBOARD] Sending Left arrow (app_cursor_mode: {})", app_cursor_mode);
                 if app_cursor_mode {
                     t.send_key(b"\x1bOD")
                 } else {
