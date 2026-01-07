@@ -104,8 +104,7 @@ fn resize_terminals_to_panes(
             let pane_rects = pane_layout.pane_layout.get_pane_rects(0, pane_area_y, window_width, pane_area_height);
 
             for (_pane_id, rect, terminal, _is_active) in pane_rects {
-                let cols = (rect.width() as f32 / char_width).floor() as u32;
-                let rows = (rect.height() as f32 / char_height).floor() as u32;
+                let (cols, rows) = crate::ui::render::calculate_terminal_size(rect.width(), rect.height(), char_width, char_height);
 
                 if let Ok(mut t) = terminal.lock() {
                     // Only resize if dimensions have changed
@@ -146,8 +145,7 @@ fn resize_terminals_after_split(
         eprintln!("[RESIZE] Resizing {} terminals after split", pane_rects.len());
 
         for (pane_id, rect, terminal, _is_active) in pane_rects {
-            let cols = (rect.width() as f32 / char_width).floor() as u32;
-            let rows = (rect.height() as f32 / char_height).floor() as u32;
+            let (cols, rows) = crate::ui::render::calculate_terminal_size(rect.width(), rect.height(), char_width, char_height);
 
             match terminal.lock() {
                 Ok(mut t) => {
@@ -1216,8 +1214,7 @@ Searched directories:
 
                         // Find the active pane's dimensions
                         if let Some((_, rect, _, _)) = pane_rects.iter().find(|(id, _, _, _)| *id == pane_layout_state.pane_layout.active_pane) {
-                            let current_cols = (rect.width() as f32 / char_width).floor() as u32;
-                            let current_rows = (rect.height() as f32 / char_height).floor() as u32;
+                            let (current_cols, current_rows) = crate::ui::render::calculate_terminal_size(rect.width(), rect.height(), char_width, char_height);
 
                             // Calculate dimensions after split (accounting for 2-pixel divider)
                             let divider_chars_h = (2.0 / char_width).ceil() as u32;

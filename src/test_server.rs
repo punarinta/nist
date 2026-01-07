@@ -628,8 +628,8 @@ impl TestServer {
 
                         // Find the active pane's dimensions
                         let can_split = if let Some((_, rect, _, _)) = pane_rects.iter().find(|(id, _, _, _)| *id == pane_layout.active_pane) {
-                            let current_cols = (rect.width() as f32 / self.char_width).floor() as u32;
-                            let current_rows = (rect.height() as f32 / self.char_height).floor() as u32;
+                            let (current_cols, current_rows) =
+                                crate::ui::render::calculate_terminal_size(rect.width(), rect.height(), self.char_width, self.char_height);
                             eprintln!(
                                 "[TEST_SERVER] Split: pane rect={}x{}, calculated={}x{} chars",
                                 rect.width(),

@@ -444,13 +444,20 @@ impl Terminal {
                     screen_buffer.width() - 1
                 };
 
+                // Collect the line content
+                let mut line = String::new();
                 for col in line_start..=line_end {
                     if let Some(cell) = screen_buffer.get_cell_with_scrollback(col, row) {
-                        text.push(cell.ch);
+                        line.push(cell.ch);
                     }
                 }
 
+                // Trim trailing whitespace from the line (terminals pad to full width with spaces)
+                let trimmed_line = line.trim_end();
+                text.push_str(trimmed_line);
+
                 // Add newline for multi-line selections (except for the last line)
+                // Using LF (\n) as the standard Unix line ending
                 if row < end_row {
                     text.push('\n');
                 }

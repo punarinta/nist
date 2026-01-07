@@ -419,10 +419,11 @@ fn handle_copy_selection(
                             .find(|(_, _, term, is_active)| *is_active && Arc::ptr_eq(term, &terminal))
                             .map(|(_, rect, _, _)| {
                                 // Calculate selection bounds in screen coordinates
+                                let pane_padding = crate::ui::render::get_pane_padding();
                                 let (start_col, start_row, end_col, end_row) = sel.normalized();
 
-                                let x = rect.x() + (start_col as f32 * char_width) as i32;
-                                let y = rect.y() + (start_row as f32 * char_height) as i32;
+                                let x = rect.x() + pane_padding as i32 + (start_col as f32 * char_width) as i32;
+                                let y = rect.y() + pane_padding as i32 + (start_row as f32 * char_height) as i32;
                                 let width = ((end_col - start_col + 1) as f32 * char_width) as u32;
                                 let height = ((end_row - start_row + 1) as f32 * char_height) as u32;
 

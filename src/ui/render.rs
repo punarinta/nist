@@ -19,6 +19,38 @@ use crate::sdl_renderer;
 use crate::settings::Settings;
 use crate::tab_gui::TabBarGui;
 
+/// Get the platform-specific pane padding in pixels
+#[inline]
+pub fn get_pane_padding() -> u32 {
+    #[cfg(target_os = "windows")]
+    return 6;
+    #[cfg(not(target_os = "windows"))]
+    return 4;
+}
+
+/// Calculate usable dimensions after accounting for padding
+#[inline]
+pub fn get_usable_dimensions(rect_width: u32, rect_height: u32) -> (u32, u32) {
+    let padding = get_pane_padding() * 2;
+    (rect_width.saturating_sub(padding), rect_height.saturating_sub(padding))
+}
+
+/// Calculate terminal columns and rows from rect dimensions
+#[inline]
+pub fn calculate_terminal_size(rect_width: u32, rect_height: u32, char_width: f32, char_height: f32) -> (u32, u32) {
+    let (usable_width, usable_height) = get_usable_dimensions(rect_width, rect_height);
+    let cols = (usable_width as f32 / char_width).floor() as u32;
+    let rows = (usable_height as f32 / char_height).floor() as u32;
+    (cols, rows)
+}
+
+/// Adjust mouse coordinates to account for pane padding and rect offset
+#[inline]
+pub fn adjust_mouse_coords_for_padding(mouse_x: i32, mouse_y: i32, rect_x: i32, rect_y: i32) -> (i32, i32) {
+    let padding = get_pane_padding() as i32;
+    ((mouse_x - rect_x).saturating_sub(padding), (mouse_y - rect_y).saturating_sub(padding))
+}
+
 /// Helper function to create SDL surface from RGBA pixel data
 fn create_sdl_surface_from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Result<sdl3::surface::Surface<'static>, String> {
     let mut surface =
@@ -163,14 +195,10 @@ fn render_pane<'a, T>(
     // This optimizes rendering by avoiding redundant fills
 
     // Platform-specific padding
-    #[cfg(target_os = "windows")]
-    let pane_padding = 4;
-    #[cfg(not(target_os = "windows"))]
-    let pane_padding = 0;
+    let pane_padding = get_pane_padding();
 
     // Calculate visible terminal grid dimensions
-    let usable_width = rect.width().saturating_sub(pane_padding * 2);
-    let usable_height = rect.height().saturating_sub(pane_padding * 2);
+    let (usable_width, usable_height) = get_usable_dimensions(rect.width(), rect.height());
     let cols = (usable_width as f32 / char_width).floor() as usize;
     let rows = (usable_height as f32 / char_height).floor() as usize;
 

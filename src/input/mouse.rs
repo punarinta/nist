@@ -112,8 +112,7 @@ pub fn send_mouse_to_terminal(
         for (_pane_id, rect, terminal, _is_active) in pane_rects {
             if rect.contains_point((mouse_x, mouse_y)) {
                 // Convert screen coordinates to terminal coordinates (1-based)
-                let relative_x = mouse_x - rect.x();
-                let relative_y = mouse_y - rect.y();
+                let (relative_x, relative_y) = crate::ui::render::adjust_mouse_coords_for_padding(mouse_x, mouse_y, rect.x(), rect.y());
                 let col = ((relative_x as f32 / char_width).floor() as u32 + 1).max(1);
                 let row = ((relative_y as f32 / char_height).floor() as u32 + 1).max(1);
 
@@ -148,8 +147,7 @@ pub fn handle_selection_start(
 
         for (_pane_id, rect, terminal, _is_active) in pane_rects {
             if rect.contains_point((mouse_x, mouse_y)) {
-                let relative_x = mouse_x - rect.x();
-                let relative_y = mouse_y - rect.y();
+                let (relative_x, relative_y) = crate::ui::render::adjust_mouse_coords_for_padding(mouse_x, mouse_y, rect.x(), rect.y());
                 let col = ((relative_x as f32 / char_width).floor() as usize).max(0);
                 let row = ((relative_y as f32 / char_height).floor() as usize).max(0);
 
@@ -184,8 +182,7 @@ pub fn handle_selection_update(
 
         for (_pane_id, rect, terminal, _is_active) in pane_rects {
             if rect.contains_point((mouse_x, mouse_y)) {
-                let relative_x = mouse_x - rect.x();
-                let relative_y = mouse_y - rect.y();
+                let (relative_x, relative_y) = crate::ui::render::adjust_mouse_coords_for_padding(mouse_x, mouse_y, rect.x(), rect.y());
                 let col = ((relative_x as f32 / char_width).floor() as usize).max(0);
                 let row = ((relative_y as f32 / char_height).floor() as usize).max(0);
 
