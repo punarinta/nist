@@ -1478,11 +1478,6 @@ Searched directories:
                                 let indicator_x = rect.x() + rect.width() as i32 - text_width as i32 - 10 - pane_padding as i32;
                                 let indicator_y = rect.y() + rect.height() as i32 - text_height as i32 - 5 - pane_padding as i32;
 
-                                // Draw semi-transparent background
-                                canvas.set_draw_color(Color::RGBA(0, 0, 0, 200));
-                                let bg_rect = Rect::new(indicator_x - 5, indicator_y - 2, text_width + 10, text_height + 4);
-                                let _ = canvas.fill_rect(bg_rect);
-
                                 // Draw the text
                                 let text_rect = Rect::new(indicator_x, indicator_y, text_width, text_height);
                                 let _ = canvas.copy(&texture, None, Some(text_rect));
