@@ -121,7 +121,7 @@ impl TabBar {
         &mut self,
         canvas: &mut Canvas<Window>,
         font: &Font,
-        button_font: &Font,
+        _button_font: &Font,
         cpu_font: &Font,
         texture_creator: &TextureCreator<T>,
         window_width: u32,
@@ -234,16 +234,26 @@ impl TabBar {
             // Check if this tab is currently hovered (recalculate based on current mouse position)
             let is_tab_hovered = tab_rect.contains_point((self.mouse_x, self.mouse_y));
             if is_tab_hovered {
-                // Try to render close button with larger font, perfectly centered vertically
-                if let Some(close_surface) = safe_render_text(button_font, "×", TEXT_WHITE).or_else(|| safe_render_text(button_font, "X", TEXT_WHITE)) {
-                    if let Ok(close_texture) = texture_creator.create_texture_from_surface(&close_surface) {
-                        let text_x = close_x + ((close_size as i32 - close_surface.width() as i32) / 2);
-                        // Perfect vertical centering relative to tab bar full height
-                        let available_height = self.height.saturating_sub(close_surface.height());
-                        let text_y = (available_height / 2) as i32;
-                        let text_rect = Rect::new(text_x, text_y, close_surface.width(), close_surface.height());
-                        let _ = canvas.copy(&close_texture, None, Some(text_rect));
-                    }
+                // Draw close button "×" manually with SDL primitives
+                canvas.set_draw_color(TEXT_WHITE);
+                let center_x = close_x + (close_size as i32 / 2);
+                let center_y = close_y + (close_size as i32 / 2);
+                let half_size = close_size as i32 * 4 / 10; // 40% of button size
+
+                // Draw X as two diagonal lines
+                // Top-left to bottom-right
+                for i in 0..3 {
+                    let _ = canvas.draw_line(
+                        (center_x - half_size / 2 + i, center_y - half_size / 2),
+                        (center_x + half_size / 2 + i, center_y + half_size / 2),
+                    );
+                }
+                // Top-right to bottom-left
+                for i in 0..3 {
+                    let _ = canvas.draw_line(
+                        (center_x + half_size / 2 + i, center_y - half_size / 2),
+                        (center_x - half_size / 2 + i, center_y + half_size / 2),
+                    );
                 }
             }
             // Space is always reserved even when not visible to prevent width collapse
@@ -260,16 +270,26 @@ impl TabBar {
         let add_y = y + 4;
         let add_rect = Rect::new(x, add_y, add_size, add_size);
 
-        // Try to render add button with larger font, perfectly vertically centered
-        if let Some(add_surface) = safe_render_text(button_font, "+", TEXT_WHITE) {
-            if let Ok(add_texture) = texture_creator.create_texture_from_surface(&add_surface) {
-                let text_x = x + ((add_size as i32 - add_surface.width() as i32) / 2);
-                // Perfect vertical centering relative to tab bar full height, slightly adjusted up
-                let available_height = self.height.saturating_sub(add_surface.height());
-                let text_y = (available_height / 2) as i32 - 3;
-                let text_rect = Rect::new(text_x, text_y, add_surface.width(), add_surface.height());
-                let _ = canvas.copy(&add_texture, None, Some(text_rect));
-            }
+        // Draw add button "+" manually with SDL primitives
+        canvas.set_draw_color(TEXT_WHITE);
+        let center_x = x + (add_size as i32 / 2);
+        let center_y = y + (self.height as i32 / 2) - 2;
+        let half_size = add_size as i32 * 4 / 10; // 40% of button size
+        let thickness = 3;
+
+        // Draw horizontal line
+        for i in 0..thickness {
+            let _ = canvas.draw_line(
+                (center_x - half_size / 2, center_y + i - thickness / 2),
+                (center_x + half_size / 2, center_y + i - thickness / 2),
+            );
+        }
+        // Draw vertical line
+        for i in 0..thickness {
+            let _ = canvas.draw_line(
+                (center_x + i - thickness / 2, center_y - half_size / 2),
+                (center_x + i - thickness / 2, center_y + half_size / 2),
+            );
         }
         self.add_button_rect = ClickableRect::new(add_rect);
 
@@ -303,17 +323,27 @@ impl TabBar {
         let button_y = y + 4;
         let mut right_x = window_width as i32 - button_size - 4;
 
-        // Close window button
+        // Close window button - draw "×" manually with SDL primitives
         let close_rect = Rect::new(right_x, button_y, button_size as u32, button_size as u32);
-        if let Some(close_surface) = safe_render_text(button_font, "×", TEXT_WHITE).or_else(|| safe_render_text(button_font, "X", TEXT_WHITE)) {
-            if let Ok(close_texture) = texture_creator.create_texture_from_surface(&close_surface) {
-                let text_x = right_x + ((button_size - close_surface.width() as i32) / 2);
-                // Center vertically relative to tab bar full height
-                let available_height = self.height.saturating_sub(close_surface.height());
-                let text_y = (available_height / 2) as i32;
-                let text_rect = Rect::new(text_x, text_y, close_surface.width(), close_surface.height());
-                let _ = canvas.copy(&close_texture, None, Some(text_rect));
-            }
+        canvas.set_draw_color(TEXT_WHITE);
+        let center_x = right_x + (button_size / 2);
+        let center_y = button_y + (button_size / 2);
+        let half_size = button_size * 4 / 10; // 40% of button size
+
+        // Draw X as two diagonal lines
+        // Top-left to bottom-right
+        for i in 0..3 {
+            let _ = canvas.draw_line(
+                (center_x - half_size / 2 + i, center_y - half_size / 2),
+                (center_x + half_size / 2 + i, center_y + half_size / 2),
+            );
+        }
+        // Top-right to bottom-left
+        for i in 0..3 {
+            let _ = canvas.draw_line(
+                (center_x + half_size / 2 + i, center_y - half_size / 2),
+                (center_x - half_size / 2 + i, center_y + half_size / 2),
+            );
         }
         self.close_button_rect = ClickableRect::new(close_rect);
         right_x -= button_size + 4;
