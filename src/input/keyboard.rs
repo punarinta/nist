@@ -258,6 +258,31 @@ pub fn handle_hotkey_action(
             }
         }
 
+        HotkeyAction::PasteQuick => {
+            // Ctrl+V: Paste from clipboard (only when terminal is idle)
+            // Check if mouse tracking is disabled - this indicates terminal is idle
+            let should_paste = {
+                if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
+                    if let Ok(t) = terminal.lock() {
+                        let mouse_tracking = *t.mouse_tracking_mode.lock().unwrap();
+                        mouse_tracking == crate::terminal::MouseTrackingMode::Disabled
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+
+            if should_paste {
+                handle_paste(tab_bar_gui);
+                KeyboardResult::render()
+            } else {
+                // Mouse tracking is enabled (app is running), let Ctrl+V pass through
+                KeyboardResult::none()
+            }
+        }
+
         HotkeyAction::ScrollPageUp => {
             if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
                 if let Ok(t) = terminal.lock() {

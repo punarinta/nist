@@ -18,6 +18,7 @@ pub enum HotkeyAction {
     Copy,
     CopySelection, // Ctrl+C that only copies if there's a selection
     Paste,
+    PasteQuick, // Ctrl+V paste for idle terminal (no shift)
 
     // Scrollback navigation
     ScrollPageUp,
@@ -48,6 +49,7 @@ pub fn match_hotkey(keycode: Keycode, is_ctrl: bool, is_shift: bool) -> Option<H
             Keycode::LeftBracket => Some(HotkeyAction::PreviousPane),
             Keycode::RightBracket => Some(HotkeyAction::NextPane),
             Keycode::C => Some(HotkeyAction::CopySelection), // Special: only copies if selection exists
+            Keycode::V => Some(HotkeyAction::PasteQuick),    // Special: only pastes if terminal is idle
             _ => None,
         }
     } else if is_shift && !is_ctrl {
