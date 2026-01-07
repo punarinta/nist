@@ -871,7 +871,14 @@ Searched directories:
                         canvas.window().subsystem().text_input().start(canvas.window());
                     }
                     input::events::EventAction::StopTextInput => {
+                        // BUG FIX: When tab editing finishes (user presses Enter/Escape after renaming a tab),
+                        // we stop text input to exit the tab editing mode. However, the terminal ALWAYS needs
+                        // text input enabled to receive typed characters (letters, numbers, etc.).
+                        // Special keys (Enter, Backspace, arrows) work via KeyDown events, but regular text
+                        // requires text input to be enabled.
+                        // Solution: Stop text input briefly, then immediately restart it for the terminal.
                         canvas.window().subsystem().text_input().stop(canvas.window());
+                        canvas.window().subsystem().text_input().start(canvas.window());
                     }
                     input::events::EventAction::OpenSettings => {
                         match settings::get_settings_path() {

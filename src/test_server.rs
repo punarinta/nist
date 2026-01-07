@@ -37,6 +37,14 @@ pub enum TestCommand {
     SwitchTab { index: usize },
     #[serde(rename = "reorder_tab")]
     ReorderTab { from_index: usize, to_index: usize },
+    #[serde(rename = "rename_tab")]
+    RenameTab { index: usize, name: String },
+    #[serde(rename = "start_editing_tab")]
+    StartEditingTab { index: usize },
+    #[serde(rename = "finish_editing_tab")]
+    FinishEditingTab { index: usize, save: bool },
+    #[serde(rename = "simulate_tab_edit_enter")]
+    SimulateTabEditEnter { index: usize, new_name: String },
     #[serde(rename = "split_pane")]
     SplitPane { direction: String }, // "horizontal" or "vertical"
     #[serde(rename = "list_panes")]
@@ -433,6 +441,59 @@ impl TestServer {
 
                 TestResponse::Error {
                     message: "Failed to create tab".to_string(),
+                }
+            }
+            TestCommand::RenameTab { index, name } => {
+                if let Ok(mut gui) = self.tab_bar_gui.lock() {
+                    if index < gui.tab_states.len() {
+                        gui.tab_states[index].name = name;
+                        gui.tab_states[index].temp_name = gui.tab_states[index].name.clone();
+                        return TestResponse::Ok;
+                    }
+                }
+                TestResponse::Error {
+                    message: "Invalid tab index".to_string(),
+                }
+            }
+            TestCommand::StartEditingTab { index } => {
+                if let Ok(mut gui) = self.tab_bar_gui.lock() {
+                    if index < gui.tab_states.len() {
+                        gui.tab_states[index].start_editing();
+                        return TestResponse::Ok;
+                    }
+                }
+                TestResponse::Error {
+                    message: "Invalid tab index".to_string(),
+                }
+            }
+            TestCommand::FinishEditingTab { index, save } => {
+                if let Ok(mut gui) = self.tab_bar_gui.lock() {
+                    if index < gui.tab_states.len() {
+                        gui.tab_states[index].finish_editing(save);
+                        return TestResponse::Ok;
+                    }
+                }
+                TestResponse::Error {
+                    message: "Invalid tab index".to_string(),
+                }
+            }
+            TestCommand::SimulateTabEditEnter { index, new_name } => {
+                // This simulates the sequence: start editing -> type new name -> press Enter
+                // The bug is that after this sequence, text input is stopped but not restarted
+                // This command helps us test by directly setting the final state
+                if let Ok(mut gui) = self.tab_bar_gui.lock() {
+                    if index < gui.tab_states.len() {
+                        // Start editing
+                        gui.tab_states[index].start_editing();
+                        // Set the new name as if user typed it
+                        gui.tab_states[index].temp_name = new_name.clone();
+                        // Finish editing (save) - as if Enter was pressed
+                        gui.tab_states[index].finish_editing(true);
+                        return TestResponse::Ok;
+                    }
+                }
+                TestResponse::Error {
+                    message: "Invalid tab index".to_string(),
                 }
             }
             TestCommand::ListTabs => {

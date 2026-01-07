@@ -32,3 +32,5 @@ Current platform support
 - Linux -- low bugs probability
 - macOS -- low bugs probability; GUI is a bit unstable, the rest is okay
 - Windows -- average bugs probability due to a non-UNIX-like environment
+
+The builds included in "releases" directory may be slightly outdated. If you want to get the most recent version, please build it from source.
