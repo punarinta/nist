@@ -776,6 +776,7 @@ Searched directories:
                     tab_bar_height,
                     canvas.window(),
                     &event_pump,
+                    &settings,
                     #[cfg(target_os = "linux")]
                     &clipboard_tx,
                 );

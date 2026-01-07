@@ -7,10 +7,11 @@ Features
 - flexible layout: movable tabs, resizable panes
 - state is saved and loaded automatically
 - cross-platform (Linux, Mac, Windows)
-- hotkeys and mouse tricks
+- configurable hotkeys and mouse tricks
 - explicitly scrollable history
 - primary buffer for Linux
 - smart Ctrl+C & Ctrl+V (work when it doesn't interfere with terminal apps)
+- sequential hotkeys (built-in example: Alt-G-P -- go to prompt)
 
 Planned
 ===

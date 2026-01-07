@@ -2,7 +2,7 @@ use sdl3::keyboard::{Keycode, Scancode};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use super::hotkeys::HotkeyAction;
+use super::hotkeys::{HotkeyAction, NavigationAction};
 use crate::pane_layout::SplitDirection;
 use crate::sdl_renderer::TabBar;
 use crate::tab_gui::TabBarGui;
@@ -149,77 +149,82 @@ pub fn handle_hotkey_action(
     #[cfg(target_os = "linux")] clipboard_tx: &Sender<Clipboard>,
 ) -> KeyboardResult {
     match action {
-        HotkeyAction::NewTab => KeyboardResult::with_action(KeyboardAction::NewTab),
+        HotkeyAction::Navigation(nav_action) => match nav_action {
+            NavigationAction::NewTab => KeyboardResult::with_action(KeyboardAction::NewTab),
 
-        HotkeyAction::SplitHorizontal => KeyboardResult::with_action(KeyboardAction::SplitPane(SplitDirection::Horizontal)),
+            NavigationAction::SplitRight => KeyboardResult::with_action(KeyboardAction::SplitPane(SplitDirection::Vertical)),
 
-        HotkeyAction::SplitVertical => KeyboardResult::with_action(KeyboardAction::SplitPane(SplitDirection::Vertical)),
+            NavigationAction::SplitDown => KeyboardResult::with_action(KeyboardAction::SplitPane(SplitDirection::Horizontal)),
 
-        HotkeyAction::NextTab => {
-            tab_bar_gui.lock().unwrap().cycle_to_next_tab();
-            KeyboardResult::render()
-        }
-
-        HotkeyAction::ClosePane => {
-            let mut gui = tab_bar_gui.lock().unwrap();
-
-            // Check if this is the last pane in the last tab
-            let is_last_pane_in_last_tab = gui.tab_states.len() == 1 && gui.get_active_pane_layout().map(|pl| pl.root.count_leaf_panes()).unwrap_or(0) == 1;
-
-            if is_last_pane_in_last_tab {
-                // Request confirmation before closing
-                return KeyboardResult::with_action(KeyboardAction::RequestQuitConfirmation);
+            NavigationAction::NextTab => {
+                tab_bar_gui.lock().unwrap().cycle_to_next_tab();
+                KeyboardResult::render()
             }
 
-            if let Some(pane_layout) = gui.get_active_pane_layout() {
-                let active_pane = pane_layout.active_pane();
-                if pane_layout.close_pane(active_pane) {
-                    // Last pane in tab closed
-                    drop(gui);
-                    let active_tab = tab_bar_gui.lock().unwrap().active_tab;
-                    if tab_bar_gui.lock().unwrap().remove_tab(active_tab) {
-                        return KeyboardResult::with_action(KeyboardAction::Quit);
+            NavigationAction::PreviousTab => {
+                tab_bar_gui.lock().unwrap().cycle_to_previous_tab();
+                KeyboardResult::render()
+            }
+
+            NavigationAction::ClosePane => {
+                let mut gui = tab_bar_gui.lock().unwrap();
+
+                // Check if this is the last pane in the last tab
+                let is_last_pane_in_last_tab = gui.tab_states.len() == 1 && gui.get_active_pane_layout().map(|pl| pl.root.count_leaf_panes()).unwrap_or(0) == 1;
+
+                if is_last_pane_in_last_tab {
+                    // Request confirmation before closing
+                    return KeyboardResult::with_action(KeyboardAction::RequestQuitConfirmation);
+                }
+
+                if let Some(pane_layout) = gui.get_active_pane_layout() {
+                    let active_pane = pane_layout.active_pane();
+                    if pane_layout.close_pane(active_pane) {
+                        // Last pane in tab closed
+                        drop(gui);
+                        let active_tab = tab_bar_gui.lock().unwrap().active_tab;
+                        if tab_bar_gui.lock().unwrap().remove_tab(active_tab) {
+                            return KeyboardResult::with_action(KeyboardAction::Quit);
+                        }
+                    } else {
+                        // Pane closed, need to resize remaining terminals
+                        drop(gui);
+                        return KeyboardResult::with_resize(KeyboardAction::None);
                     }
-                } else {
-                    // Pane closed, need to resize remaining terminals
-                    drop(gui);
-                    return KeyboardResult::with_resize(KeyboardAction::None);
                 }
+                KeyboardResult::render()
             }
-            KeyboardResult::render()
-        }
 
-        HotkeyAction::PreviousPane => {
-            // Ctrl+[ - Navigate to previous pane, or previous tab if at first pane
-            let mut gui = tab_bar_gui.lock().unwrap();
-            if let Some(pane_layout) = gui.get_active_pane_layout() {
-                if pane_layout.is_first_pane() {
-                    // At first pane, go to previous tab
-                    drop(gui);
-                    tab_bar_gui.lock().unwrap().cycle_to_previous_tab();
-                } else {
-                    // Not at first pane, go to previous pane
-                    pane_layout.cycle_to_previous_pane();
+            NavigationAction::PreviousPane => {
+                let mut gui = tab_bar_gui.lock().unwrap();
+                if let Some(pane_layout) = gui.get_active_pane_layout() {
+                    if pane_layout.is_first_pane() {
+                        // At first pane, go to previous tab
+                        drop(gui);
+                        tab_bar_gui.lock().unwrap().cycle_to_previous_tab();
+                    } else {
+                        // Not at first pane, go to previous pane
+                        pane_layout.cycle_to_previous_pane();
+                    }
                 }
+                KeyboardResult::render()
             }
-            KeyboardResult::render()
-        }
 
-        HotkeyAction::NextPane => {
-            // Ctrl+] - Navigate to next pane, or next tab if at last pane
-            let mut gui = tab_bar_gui.lock().unwrap();
-            if let Some(pane_layout) = gui.get_active_pane_layout() {
-                if pane_layout.is_last_pane() {
-                    // At last pane, go to next tab
-                    drop(gui);
-                    tab_bar_gui.lock().unwrap().cycle_to_next_tab();
-                } else {
-                    // Not at last pane, go to next pane
-                    pane_layout.cycle_to_next_pane();
+            NavigationAction::NextPane => {
+                let mut gui = tab_bar_gui.lock().unwrap();
+                if let Some(pane_layout) = gui.get_active_pane_layout() {
+                    if pane_layout.is_last_pane() {
+                        // At last pane, go to next tab
+                        drop(gui);
+                        tab_bar_gui.lock().unwrap().cycle_to_next_tab();
+                    } else {
+                        // Not at last pane, go to next pane
+                        pane_layout.cycle_to_next_pane();
+                    }
                 }
+                KeyboardResult::render()
             }
-            KeyboardResult::render()
-        }
+        },
 
         HotkeyAction::Copy => {
             // Ctrl+Shift+C: Copy selection to clipboard
@@ -316,6 +321,16 @@ pub fn handle_hotkey_action(
             if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
                 if let Ok(t) = terminal.lock() {
                     t.screen_buffer.lock().unwrap().scroll_view_down(1);
+                }
+            }
+            KeyboardResult::render()
+        }
+
+        HotkeyAction::GoToPrompt => {
+            // Alt-G-P: Reset scroll position to 0 (go back to the prompt)
+            if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
+                if let Ok(t) = terminal.lock() {
+                    t.screen_buffer.lock().unwrap().reset_view_offset();
                 }
             }
             KeyboardResult::render()

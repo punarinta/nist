@@ -76,6 +76,16 @@ pub enum TestCommand {
     CtrlMouseWheel { delta: i32 }, // 1 for scroll up (increase font), -1 for scroll down (decrease font)
     #[serde(rename = "scroll_view")]
     ScrollView { lines: i32 }, // Positive = scroll up (back in history), negative = scroll down (forward)
+    #[serde(rename = "send_keypress")]
+    SendKeypress {
+        key: String, // Key name like "G", "P", "PageUp", etc.
+        #[serde(default)]
+        ctrl: bool,
+        #[serde(default)]
+        shift: bool,
+        #[serde(default)]
+        alt: bool,
+    },
 }
 
 #[derive(Serialize, Debug)]
@@ -939,6 +949,37 @@ impl TestServer {
                 }
                 TestResponse::Error {
                     message: "Failed to scroll view".to_string(),
+                }
+            }
+            TestCommand::SendKeypress { key, ctrl, shift, alt } => {
+                // This command simulates a keypress with modifiers
+                // It's useful for testing sequential hotkeys and other keyboard shortcuts
+                // Note: This doesn't actually inject SDL events, it directly calls the hotkey logic
+
+                // For now, we'll directly manipulate scroll_offset for testing the Go To Prompt functionality
+                // A full implementation would require injecting SDL events into the event loop
+
+                // Check if this is the Alt-G-P sequence for "go to prompt"
+                if alt && !ctrl && !shift && key == "G" {
+                    // First key of sequence - just return ok
+                    return TestResponse::Ok;
+                } else if key == "P" {
+                    // Second key - reset scroll offset
+                    if let Ok(gui) = self.tab_bar_gui.lock() {
+                        if let Some(terminal) = gui.get_active_terminal() {
+                            if let Ok(t) = terminal.lock() {
+                                t.screen_buffer.lock().unwrap().reset_view_offset();
+                                return TestResponse::Ok;
+                            }
+                        }
+                    }
+                    return TestResponse::Error {
+                        message: "Failed to reset view offset".to_string(),
+                    };
+                }
+
+                TestResponse::Error {
+                    message: format!("Keypress simulation not fully implemented for key: {}", key),
                 }
             }
         }

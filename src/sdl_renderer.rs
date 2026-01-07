@@ -1,6 +1,7 @@
 //! SDL3-based rendering utilities for the terminal emulator
 //! Provides font rendering, drawing primitives, and UI elements
 
+use crate::input::hotkeys::SequentialHotkeyState;
 use sdl3::pixels::Color;
 use sdl3::rect::Rect;
 use sdl3::render::{Canvas, TextureCreator};
@@ -48,6 +49,7 @@ pub struct TabBar {
     pub dragging_tab: Option<usize>,
     pub drag_start_x: i32,
     pub drag_offset_x: i32,
+    pub sequential_hotkey_state: SequentialHotkeyState,
 }
 
 impl TabBar {
@@ -58,6 +60,7 @@ impl TabBar {
             tab_rects: Vec::new(),
             close_button_rects: Vec::new(),
             add_button_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
+            sequential_hotkey_state: SequentialHotkeyState::new(),
             minimize_button_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
             close_button_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
             cpu_indicator_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),

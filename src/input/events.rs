@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use super::keyboard::KeyboardAction;
 use super::mouse::{MouseAction, MouseState};
 use crate::sdl_renderer::TabBar;
+use crate::settings::Settings;
 use crate::tab_gui::TabBarGui;
 
 #[cfg(target_os = "linux")]
@@ -76,6 +77,7 @@ pub fn handle_event(
     tab_bar_height: u32,
     canvas_window: &sdl3::video::Window,
     event_pump: &sdl3::EventPump,
+    settings: &Settings,
     #[cfg(target_os = "linux")] clipboard_tx: &Sender<Clipboard>,
 ) -> EventResult {
     match event {
@@ -159,6 +161,7 @@ pub fn handle_event(
             char_height,
             tab_bar_height,
             canvas_window,
+            settings,
             #[cfg(target_os = "linux")]
             clipboard_tx,
         ),
@@ -393,13 +396,14 @@ fn handle_key_down_event(
     char_height: f32,
     tab_bar_height: u32,
     canvas_window: &sdl3::video::Window,
+    settings: &Settings,
     #[cfg(target_os = "linux")] clipboard_tx: &Sender<Clipboard>,
 ) -> EventResult {
     let Some(keycode) = keycode else {
         return EventResult::none();
     };
 
-    let (is_ctrl_pressed, is_shift_pressed) = super::hotkeys::get_modifiers(keymod);
+    let (is_ctrl_pressed, is_shift_pressed, is_alt_pressed) = super::hotkeys::get_modifiers(keymod);
 
     // Handle tab editing mode
     if tab_bar.editing_tab.is_some() {
@@ -422,7 +426,92 @@ fn handle_key_down_event(
         };
     }
 
-    // Handle keyboard shortcuts using hotkeys module
+    // Check for sequential hotkey completion (second key in a sequence like Alt-G-P)
+    if let Some(action) = super::hotkeys::match_sequential_hotkey(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed, &tab_bar.sequential_hotkey_state)
+    {
+        // Clear the sequential state since we found a match
+        tab_bar.sequential_hotkey_state.clear();
+
+        let result = super::keyboard::handle_hotkey_action(
+            action,
+            tab_bar_gui,
+            scale_factor,
+            char_width,
+            char_height,
+            tab_bar_height,
+            canvas_window,
+            #[cfg(target_os = "linux")]
+            clipboard_tx,
+        );
+
+        return EventResult {
+            action: EventAction::None,
+            needs_render: result.needs_render,
+            needs_resize: result.needs_resize,
+        };
+    }
+
+    // Check if this key starts a sequential hotkey
+    if super::hotkeys::is_sequential_hotkey_start(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed) {
+        // Record this as the first key in a potential sequence
+        tab_bar
+            .sequential_hotkey_state
+            .record_first_key(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed);
+        // Don't pass this key to the terminal
+        return EventResult::none();
+    }
+
+    // If we have a sequential state but this key doesn't complete it, clear the state
+    if tab_bar.sequential_hotkey_state.is_valid() {
+        tab_bar.sequential_hotkey_state.clear();
+        // Fall through to handle this key normally
+    }
+
+    // First check navigation hotkeys from settings
+    if let Some(nav_action) = super::hotkeys::match_navigation_hotkey(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed, &settings.hotkeys.navigation)
+    {
+        use super::hotkeys::NavigationAction;
+
+        // Map navigation action to keyboard action
+        let keyboard_action = match nav_action {
+            NavigationAction::SplitRight => super::keyboard::KeyboardAction::SplitPane(crate::pane_layout::SplitDirection::Vertical),
+            NavigationAction::SplitDown => super::keyboard::KeyboardAction::SplitPane(crate::pane_layout::SplitDirection::Horizontal),
+            NavigationAction::ClosePane => super::keyboard::KeyboardAction::None, // Will be handled below
+            NavigationAction::NextPane | NavigationAction::PreviousPane => super::keyboard::KeyboardAction::None, // Will be handled below
+            NavigationAction::NewTab => super::keyboard::KeyboardAction::NewTab,
+            NavigationAction::NextTab | NavigationAction::PreviousTab => super::keyboard::KeyboardAction::None, // Will be handled below
+        };
+
+        // Handle the action
+        let result = super::keyboard::handle_hotkey_action(
+            super::hotkeys::HotkeyAction::Navigation(nav_action.clone()),
+            tab_bar_gui,
+            scale_factor,
+            char_width,
+            char_height,
+            tab_bar_height,
+            canvas_window,
+            #[cfg(target_os = "linux")]
+            clipboard_tx,
+        );
+
+        // Map to event action
+        let event_action = match keyboard_action {
+            KeyboardAction::NewTab => EventAction::NewTab,
+            KeyboardAction::SplitPane(direction) => EventAction::SplitPane(direction),
+            KeyboardAction::RequestQuitConfirmation => EventAction::RequestQuitConfirmation,
+            KeyboardAction::Quit => EventAction::Quit,
+            KeyboardAction::None => EventAction::None,
+        };
+
+        return EventResult {
+            action: event_action,
+            needs_render: result.needs_render,
+            needs_resize: result.needs_resize,
+        };
+    }
+
+    // Handle keyboard shortcuts using hotkeys module (hardcoded fallback)
     if let Some(action) = super::hotkeys::match_hotkey(keycode, is_ctrl_pressed, is_shift_pressed) {
         let result = super::keyboard::handle_hotkey_action(
             action,

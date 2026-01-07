@@ -619,6 +619,10 @@ impl ScreenBuffer {
     }
 
     /// Jump to the bottom (live view)
+    pub fn reset_view_offset(&mut self) {
+        self.scroll_offset = 0;
+        self.dirty = true;
+    }
 
     /// Get a cell from the scrollback buffer or current screen
     /// y is relative to the current view (accounting for scroll offset)
