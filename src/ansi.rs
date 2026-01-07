@@ -1,4 +1,4 @@
-use sdl2::pixels::Color;
+use sdl3::pixels::Color;
 use std::collections::HashMap;
 
 // Default colors

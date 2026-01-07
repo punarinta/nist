@@ -1,6 +1,6 @@
 use crate::terminal::Terminal;
 use crate::ui::animations::CopyAnimation;
-use sdl2::rect::Rect;
+use sdl3::rect::Rect;
 use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "linux")]
@@ -56,8 +56,8 @@ impl PaneNode {
         }
     }
 
-    /// Split this pane in the given direction
-    pub fn split(&mut self, pane_id: PaneId, direction: SplitDirection, new_terminal: Arc<Mutex<Terminal>>) -> bool {
+    /// Split this pane in the given direction, returning the ID of the newly created pane
+    pub fn split(&mut self, pane_id: PaneId, direction: SplitDirection, new_terminal: Arc<Mutex<Terminal>>) -> Option<PaneId> {
         match self {
             PaneNode::Leaf { id, terminal } => {
                 if *id == pane_id {
@@ -65,6 +65,7 @@ impl PaneNode {
                     let old_terminal = terminal.clone();
                     let old_leaf = PaneNode::new_leaf(old_terminal);
                     let new_leaf = PaneNode::new_leaf(new_terminal);
+                    let new_pane_id = new_leaf.id(); // Capture the new pane's ID before boxing
 
                     *self = PaneNode::Split {
                         id: PaneId::new(),
@@ -73,14 +74,16 @@ impl PaneNode {
                         first: Box::new(old_leaf),
                         second: Box::new(new_leaf),
                     };
-                    true
+                    Some(new_pane_id)
                 } else {
-                    false
+                    None
                 }
             }
             PaneNode::Split { first, second, .. } => {
                 // Recursively search in children
-                first.split(pane_id, direction, new_terminal.clone()) || second.split(pane_id, direction, new_terminal)
+                first
+                    .split(pane_id, direction, new_terminal.clone())
+                    .or_else(|| second.split(pane_id, direction, new_terminal))
             }
         }
     }
@@ -282,13 +285,9 @@ impl PaneLayout {
     /// Split the active pane in the given direction
     pub fn split_active_pane(&mut self, direction: SplitDirection, new_terminal: Arc<Mutex<Terminal>>) {
         let active_pane = self.active_pane;
-        if self.root.split(active_pane, direction, new_terminal.clone()) {
+        if let Some(new_pane_id) = self.root.split(active_pane, direction, new_terminal.clone()) {
             // Set the newly created pane as active
-            // The new terminal will be the last added pane
-            let all_ids = self.root.collect_leaf_ids();
-            if let Some(new_id) = all_ids.last() {
-                self.active_pane = *new_id;
-            }
+            self.active_pane = new_pane_id;
         }
     }
 

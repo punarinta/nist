@@ -1,4 +1,4 @@
-use sdl2::event::Event;
+use sdl3::event::Event;
 use std::sync::{Arc, Mutex};
 
 use super::keyboard::KeyboardAction;
@@ -68,28 +68,28 @@ pub fn handle_event(
     tab_bar: &mut TabBar,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
     mouse_state: &mut MouseState,
-    ctrl_keys: &std::collections::HashMap<sdl2::keyboard::Scancode, u8>,
+    ctrl_keys: &std::collections::HashMap<sdl3::keyboard::Scancode, u8>,
     scale_factor: f32,
     mouse_coords_need_scaling: bool,
     char_width: f32,
     char_height: f32,
     tab_bar_height: u32,
-    canvas_window: &sdl2::video::Window,
-    event_pump: &sdl2::EventPump,
+    canvas_window: &sdl3::video::Window,
+    event_pump: &sdl3::EventPump,
     #[cfg(target_os = "linux")] clipboard_tx: &Sender<Clipboard>,
 ) -> EventResult {
     match event {
         Event::Quit { .. } => EventResult::quit(),
 
         Event::Window {
-            win_event: sdl2::event::WindowEvent::SizeChanged(_width, _height),
+            win_event: sdl3::event::WindowEvent::Resized(_width, _height),
             ..
         } => EventResult::resize(),
 
         Event::MouseButtonDown { mouse_btn, x, y, .. } => handle_mouse_button_down_event(
             *mouse_btn,
-            *x,
-            *y,
+            *x as i32,
+            *y as i32,
             tab_bar,
             tab_bar_gui,
             mouse_state,
@@ -105,8 +105,9 @@ pub fn handle_event(
 
         Event::MouseButtonUp { mouse_btn, x, y, .. } => handle_mouse_button_up_event(
             *mouse_btn,
-            *x,
-            *y,
+            *x as i32,
+            *y as i32,
+            tab_bar,
             tab_bar_gui,
             mouse_state,
             scale_factor,
@@ -120,8 +121,8 @@ pub fn handle_event(
         ),
 
         Event::MouseMotion { x, y, .. } => handle_mouse_motion_event(
-            *x,
-            *y,
+            *x as i32,
+            *y as i32,
             tab_bar,
             tab_bar_gui,
             mouse_state,
@@ -169,7 +170,7 @@ pub fn handle_event(
 }
 
 fn handle_mouse_button_down_event(
-    mouse_btn: sdl2::mouse::MouseButton,
+    mouse_btn: sdl3::mouse::MouseButton,
     x: i32,
     y: i32,
     tab_bar: &mut TabBar,
@@ -180,7 +181,7 @@ fn handle_mouse_button_down_event(
     char_width: f32,
     char_height: f32,
     tab_bar_height: u32,
-    canvas_window: &sdl2::video::Window,
+    canvas_window: &sdl3::video::Window,
     #[cfg(target_os = "linux")] clipboard_tx: &Sender<Clipboard>,
 ) -> EventResult {
     let (mouse_x, mouse_y) = if mouse_coords_need_scaling {
@@ -189,11 +190,7 @@ fn handle_mouse_button_down_event(
         (x, y)
     };
 
-    let (w, h) = if scale_factor > 1.0 {
-        canvas_window.drawable_size()
-    } else {
-        canvas_window.size()
-    };
+    let (w, h) = canvas_window.size_in_pixels();
 
     let result = super::mouse::handle_mouse_button_down(
         mouse_btn,
@@ -246,9 +243,10 @@ fn handle_mouse_button_down_event(
 }
 
 fn handle_mouse_button_up_event(
-    mouse_btn: sdl2::mouse::MouseButton,
+    mouse_btn: sdl3::mouse::MouseButton,
     x: i32,
     y: i32,
+    tab_bar: &mut TabBar,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
     mouse_state: &mut MouseState,
     scale_factor: f32,
@@ -256,7 +254,7 @@ fn handle_mouse_button_up_event(
     char_width: f32,
     char_height: f32,
     tab_bar_height: u32,
-    canvas_window: &sdl2::video::Window,
+    canvas_window: &sdl3::video::Window,
     #[cfg(target_os = "linux")] clipboard_tx: &Sender<Clipboard>,
 ) -> EventResult {
     let (mouse_x, mouse_y) = if mouse_coords_need_scaling {
@@ -265,16 +263,13 @@ fn handle_mouse_button_up_event(
         (x, y)
     };
 
-    let (w, h) = if scale_factor > 1.0 {
-        canvas_window.drawable_size()
-    } else {
-        canvas_window.size()
-    };
+    let (w, h) = canvas_window.size_in_pixels();
 
     let result = super::mouse::handle_mouse_button_up(
         mouse_btn,
         mouse_x,
         mouse_y,
+        tab_bar,
         tab_bar_gui,
         tab_bar_height,
         char_width,
@@ -307,7 +302,7 @@ fn handle_mouse_motion_event(
     char_width: f32,
     char_height: f32,
     tab_bar_height: u32,
-    canvas_window: &sdl2::video::Window,
+    canvas_window: &sdl3::video::Window,
 ) -> EventResult {
     let (mouse_x, mouse_y) = if mouse_coords_need_scaling {
         ((x as f32 * scale_factor) as i32, (y as f32 * scale_factor) as i32)
@@ -315,11 +310,7 @@ fn handle_mouse_motion_event(
         (x, y)
     };
 
-    let (w, h) = if scale_factor > 1.0 {
-        canvas_window.drawable_size()
-    } else {
-        canvas_window.size()
-    };
+    let (w, h) = canvas_window.size_in_pixels();
 
     let result = super::mouse::handle_mouse_motion(
         mouse_x,
@@ -342,26 +333,26 @@ fn handle_mouse_motion_event(
 }
 
 fn handle_mouse_wheel_event(
-    y: i32,
-    x: i32,
+    y: f32,
+    x: f32,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
     scale_factor: f32,
     mouse_coords_need_scaling: bool,
     char_width: f32,
     char_height: f32,
     tab_bar_height: u32,
-    canvas_window: &sdl2::video::Window,
-    event_pump: &sdl2::EventPump,
+    canvas_window: &sdl3::video::Window,
+    event_pump: &sdl3::EventPump,
 ) -> EventResult {
     // Check if Ctrl is pressed for font size change
     let keyboard_state = event_pump.keyboard_state();
     let is_ctrl_pressed =
-        keyboard_state.is_scancode_pressed(sdl2::keyboard::Scancode::LCtrl) || keyboard_state.is_scancode_pressed(sdl2::keyboard::Scancode::RCtrl);
+        keyboard_state.is_scancode_pressed(sdl3::keyboard::Scancode::LCtrl) || keyboard_state.is_scancode_pressed(sdl3::keyboard::Scancode::RCtrl);
 
     // If Ctrl is pressed, handle font size change
-    if is_ctrl_pressed && y != 0 {
+    if is_ctrl_pressed && y != 0.0 {
         // y > 0 is scroll up (increase font), y < 0 is scroll down (decrease font)
-        let delta = if y > 0 { 1.0 } else { -1.0 };
+        let delta = if y > 0.0 { 1.0 } else { -1.0 };
         return EventResult {
             action: EventAction::ChangeFontSize(delta),
             needs_render: true,
@@ -376,16 +367,12 @@ fn handle_mouse_wheel_event(
             (mouse_state_sdl.y() as f32 * scale_factor) as i32,
         )
     } else {
-        (mouse_state_sdl.x(), mouse_state_sdl.y())
+        (mouse_state_sdl.x() as i32, mouse_state_sdl.y() as i32)
     };
 
-    let (w, h) = if scale_factor > 1.0 {
-        canvas_window.drawable_size()
-    } else {
-        canvas_window.size()
-    };
+    let (w, h) = canvas_window.size();
 
-    let result = super::mouse::handle_mouse_wheel(y, x, mouse_x, mouse_y, tab_bar_gui, tab_bar_height, char_width, char_height, w, h);
+    let result = super::mouse::handle_mouse_wheel(y as i32, x as i32, mouse_x, mouse_y, tab_bar_gui, tab_bar_height, char_width, char_height, w, h);
 
     EventResult {
         action: EventAction::None,
@@ -395,17 +382,17 @@ fn handle_mouse_wheel_event(
 }
 
 fn handle_key_down_event(
-    keycode: Option<sdl2::keyboard::Keycode>,
-    keymod: sdl2::keyboard::Mod,
-    scancode: Option<sdl2::keyboard::Scancode>,
+    keycode: Option<sdl3::keyboard::Keycode>,
+    keymod: sdl3::keyboard::Mod,
+    scancode: Option<sdl3::keyboard::Scancode>,
     tab_bar: &mut TabBar,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
-    ctrl_keys: &std::collections::HashMap<sdl2::keyboard::Scancode, u8>,
+    ctrl_keys: &std::collections::HashMap<sdl3::keyboard::Scancode, u8>,
     scale_factor: f32,
     char_width: f32,
     char_height: f32,
     tab_bar_height: u32,
-    canvas_window: &sdl2::video::Window,
+    canvas_window: &sdl3::video::Window,
     #[cfg(target_os = "linux")] clipboard_tx: &Sender<Clipboard>,
 ) -> EventResult {
     let Some(keycode) = keycode else {
@@ -419,7 +406,7 @@ fn handle_key_down_event(
         let result = super::keyboard::handle_tab_editing_key(keycode, tab_bar, tab_bar_gui);
 
         // Check if editing was finished (Return or Escape)
-        use sdl2::keyboard::Keycode;
+        use sdl3::keyboard::Keycode;
         if matches!(keycode, Keycode::Return | Keycode::Escape) {
             return EventResult {
                 action: EventAction::StopTextInput,

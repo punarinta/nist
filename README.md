@@ -1,20 +1,21 @@
 Nisdos Terminal
 ===
-A terminal we use in Nisdos. We decided to open-source it. How it differs from other terminals? It aims at low CPU and memory consumption, high performance, while having all modern features.
+A terminal we use at Nisdos and decided to open-source. It aims at low CPU and memory consumption, high performance, while having all modern features. Built on pure Rust & [SDL3](https://www.libsdl.org/).
 
 Features
 ===
-- flexible layout: tabs, resizable panes
+- flexible layout: movable tabs, resizable panes
 - state is saved and loaded automatically
-- cross-platform
+- cross-platform (Linux, Mac, Windows)
 - hotkeys and mouse tricks
 - explicitly scrollable history
 - primary buffer for Linux
-- selected content may be copied even with Ctrl+C
+- smart Ctrl+C & Ctrl+V (work when it doesn't interfere with terminal apps)
 
 Planned
 ===
 - emoji support
+- get rid of underlying terminals (bash, cmd etc) for resource efficiency
 - AI-agent to assist working with OS (not for coding)
 - proper settings
 - themes
@@ -28,6 +29,6 @@ Click on CPU load indicator on the top right corner to open settings in your def
 
 Current platform support
 ===
-- Linux -- very low bugs probability
-- macOS -- low bugs probability
-- Windows -- average bugs probability
+- Linux -- low bugs probability
+- macOS -- low bugs probability; GUI is a bit unstable, the rest is okay
+- Windows -- average bugs probability due to a non-UNIX-like environment

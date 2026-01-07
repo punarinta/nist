@@ -11,17 +11,16 @@ mod terminal;
 mod terminal_config;
 mod ui;
 
-use crate::ansi::DEFAULT_BG_COLOR;
+use ui::render;
+
 use crate::tab_gui::TabBarGui;
 use crate::terminal::Terminal;
 use crate::terminal_config::TerminalLibrary;
 
 use arboard::Clipboard;
-use sdl2::event::Event;
-use sdl2::gfx::primitives::DrawRenderer;
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::video::Window;
+use sdl3::event::Event;
+
+use sdl3::video::Window;
 #[cfg(not(target_os = "windows"))]
 use signal_hook::consts::signal::*;
 #[cfg(not(target_os = "windows"))]
@@ -71,9 +70,9 @@ fn set_window_icon(window: &mut Window) {
 }
 
 /// Create an SDL surface from RGBA pixel data
-fn create_sdl_surface_from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Result<sdl2::surface::Surface<'static>, String> {
+fn create_sdl_surface_from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Result<sdl3::surface::Surface<'static>, String> {
     let mut surface =
-        sdl2::surface::Surface::new(width, height, sdl2::pixels::PixelFormatEnum::RGBA32).map_err(|e| format!("Failed to create SDL surface: {}", e))?;
+        sdl3::surface::Surface::new(width, height, sdl3::pixels::PixelFormat::RGBA32).map_err(|e| format!("Failed to create SDL surface: {}", e))?;
 
     // Copy pixel data
     surface.with_lock_mut(|buffer: &mut [u8]| {
@@ -229,17 +228,17 @@ fn main() -> Result<(), String> {
 
     let (window_width, window_height) = (2376_u32, 1593_u32);
 
-    let sdl_context = sdl2::init().unwrap();
+    let sdl_context = sdl3::init().unwrap();
 
     // Set window class name for proper desktop integration
-    sdl2::hint::set("SDL_VIDEO_X11_WMCLASS", "nist");
-    sdl2::hint::set("SDL_VIDEO_WAYLAND_WMCLASS", "nist");
-    sdl2::hint::set("SDL_VIDEO_WAYLAND_APP_ID", "nist");
-    sdl2::hint::set("SDL_APP_ID", "nist");
-    sdl2::hint::set("SDL_APP_NAME", "Nisdos Terminal");
+    sdl3::hint::set("SDL_VIDEO_X11_WMCLASS", "nist");
+    sdl3::hint::set("SDL_VIDEO_WAYLAND_WMCLASS", "nist");
+    sdl3::hint::set("SDL_VIDEO_WAYLAND_APP_ID", "nist");
+    sdl3::hint::set("SDL_APP_ID", "nist");
+    sdl3::hint::set("SDL_APP_NAME", "Nisdos Terminal");
 
     let video_subsystem = sdl_context.video().unwrap();
-    let ttf_context = sdl2::ttf::init().map_err(|e| e.to_string())?;
+    let ttf_context = sdl3::ttf::init().map_err(|e| e.to_string())?;
 
     // Create window with high DPI awareness (borderless for headless mode)
     let mut window = video_subsystem
@@ -248,7 +247,7 @@ fn main() -> Result<(), String> {
         .resizable()
         .maximized()
         .borderless()
-        .allow_highdpi()
+        .high_pixel_density()
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -256,84 +255,99 @@ fn main() -> Result<(), String> {
     set_window_icon(&mut window);
 
     // Create canvas for rendering
-    let mut canvas = window.into_canvas().accelerated().present_vsync().build().map_err(|e| e.to_string())?;
+    let mut canvas = window.into_canvas();
 
-    eprintln!("[MAIN] Canvas created with VSync enabled");
+    // Get initial scale factor before setting render scale
+    let initial_scale = canvas.window().display_scale();
+    eprintln!("[MAIN] Initial display scale before render setup: {:.2}", initial_scale);
+
+    // Enable VSync to limit rendering to display refresh rate (60 Hz)
+    // SDL3 requires explicit VSync enable via SDL_SetRenderVSync (not part of canvas builder)
+    let vsync_success = unsafe { sdl3::sys::render::SDL_SetRenderVSync(canvas.raw(), 1) };
+
+    if vsync_success {
+        // Verify VSync was actually set by reading it back
+        let mut vsync_value: std::os::raw::c_int = 0;
+        let get_success = unsafe { sdl3::sys::render::SDL_GetRenderVSync(canvas.raw(), &mut vsync_value) };
+        if get_success && vsync_value == 1 {
+            eprintln!("[MAIN] Canvas created with VSync enabled (verified: vsync={})", vsync_value);
+        } else if get_success {
+            eprintln!("[MAIN] WARNING: VSync set to unexpected value: {}", vsync_value);
+        } else {
+            eprintln!("[MAIN] WARNING: Could not verify VSync setting");
+        }
+    } else {
+        eprintln!("[MAIN] WARNING: Failed to enable VSync! CPU usage may be high.");
+        eprintln!("[MAIN] Canvas created without VSync");
+    }
 
     // Get window sizes
     let (window_width_logical, window_height_logical) = canvas.window().size();
-    let (drawable_width, drawable_height) = canvas.window().drawable_size();
+    let (drawable_width, drawable_height) = canvas.window().size_in_pixels();
+
+    eprintln!("[MAIN] Raw SDL3 window data:");
+    eprintln!("[MAIN]   - window.size() = {}x{}", window_width_logical, window_height_logical);
+    eprintln!("[MAIN]   - window.size_in_pixels() = {}x{}", drawable_width, drawable_height);
+    eprintln!("[MAIN]   - window.pixel_density() = {:.2}", canvas.window().pixel_density());
 
     // Try to detect real DPI scaling by querying display information
+    // First, try the simple ratio between drawable and logical sizes
     let mut scale_factor = if window_width_logical > 0 {
         drawable_width as f32 / window_width_logical as f32
     } else {
         1.0
     };
 
-    // If scale_factor is 1.0, try to detect scaling from display DPI
-    if scale_factor == 1.0 {
-        if let Ok(display_mode) = video_subsystem.desktop_display_mode(0) {
-            eprintln!("[MAIN] Desktop display mode: {}x{}", display_mode.w, display_mode.h);
+    // SDL3 provides SDL_GetWindowDisplayScale which combines pixel density and content scale
+    // Use this as the authoritative source for DPI scaling
+    let window_display_scale = canvas.window().display_scale();
 
-            // Check if window is maximized and compare to desktop size
-            // If desktop is much larger than window, scaling is being applied
-            if display_mode.w > window_width_logical as i32 * 3 / 2 {
-                let detected_scale = display_mode.w as f32 / window_width_logical as f32;
-                // Clamp to reasonable values and round to common scale factors
-                if (1.4..1.7).contains(&detected_scale) {
-                    scale_factor = 1.5;
-                } else if (1.7..2.5).contains(&detected_scale) {
-                    scale_factor = 2.0;
-                } else if (2.5..3.5).contains(&detected_scale) {
-                    scale_factor = 3.0;
-                } else if detected_scale >= 3.5 {
-                    scale_factor = 4.0;
-                }
-                eprintln!("[MAIN] Detected display scaling from desktop size: {:.2}", scale_factor);
-            }
+    // If window_display_scale is valid and different from our calculated value, use it
+    if window_display_scale > 0.0 {
+        eprintln!("[MAIN] SDL3 window display scale: {:.2}", window_display_scale);
+        if (window_display_scale - scale_factor).abs() > 0.01 {
+            eprintln!("[MAIN] Using SDL3 display scale instead of calculated ratio");
+            scale_factor = window_display_scale;
         }
+    }
 
-        // Also try querying DPI
-        if let Ok((ddpi, _hdpi, _vdpi)) = video_subsystem.display_dpi(0) {
-            eprintln!("[MAIN] Display DPI: {:.2}", ddpi);
-            // Standard DPI is 96, anything above indicates scaling
-            let dpi_scale = ddpi / 96.0;
-            if dpi_scale > 1.2 {
-                // Use DPI-based scale if it's higher than what we detected
-                if dpi_scale > scale_factor {
-                    scale_factor = dpi_scale;
-                    eprintln!("[MAIN] Using DPI-based scale factor: {:.2}", scale_factor);
-                }
-            }
+    // If scale_factor is still 1.0, try to detect scaling from pixel density
+    if scale_factor == 1.0 {
+        let pixel_density = canvas.window().pixel_density();
+        if pixel_density > 1.0 {
+            scale_factor = pixel_density;
+            eprintln!("[MAIN] Detected DPI scaling from pixel density: {:.2}", scale_factor);
         }
     }
 
     eprintln!(
-        "[MAIN] Window size: {}x{} logical, {}x{} drawable, final scale: {:.2}",
+        "[MAIN] Calculated dimensions: {}x{} logical, {}x{} drawable, final scale: {:.2}",
         window_width_logical, window_height_logical, drawable_width, drawable_height, scale_factor
     );
 
-    // On HiDPI displays (macOS Retina), don't set logical size - use drawable coordinates
-    // When scale_factor == 1.0, set logical size to drawable size for consistency
-    if scale_factor == 1.0 {
-        canvas.set_logical_size(drawable_width, drawable_height).map_err(|e| e.to_string())?;
-        eprintln!("[MAIN] Logical size set to {}x{} (no DPI scaling)", drawable_width, drawable_height);
-    } else {
-        eprintln!("[MAIN] HiDPI detected - using drawable coordinates with scale {:.2}", scale_factor);
-    }
+    // Calculate what the real physical size should be if OS scaling is 2x
+    let expected_physical_w = (window_width_logical as f32 * scale_factor) as u32;
+    let expected_physical_h = (window_height_logical as f32 * scale_factor) as u32;
+    eprintln!(
+        "[MAIN] Expected physical size with {:.2}x scaling: {}x{} pixels",
+        scale_factor, expected_physical_w, expected_physical_h
+    );
+
+    // Don't use SDL_SetRenderScale - it causes blurry scaling
+    // Instead, we'll render at physical pixel size for crisp output
+    eprintln!("[MAIN] Rendering at physical pixel size for crisp output");
 
     // Detect if mouse coordinates need scaling: true when window size != drawable size
     // This handles different SDL2 behaviors across platforms without hardcoding OS checks
     let mouse_coords_need_scaling = scale_factor > 1.0 && {
         let (w_width, _) = canvas.window().size();
-        let (d_width, _) = canvas.window().drawable_size();
+        let (d_width, _) = canvas.window().size_in_pixels();
         w_width != d_width
     };
     eprintln!(
         "[MAIN] Mouse coordinate scaling: {} (window != drawable: {})",
         if mouse_coords_need_scaling { "ENABLED" } else { "DISABLED" },
-        canvas.window().size() != canvas.window().drawable_size()
+        canvas.window().size() != canvas.window().size_in_pixels()
     );
 
     // Load settings to get font configuration
@@ -344,7 +358,8 @@ fn main() -> Result<(), String> {
 
     // Load monospace font for terminal
     // Use fontSize from settings (defaults to 12.0 if not set)
-    let font_size = (settings.terminal.font_size * scale_factor) as u16;
+    // Scale font size for physical pixel rendering
+    let font_size = settings.terminal.font_size * scale_factor;
 
     // Determine font path: use fontFamily from settings, or "auto" to use discovery
     let font_path = if settings.terminal.font_family == "auto" {
@@ -459,28 +474,28 @@ Searched directories:
     })?;
 
     // Load smaller font for CPU indicator in tab bar (use UI font for emoji support)
-    let cpu_font_size = (10.0 * scale_factor) as u16;
+    let cpu_font_size = 15.0 * scale_factor;
     let cpu_font = ttf_context.load_font(&ui_font_path, cpu_font_size).map_err(|e| {
         eprintln!("[MAIN] Failed to load CPU font from {}: {}", ui_font_path, e);
         format!("CPU font loading failed from {}: {}", ui_font_path, e)
     })?;
 
     // Load smaller font for tab names (use UI font for emoji support)
-    let tab_font_size = (12.0 * scale_factor) as u16;
+    let tab_font_size = 18.0 * scale_factor;
     let tab_font = ttf_context.load_font(&ui_font_path, tab_font_size).map_err(|e| {
         eprintln!("[MAIN] Failed to load tab font from {}: {}", ui_font_path, e);
         format!("Tab font loading failed from {}: {}", ui_font_path, e)
     })?;
 
     // Load smaller font for context menu (use UI font for emoji support)
-    let context_menu_font_size = (12.0 * scale_factor) as u16;
+    let context_menu_font_size = 12.0 * scale_factor;
     let context_menu_font = ttf_context.load_font(&ui_font_path, context_menu_font_size).map_err(|e| {
         eprintln!("[MAIN] Failed to load context menu font from {}: {}", ui_font_path, e);
         format!("Context menu font loading failed from {}: {}", ui_font_path, e)
     })?;
 
     // Load larger font for buttons (window controls and add button)
-    let button_font_size = (18.0 * scale_factor) as u16;
+    let button_font_size = 27.0 * scale_factor;
     let button_font = ttf_context.load_font(&ui_font_path, button_font_size).map_err(|e| {
         eprintln!("[MAIN] Failed to load button font from {}: {}", ui_font_path, e);
         format!("Button font loading failed from {}: {}", ui_font_path, e)
@@ -491,6 +506,7 @@ Searched directories:
     // Measure character dimensions
     let test_char = 'M';
     let (char_width_i32, char_height_i32) = font.size_of_char(test_char).map_err(|e| e.to_string())?;
+    // Font is already scaled by scale_factor, no extra scaling needed
     let mut char_width = char_width_i32 as f32;
     let mut char_height = char_height_i32 as f32;
 
@@ -498,7 +514,11 @@ Searched directories:
 
     let texture_creator = canvas.texture_creator();
 
-    let mut event_pump = sdl_context.event_pump()?;
+    let mut event_pump = sdl_context.event_pump().map_err(|e| e.to_string())?;
+
+    // Enable text input for terminal typing
+    canvas.window().subsystem().text_input().start(canvas.window());
+    eprintln!("[MAIN] Text input enabled");
 
     // Channel for receiving clipboard objects from background threads
     // This avoids blocking the main thread with clipboard operations
@@ -525,7 +545,7 @@ Searched directories:
     let shell_config = term_library.get_default_shell().clone();
 
     // Tab bar state - scale tab bar height for high-DPI displays
-    let tab_bar_height = (24.0 * scale_factor) as u32;
+    let tab_bar_height = (36.0 * scale_factor) as u32;
     let mut tab_bar = sdl_renderer::TabBar::new(tab_bar_height);
 
     // Pending operations
@@ -612,7 +632,7 @@ Searched directories:
 
     // Glyph cache to avoid re-rendering characters every frame
     // Key: (character, fg_color_rgb, bg_color_rgb), Value: texture
-    let mut glyph_cache: HashMap<(char, (u8, u8, u8)), sdl2::render::Texture> = HashMap::new();
+    let mut glyph_cache: HashMap<(char, (u8, u8, u8)), sdl3::render::Texture> = HashMap::new();
     let mut last_cache_clear = Instant::now();
 
     let mut needs_render = true;
@@ -842,26 +862,16 @@ Searched directories:
                         canvas.window_mut().minimize();
                     }
                     input::events::EventAction::Resize => {
-                        // Update logical size on window resize
-                        if scale_factor == 1.0 {
-                            let (new_drawable_width, new_drawable_height) = canvas.window().drawable_size();
-                            canvas.set_logical_size(new_drawable_width, new_drawable_height).map_err(|e| e.to_string())?;
-                        }
-
-                        // Use drawable size for all coordinate calculations on HiDPI
-                        let (new_width, new_height) = if scale_factor > 1.0 {
-                            canvas.window().drawable_size()
-                        } else {
-                            canvas.window().size()
-                        };
+                        let (new_width, new_height) = canvas.window().size_in_pixels();
+                        eprintln!("[MAIN] Window resized to {}x{}", new_width, new_height);
                         // Resize all terminals to match their pane dimensions
                         resize_terminals_to_panes(&tab_bar_gui, char_width, char_height, tab_bar_height, new_width, new_height);
                     }
                     input::events::EventAction::StartTextInput => {
-                        canvas.window().subsystem().text_input().start();
+                        canvas.window().subsystem().text_input().start(canvas.window());
                     }
                     input::events::EventAction::StopTextInput => {
-                        canvas.window().subsystem().text_input().stop();
+                        canvas.window().subsystem().text_input().stop(canvas.window());
                     }
                     input::events::EventAction::OpenSettings => {
                         match settings::get_settings_path() {
@@ -991,14 +1001,14 @@ Searched directories:
                             eprintln!("[MAIN] Failed to save settings: {}", e);
                         }
 
-                        // Reload fonts at new size
-                        let new_font_size = (settings.terminal.font_size * scale_factor) as u16;
+                        // Reload fonts at new size (scaled for physical pixels)
+                        let new_font_size = settings.terminal.font_size * scale_factor;
 
                         match ttf_context.load_font(&font_path, new_font_size) {
                             Ok(new_font) => {
                                 font = new_font;
 
-                                // Recalculate character dimensions
+                                // Recalculate character dimensions (font is already scaled)
                                 if let Ok((w, h)) = font.size_of_char('M') {
                                     char_width = w as f32;
                                     char_height = h as f32;
@@ -1021,11 +1031,7 @@ Searched directories:
 
                 // Handle resize if needed (after pane closure or divider drag)
                 if result.needs_resize {
-                    let (w, h) = if scale_factor > 1.0 {
-                        canvas.window().drawable_size()
-                    } else {
-                        canvas.window().size()
-                    };
+                    let (w, h) = canvas.window().size_in_pixels();
                     resize_terminals_to_panes(&tab_bar_gui, char_width, char_height, tab_bar_height, w, h);
 
                     #[cfg(feature = "test-server")]
@@ -1083,11 +1089,7 @@ Searched directories:
                         // User cancelled quit - spawn a new terminal to replace the dead one
                         eprintln!("[MAIN] User cancelled quit, spawning new terminal");
 
-                        let (w, h) = if scale_factor > 1.0 {
-                            canvas.window().drawable_size()
-                        } else {
-                            canvas.window().size()
-                        };
+                        let (w, h) = canvas.window().size_in_pixels();
                         let term_height = ((h - tab_bar_height) as f32 / char_height).floor() as u32;
                         let term_width = (w as f32 / char_width).floor() as u32;
 
@@ -1132,11 +1134,7 @@ Searched directories:
 
             // Resize terminals if panes were closed
             if need_resize {
-                let (w, h) = if scale_factor > 1.0 {
-                    canvas.window().drawable_size()
-                } else {
-                    canvas.window().size()
-                };
+                let (w, h) = canvas.window().size_in_pixels();
                 resize_terminals_to_panes(&tab_bar_gui, char_width, char_height, tab_bar_height, w, h);
             }
 
@@ -1169,11 +1167,7 @@ Searched directories:
             // Handle pending operations
             if pending_new_tab {
                 pending_new_tab = false;
-                let (w, h) = if scale_factor > 1.0 {
-                    canvas.window().drawable_size()
-                } else {
-                    canvas.window().size()
-                };
+                let (w, h) = canvas.window().size_in_pixels();
                 let term_height = ((h - tab_bar_height) as f32 / char_height).floor() as u32;
                 let term_width = (w as f32 / char_width).floor() as u32;
 
@@ -1202,11 +1196,7 @@ Searched directories:
             }
 
             if let Some(direction) = pending_pane_split.take() {
-                let (w, h) = if scale_factor > 1.0 {
-                    canvas.window().drawable_size()
-                } else {
-                    canvas.window().size()
-                };
+                let (w, h) = canvas.window().size_in_pixels();
 
                 // Check if the current active pane is large enough to split
                 let mut can_split = false;
@@ -1278,11 +1268,7 @@ Searched directories:
                     drop(gui); // Release lock before calling resize function
 
                     // Resize all terminals to match their new pane dimensions
-                    let (w, h) = if scale_factor > 1.0 {
-                        canvas.window().drawable_size()
-                    } else {
-                        canvas.window().size()
-                    };
+                    let (w, h) = canvas.window().size_in_pixels();
                     resize_terminals_after_split(&tab_bar_gui, char_width, char_height, tab_bar_height, w, h);
 
                     #[cfg(feature = "test-server")]
@@ -1293,309 +1279,31 @@ Searched directories:
                 }
             }
 
-            // Render everything
-            canvas.set_draw_color(Color::RGB(0, 0, 0));
-            canvas.clear();
+            // Render everything using optimized render module
+            // This only renders the active tab and visible content
+            let any_dirty = render::render_frame(
+                &mut canvas,
+                &texture_creator,
+                &mut tab_bar,
+                &tab_bar_gui,
+                &tab_font,
+                &button_font,
+                &cpu_font,
+                &font,
+                &context_menu_font,
+                cpu_usage,
+                tab_bar_height,
+                scale_factor,
+                char_width,
+                char_height,
+                cursor_visible,
+                &settings,
+                &mut glyph_cache,
+            )?;
 
-            // Update tab bar data
-            let (tab_names, active_tab_idx) = {
-                let gui = tab_bar_gui.lock().unwrap();
-                (gui.get_tab_names(), gui.active_tab)
-            };
-            tab_bar.set_tabs(tab_names);
-            tab_bar.set_active_tab(active_tab_idx);
-
-            // Render tab bar
-            let (w, _h) = if scale_factor > 1.0 {
-                canvas.window().drawable_size()
-            } else {
-                canvas.window().size()
-            };
-            tab_bar.render(&mut canvas, &tab_font, &button_font, &cpu_font, &texture_creator, w, cpu_usage)?;
-
-            // Render terminal content and panes
-            let (window_w, window_h) = if scale_factor > 1.0 {
-                canvas.window().drawable_size()
-            } else {
-                canvas.window().size()
-            };
-            let pane_area_y = tab_bar_height as i32;
-            let pane_area_height = window_h - tab_bar_height;
-
-            // Clean up completed animations
-            {
-                let mut gui = tab_bar_gui.lock().unwrap();
-                let active_tab = gui.active_tab;
-                if let Some(pane_layout) = gui.tab_states.get_mut(active_tab) {
-                    if let Some(ref animation) = pane_layout.pane_layout.copy_animation {
-                        if animation.is_complete() {
-                            pane_layout.pane_layout.copy_animation = None;
-                        }
-                    }
-                }
+            if any_dirty {
+                needs_render = true;
             }
-
-            // Get pane layout and render each pane
-            // CRITICAL: Collect data quickly and release GUI lock ASAP to prevent blocking other threads
-
-            // Phase 1: Quickly collect rendering data under lock
-            let (pane_rects, pane_count, dividers, context_menu_data, copy_animation_data, context_menu_images) = {
-                let gui = tab_bar_gui.lock().unwrap();
-
-                match gui.tab_states.get(gui.active_tab) {
-                    Some(pane_layout) => {
-                        let pane_rects = pane_layout.pane_layout.get_pane_rects(0, pane_area_y, window_w, pane_area_height);
-                        let pane_count = pane_rects.len();
-                        let dividers = pane_layout.pane_layout.get_divider_rects(0, pane_area_y, window_w, pane_area_height);
-                        let context_menu_data = pane_layout.pane_layout.context_menu_open.clone();
-                        let copy_animation_data = pane_layout.pane_layout.copy_animation.clone();
-                        let context_menu_images = pane_layout.pane_layout.context_menu_images.clone();
-
-                        (pane_rects, pane_count, dividers, context_menu_data, copy_animation_data, context_menu_images)
-                    }
-                    None => {
-                        continue;
-                    }
-                }
-                // GUI lock is dropped here automatically
-            };
-
-            // Phase 2: Render each pane without holding GUI lock
-            {
-                for (_pane_id, rect, terminal, is_active) in pane_rects {
-                    // Render terminal content
-                    let t = terminal.lock().unwrap();
-                    let mut sb = t.screen_buffer.lock().unwrap();
-
-                    // Clear pane background
-                    canvas.set_draw_color(DEFAULT_BG_COLOR);
-                    canvas.fill_rect(rect).map_err(|e| e.to_string())?;
-
-                    // Platform-specific padding for panes (Windows needs gap between border and terminal content)
-                    #[cfg(target_os = "windows")]
-                    let pane_padding = 4;
-                    #[cfg(not(target_os = "windows"))]
-                    let pane_padding = 0;
-
-                    // Calculate terminal grid dimensions (accounting for padding on all sides)
-                    let usable_width = rect.width().saturating_sub(pane_padding * 2);
-                    let usable_height = rect.height().saturating_sub(pane_padding * 2);
-                    let cols = (usable_width as f32 / char_width).floor() as usize;
-                    let rows = (usable_height as f32 / char_height).floor() as usize;
-
-                    // Get selection for highlighting
-                    let selection = *t.selection.lock().unwrap();
-
-                    // Render each cell (with padding offset)
-                    for row in 0..rows.min(sb.height()) {
-                        for col in 0..cols.min(sb.width()) {
-                            if let Some(cell) = sb.get_cell_with_scrollback(col, row) {
-                                let x = rect.x() + pane_padding as i32 + (col as f32 * char_width) as i32;
-                                let y = rect.y() + pane_padding as i32 + (row as f32 * char_height) as i32;
-
-                                // Check if cell is selected
-                                let is_selected = if let Some(ref sel) = selection { sel.contains(col, row) } else { false };
-
-                                // Render background (either selection highlight or cell background)
-                                if is_selected {
-                                    canvas.set_draw_color(Color::RGB(70, 130, 180));
-                                    let cell_rect = Rect::new(x, y, char_width as u32, char_height as u32);
-                                    canvas.fill_rect(cell_rect).map_err(|e| e.to_string())?;
-                                } else if cell.bg_color.r != 0 || cell.bg_color.g != 0 || cell.bg_color.b != 0 {
-                                    canvas.set_draw_color(Color::RGB(cell.bg_color.r, cell.bg_color.g, cell.bg_color.b));
-                                    let cell_rect = Rect::new(x, y, char_width as u32, char_height as u32);
-                                    canvas.fill_rect(cell_rect).map_err(|e| e.to_string())?;
-                                }
-
-                                // Render character if not space
-                                if cell.ch != ' ' {
-                                    let fg_color = Color::RGB(cell.fg_color.r, cell.fg_color.g, cell.fg_color.b);
-                                    let cache_key = (cell.ch, (cell.fg_color.r, cell.fg_color.g, cell.fg_color.b));
-
-                                    // Check cache first
-                                    if let Some(cached_texture) = glyph_cache.get(&cache_key) {
-                                        let query = cached_texture.query();
-                                        let char_rect = Rect::new(x, y, query.width, query.height);
-                                        let _ = canvas.copy(cached_texture, None, Some(char_rect));
-                                    } else {
-                                        // Not in cache, render and cache it
-                                        let render_result = font.render_char(cell.ch).blended(fg_color);
-
-                                        if let Ok(surface) = render_result {
-                                            if surface.width() > 0 && surface.height() > 0 {
-                                                if let Ok(texture) = texture_creator.create_texture_from_surface(&surface) {
-                                                    let char_rect = Rect::new(x, y, surface.width(), surface.height());
-                                                    let _ = canvas.copy(&texture, None, Some(char_rect));
-                                                    // Cache the texture for next frame
-                                                    glyph_cache.insert(cache_key, texture);
-                                                }
-                                            } else {
-                                                // Character not supported, try fallback '□'
-                                                let fallback_key = ('□', (cell.fg_color.r, cell.fg_color.g, cell.fg_color.b));
-                                                if let Some(cached_fallback) = glyph_cache.get(&fallback_key) {
-                                                    let query = cached_fallback.query();
-                                                    let char_rect = Rect::new(x, y, query.width, query.height);
-                                                    let _ = canvas.copy(cached_fallback, None, Some(char_rect));
-                                                } else if let Ok(fallback_surface) = font.render_char('□').blended(fg_color) {
-                                                    if fallback_surface.width() > 0 && fallback_surface.height() > 0 {
-                                                        if let Ok(texture) = texture_creator.create_texture_from_surface(&fallback_surface) {
-                                                            let char_rect = Rect::new(x, y, fallback_surface.width(), fallback_surface.height());
-                                                            let _ = canvas.copy(&texture, None, Some(char_rect));
-                                                            glyph_cache.insert(fallback_key, texture);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Render cursor if active pane and cursor visible (with padding offset)
-                    if is_active && cursor_visible && sb.is_at_bottom() {
-                        let cursor_x = rect.x() + pane_padding as i32 + (sb.cursor_x as f32 * char_width) as i32;
-                        let cursor_y = rect.y() + pane_padding as i32 + (sb.cursor_y as f32 * char_height) as i32;
-                        canvas.set_draw_color(Color::RGB(200, 200, 200));
-                        // Determine cursor width based on settings: "pipe" uses 2px, anything else uses block (char_width)
-                        let cursor_width = if settings.terminal.cursor == "pipe" { 2 } else { char_width as u32 };
-                        let cursor_rect = Rect::new(cursor_x, cursor_y, cursor_width, char_height as u32);
-                        canvas.fill_rect(cursor_rect).map_err(|e| e.to_string())?;
-                    }
-
-                    // Show scroll position indicator when viewing scrollback
-                    if !sb.is_at_bottom() {
-                        let scroll_text = format!("[Scrollback: {} lines]", sb.scroll_offset);
-                        let text_color = Color::RGB(255, 200, 0); // Yellow
-
-                        if let Ok(surface) = font.render(&scroll_text).blended(text_color) {
-                            if let Ok(texture) = texture_creator.create_texture_from_surface(&surface) {
-                                let text_width = surface.width();
-                                let text_height = surface.height();
-
-                                // Position at bottom-right of the pane with some padding (accounting for pane padding)
-                                let indicator_x = rect.x() + rect.width() as i32 - text_width as i32 - 10 - pane_padding as i32;
-                                let indicator_y = rect.y() + rect.height() as i32 - text_height as i32 - 5 - pane_padding as i32;
-
-                                // Draw the text
-                                let text_rect = Rect::new(indicator_x, indicator_y, text_width, text_height);
-                                let _ = canvas.copy(&texture, None, Some(text_rect));
-                            }
-                        }
-                    }
-
-                    // Draw border for active pane (only if multiple panes exist)
-                    if is_active && pane_count > 1 {
-                        canvas.set_draw_color(Color::RGB(50, 90, 130));
-                        canvas.draw_rect(rect).map_err(|e| e.to_string())?;
-                    }
-
-                    sb.clear_dirty();
-
-                    // Check if dirty flag was set again during render (race condition fix)
-                    // This catches PTY updates that arrived while we were rendering
-                    if sb.is_dirty() {
-                        needs_render = true;
-                    }
-                }
-            }
-
-            // Phase 3: Render UI elements (dividers, menus) without locks
-            {
-                // Render dividers
-                for (_split_id, rect, _direction) in dividers {
-                    canvas.set_draw_color(Color::RGB(60, 60, 60));
-                    canvas.fill_rect(rect).map_err(|e| e.to_string())?;
-                }
-
-                // Render context menu if open
-                if let Some((_menu_pane_id, menu_x, menu_y)) = context_menu_data {
-                    // Draw context menu background with better spacing
-                    let menu_width = 400;
-                    let item_height = 55; // Taller rows for better spacing and image display
-                    let menu_items = ["Split vertically", "Split horizontally", "Turn into a tab"];
-                    let menu_height = (menu_items.len() as u32 * item_height) + 10;
-                    let menu_rect = sdl2::rect::Rect::new(menu_x, menu_y, menu_width, menu_height);
-                    canvas.set_draw_color(Color::RGB(40, 40, 40));
-                    canvas.fill_rect(menu_rect).map_err(|e| e.to_string())?;
-
-                    // Draw border
-                    canvas.set_draw_color(Color::RGB(80, 80, 80));
-                    canvas.draw_rect(menu_rect).map_err(|e| e.to_string())?;
-
-                    // Draw menu items with images and better vertical centering
-                    if let Some(ref menu_images) = context_menu_images {
-                        for (i, item) in menu_items.iter().enumerate() {
-                            let item_y = menu_y + 5 + (i as i32 * item_height as i32);
-
-                            // Get the appropriate image data for this menu item
-                            let image_data = match i {
-                                0 => menu_images.vertical_split,
-                                1 => menu_images.horizontal_split,
-                                2 => menu_images.expand_into_tab,
-                                _ => continue,
-                            };
-
-                            // Load and render the icon
-                            if let Ok(img) = image::load_from_memory(image_data) {
-                                let rgba = img.to_rgba8();
-                                let (img_width, img_height) = rgba.dimensions();
-                                let pixels = rgba.into_raw();
-
-                                if let Ok(icon_surface) = create_sdl_surface_from_rgba(img_width, img_height, pixels) {
-                                    if let Ok(icon_texture) = texture_creator.create_texture_from_surface(&icon_surface) {
-                                        // Scale icon to fit within menu item (max 32x32)
-                                        let icon_size = 32u32.min(img_width).min(img_height);
-                                        let icon_y = item_y + ((item_height as i32 - icon_size as i32).max(0) / 2);
-                                        let icon_rect = Rect::new(menu_x + 10, icon_y, icon_size, icon_size);
-                                        let _ = canvas.copy(&icon_texture, None, Some(icon_rect));
-                                    }
-                                }
-                            }
-
-                            // Render text with smaller font and reduced brightness
-                            // Gray out "Turn into a tab" (index 2) if there's only 1 pane
-                            let text_color = if i == 2 && pane_count == 1 {
-                                Color::RGB(100, 100, 100) // Grayed out
-                            } else {
-                                Color::RGB(200, 200, 200) // Normal
-                            };
-                            let surface = context_menu_font.render(item).blended(text_color).map_err(|e| e.to_string())?;
-                            let texture = texture_creator.create_texture_from_surface(&surface).map_err(|e| e.to_string())?;
-
-                            // Position text after the icon (icon is 32px + 10px left padding + 10px spacing = 52px offset)
-                            let text_y = item_y + ((item_height as i32 - surface.height() as i32).max(0) / 2);
-                            let text_rect = Rect::new(menu_x + 52, text_y, surface.width(), surface.height());
-                            canvas.copy(&texture, None, Some(text_rect)).map_err(|e| e.to_string())?;
-                        }
-                    }
-                }
-
-                // Render copy animation if active
-                if let Some(ref animation) = copy_animation_data {
-                    if !animation.is_complete() {
-                        let current_rect = animation.current_rect();
-                        let opacity = animation.current_opacity();
-                        let corner_radius = animation.corner_radius();
-
-                        // Draw rounded rectangle with fading color
-                        let color = Color::RGBA(70, 130, 180, opacity);
-
-                        // Draw filled rounded rectangle
-                        let _ = canvas.rounded_box(
-                            current_rect.x() as i16,
-                            current_rect.y() as i16,
-                            (current_rect.x() + current_rect.width() as i32) as i16,
-                            (current_rect.y() + current_rect.height() as i32) as i16,
-                            corner_radius,
-                            color,
-                        );
-                    }
-                }
-            }
-
-            canvas.present();
 
             // Periodically clear glyph cache to prevent unlimited memory growth
             if last_cache_clear.elapsed().as_secs() > 60 {
@@ -1628,15 +1336,8 @@ Searched directories:
         }
     }
 
-    // Save state before exiting
-    eprintln!("[MAIN] Saving state before exit...");
-    if let Ok(gui) = tab_bar_gui.try_lock() {
-        if let Err(e) = state::save_state(&gui) {
-            eprintln!("[MAIN] Failed to save state: {}", e);
-        }
-    } else {
-        eprintln!("[MAIN] Could not acquire lock to save state on exit");
-    }
+    // Note: State is already saved by all exit paths before breaking the 'running loop
+    // (signal handling, quit actions, last tab closed, test server shutdown, etc.)
 
     Ok(())
 }

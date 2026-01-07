@@ -35,6 +35,8 @@ pub enum TestCommand {
     CloseTab { index: usize },
     #[serde(rename = "switch_tab")]
     SwitchTab { index: usize },
+    #[serde(rename = "reorder_tab")]
+    ReorderTab { from_index: usize, to_index: usize },
     #[serde(rename = "split_pane")]
     SplitPane { direction: String }, // "horizontal" or "vertical"
     #[serde(rename = "list_panes")]
@@ -64,6 +66,8 @@ pub enum TestCommand {
     #[serde(rename = "ctrl_mouse_wheel")]
     #[allow(dead_code)]
     CtrlMouseWheel { delta: i32 }, // 1 for scroll up (increase font), -1 for scroll down (decrease font)
+    #[serde(rename = "scroll_view")]
+    ScrollView { lines: i32 }, // Positive = scroll up (back in history), negative = scroll down (forward)
 }
 
 #[derive(Serialize, Debug)]
@@ -104,11 +108,6 @@ pub struct PaneInfo {
 }
 
 #[derive(Serialize, Debug)]
-pub struct ActivePaneInfo {
-    pub pane_id: usize,
-}
-
-#[derive(Serialize)]
 #[serde(tag = "type")]
 pub enum TestResponse {
     #[serde(rename = "ok")]
@@ -143,7 +142,7 @@ impl ScreenBufferSnapshot {
             let mut row = Vec::new();
 
             for x in 0..sb.width() {
-                if let Some(cell) = sb.get_cell(x, y) {
+                if let Some(cell) = sb.get_cell_with_scrollback(x, y) {
                     line.push(cell.ch);
                     row.push(CellSnapshot {
                         ch: cell.ch,
@@ -503,6 +502,21 @@ impl TestServer {
                     message: "Failed to switch tab".to_string(),
                 }
             }
+            TestCommand::ReorderTab { from_index, to_index } => {
+                if let Ok(mut gui) = self.tab_bar_gui.lock() {
+                    if from_index >= gui.tab_states.len() || to_index >= gui.tab_states.len() {
+                        return TestResponse::Error {
+                            message: "Invalid tab index".to_string(),
+                        };
+                    }
+
+                    gui.reorder_tab(from_index, to_index);
+                    return TestResponse::Ok;
+                }
+                TestResponse::Error {
+                    message: "Failed to reorder tab".to_string(),
+                }
+            }
             TestCommand::Shutdown => TestResponse::Ok,
             TestCommand::SplitPane { direction } => {
                 let split_dir = match direction.as_str() {
@@ -527,6 +541,10 @@ impl TestServer {
                             // Calculate window pixel dimensions from terminal character dimensions
                             let win_width_pixels = (term_cols as f32 * self.char_width) as u32;
                             let win_height_pixels = (term_rows as f32 * self.char_height) as u32;
+                            eprintln!(
+                                "[TEST_SERVER] Split: terminal={}x{}, char_size={:.2}x{:.2}, window={}x{}",
+                                term_cols, term_rows, self.char_width, self.char_height, win_width_pixels, win_height_pixels
+                            );
                             (term_cols, term_rows, win_width_pixels, win_height_pixels)
                         } else {
                             (80, 24, (80.0 * self.char_width) as u32, (24.0 * self.char_height) as u32)
@@ -551,6 +569,13 @@ impl TestServer {
                         let can_split = if let Some((_, rect, _, _)) = pane_rects.iter().find(|(id, _, _, _)| *id == pane_layout.active_pane) {
                             let current_cols = (rect.width() as f32 / self.char_width).floor() as u32;
                             let current_rows = (rect.height() as f32 / self.char_height).floor() as u32;
+                            eprintln!(
+                                "[TEST_SERVER] Split: pane rect={}x{}, calculated={}x{} chars",
+                                rect.width(),
+                                rect.height(),
+                                current_cols,
+                                current_rows
+                            );
 
                             // Calculate dimensions after split (accounting for 2-pixel divider)
                             let divider_chars_h = (2.0 / self.char_width).ceil() as u32;
@@ -560,6 +585,10 @@ impl TestServer {
                                 SplitDirection::Horizontal => {
                                     // Each pane will be roughly half width
                                     let split_width = (current_cols.saturating_sub(divider_chars_h)) / 2;
+                                    eprintln!(
+                                        "[TEST_SERVER] Horizontal split: current_cols={}, divider_chars_h={}, split_width={}",
+                                        current_cols, divider_chars_h, split_width
+                                    );
                                     if split_width >= 10 && current_rows >= 5 {
                                         true
                                     } else {
@@ -573,6 +602,10 @@ impl TestServer {
                                 SplitDirection::Vertical => {
                                     // Each pane will be roughly half height
                                     let split_height = (current_rows.saturating_sub(divider_chars_v)) / 2;
+                                    eprintln!(
+                                        "[TEST_SERVER] Vertical split: current_rows={}, divider_chars_v={}, split_height={}",
+                                        current_rows, divider_chars_v, split_height
+                                    );
                                     if split_height >= 5 && current_cols >= 10 {
                                         true
                                     } else {
@@ -827,6 +860,24 @@ impl TestServer {
                 // Use manual testing instead
                 TestResponse::Error {
                     message: "CtrlMouseWheel not implemented in test server - use manual testing".to_string(),
+                }
+            }
+            TestCommand::ScrollView { lines } => {
+                if let Ok(gui) = self.tab_bar_gui.lock() {
+                    if let Some(terminal) = gui.get_active_terminal() {
+                        if let Ok(t) = terminal.lock() {
+                            let mut screen_buffer = t.screen_buffer.lock().unwrap();
+                            if lines > 0 {
+                                screen_buffer.scroll_view_up(lines as usize);
+                            } else if lines < 0 {
+                                screen_buffer.scroll_view_down((-lines) as usize);
+                            }
+                            return TestResponse::Ok;
+                        }
+                    }
+                }
+                TestResponse::Error {
+                    message: "Failed to scroll view".to_string(),
                 }
             }
         }

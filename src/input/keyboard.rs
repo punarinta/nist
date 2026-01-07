@@ -1,4 +1,4 @@
-use sdl2::keyboard::{Keycode, Scancode};
+use sdl3::keyboard::{Keycode, Scancode};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -145,7 +145,7 @@ pub fn handle_hotkey_action(
     char_width: f32,
     char_height: f32,
     tab_bar_height: u32,
-    canvas_window: &sdl2::video::Window,
+    canvas_window: &sdl3::video::Window,
     #[cfg(target_os = "linux")] clipboard_tx: &Sender<Clipboard>,
 ) -> KeyboardResult {
     match action {
@@ -390,14 +390,14 @@ fn handle_paste(tab_bar_gui: &Arc<Mutex<TabBarGui>>) {
 #[allow(clippy::too_many_arguments)]
 fn handle_copy_selection(
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
-    scale_factor: f32,
+    _scale_factor: f32,
     char_width: f32,
     char_height: f32,
     tab_bar_height: u32,
-    canvas_window: &sdl2::video::Window,
+    canvas_window: &sdl3::video::Window,
     #[cfg(target_os = "linux")] clipboard_tx: &Sender<Clipboard>,
 ) -> bool {
-    use sdl2::rect::Rect;
+    use sdl3::rect::Rect;
 
     let mut gui = tab_bar_gui.lock().unwrap();
     if let Some(terminal) = gui.get_active_terminal() {
@@ -408,11 +408,7 @@ fn handle_copy_selection(
                 let selection_rect = if let Some(sel) = *t.selection.lock().unwrap() {
                     // Get active pane rect
                     if let Some(pane_layout) = gui.get_active_pane_layout() {
-                        let (window_w, window_h) = if scale_factor > 1.0 {
-                            canvas_window.drawable_size()
-                        } else {
-                            canvas_window.size()
-                        };
+                        let (window_w, window_h) = canvas_window.size();
                         let pane_area_y = tab_bar_height as i32;
                         let pane_area_height = window_h - tab_bar_height;
                         let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_w, pane_area_height);

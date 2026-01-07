@@ -39,42 +39,42 @@ fn main() {
         }
     }
 
-    // Handle Windows cross-compilation with SDL2_ttf
+    // Handle Windows cross-compilation with SDL3_ttf
     let target = env::var("TARGET").unwrap_or_default();
     if target.contains("windows") {
-        handle_windows_sdl2_ttf();
+        handle_windows_sdl3_ttf();
     }
 
     // Rerun if git HEAD changes
     println!("cargo:rerun-if-changed=../.git/HEAD");
 }
 
-fn handle_windows_sdl2_ttf() {
-    // For Windows cross-compilation, we need to provide SDL2_ttf
-    // The bundled feature in sdl2 crate only handles SDL2, not SDL2_ttf
+fn handle_windows_sdl3_ttf() {
+    // For Windows cross-compilation, we need to provide SDL3_ttf
+    // The bundled feature in sdl3 crate only handles SDL3, not SDL3_ttf
 
-    // Check for SDL2_LIB_DIR environment variable (set by our scripts)
-    if let Ok(sdl2_lib_dir) = env::var("SDL2_LIB_DIR") {
-        let sdl2_ttf_path = PathBuf::from(&sdl2_lib_dir).join("libSDL2_ttf.a");
-        if sdl2_ttf_path.exists() {
-            println!("cargo:rustc-link-search=native={}", sdl2_lib_dir);
-            eprintln!("Using SDL2_ttf from: {}", sdl2_lib_dir);
+    // Check for SDL3_LIB_DIR environment variable (set by our scripts)
+    if let Ok(sdl3_lib_dir) = env::var("SDL3_LIB_DIR") {
+        let sdl3_ttf_path = PathBuf::from(&sdl3_lib_dir).join("libSDL3_ttf.a");
+        if sdl3_ttf_path.exists() {
+            println!("cargo:rustc-link-search=native={}", sdl3_lib_dir);
+            eprintln!("Using SDL3_ttf from: {}", sdl3_lib_dir);
             return;
         }
     }
 
-    // Check if SDL2_ttf is available in mingw system libraries
+    // Check if SDL3_ttf is available in mingw system libraries
     if Command::new("x86_64-w64-mingw32-gcc")
-        .args(["-lSDL2_ttf", "-E", "-"])
+        .args(["-lSDL3_ttf", "-E", "-"])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
     {
-        // System has SDL2_ttf, no extra work needed
+        // System has SDL3_ttf, no extra work needed
         return;
     }
 
-    // Try to find SDL2_ttf in common mingw locations
+    // Try to find SDL3_ttf in common mingw locations
     let mingw_paths = vec![
         "/usr/x86_64-w64-mingw32/lib",
         "/usr/lib/gcc/x86_64-w64-mingw32",
@@ -82,19 +82,19 @@ fn handle_windows_sdl2_ttf() {
     ];
 
     for path in mingw_paths {
-        let sdl2_ttf_path = PathBuf::from(path).join("libSDL2_ttf.a");
-        if sdl2_ttf_path.exists() {
+        let sdl3_ttf_path = PathBuf::from(path).join("libSDL3_ttf.a");
+        if sdl3_ttf_path.exists() {
             println!("cargo:rustc-link-search=native={}", path);
             return;
         }
     }
 
-    // If we get here, SDL2_ttf is not available
-    eprintln!("Warning: SDL2_ttf not found for Windows cross-compilation.");
+    // If we get here, SDL3_ttf is not available
+    eprintln!("Warning: SDL3_ttf not found for Windows cross-compilation.");
     eprintln!("Install with:");
-    eprintln!("  Ubuntu/Debian: sudo apt install libsdl2-ttf-mingw-w64-dev");
+    eprintln!("  Ubuntu/Debian: sudo apt install libsdl3-ttf-mingw-w64-dev");
     eprintln!("  Or download from: https://github.com/libsdl-org/SDL_ttf/releases");
-    eprintln!("  Or run: ./scripts/download-sdl2-windows.sh");
+    eprintln!("  Or run: ./scripts/download-sdl3-windows.sh");
     eprintln!();
-    eprintln!("Alternatively, you can disable the TTF feature by removing 'ttf' from sdl2 features in Cargo.toml");
+    eprintln!("Alternatively, you can disable the TTF feature by removing 'ttf' from sdl3 features in Cargo.toml");
 }

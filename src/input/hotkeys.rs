@@ -1,4 +1,4 @@
-use sdl2::keyboard::Keycode;
+use sdl3::keyboard::Keycode;
 
 /// Represents actions that can be triggered by hotkeys
 #[derive(Debug, Clone, PartialEq)]
@@ -67,8 +67,8 @@ pub fn match_hotkey(keycode: Keycode, is_ctrl: bool, is_shift: bool) -> Option<H
 }
 
 /// Extract modifier flags from SDL keymod
-pub fn get_modifiers(keymod: sdl2::keyboard::Mod) -> (bool, bool) {
-    let is_ctrl = keymod.contains(sdl2::keyboard::Mod::LCTRLMOD) || keymod.contains(sdl2::keyboard::Mod::RCTRLMOD);
-    let is_shift = keymod.contains(sdl2::keyboard::Mod::LSHIFTMOD) || keymod.contains(sdl2::keyboard::Mod::RSHIFTMOD);
+pub fn get_modifiers(keymod: sdl3::keyboard::Mod) -> (bool, bool) {
+    let is_ctrl = keymod.contains(sdl3::keyboard::Mod::LCTRLMOD) || keymod.contains(sdl3::keyboard::Mod::RCTRLMOD);
+    let is_shift = keymod.contains(sdl3::keyboard::Mod::LSHIFTMOD) || keymod.contains(sdl3::keyboard::Mod::RSHIFTMOD);
     (is_ctrl, is_shift)
 }

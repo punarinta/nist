@@ -25,17 +25,20 @@ image = "0.24"
 directories = "5.0"
 signal-hook = "0.3"
 
-# SDL2 for Linux (uses system libraries)
+# SDL3 for Linux (build from source with plutosvg and HarfBuzz support)
 [target.'cfg(target_os = "linux")'.dependencies]
-sdl2 = { version = "0.37.0", features = ["ttf", "gfx"] }
+sdl3 = { version = "0.17.1", features = ["ttf", "build-from-source"] }
+sdl3-ttf-sys = { version = "0.6", features = ["sdlttf-plutosvg", "sdlttf-harfbuzz", "build-from-source"] }
 
-# SDL2 for macOS (uses system library from Homebrew via pkg-config)
+# SDL3 for macOS (build from source with plutosvg and HarfBuzz support)
 [target.'cfg(target_os = "macos")'.dependencies]
-sdl2 = { version = "0.37.0", features = ["ttf", "gfx", "use-pkgconfig"], default-features = false }
+sdl3 = { version = "0.17.1", features = ["ttf", "build-from-source"], default-features = false }
+sdl3-ttf-sys = { version = "0.6", features = ["sdlttf-plutosvg", "sdlttf-harfbuzz", "build-from-source"] }
 
-# SDL2 without static-link for Windows (uses downloaded MinGW libraries)
+# SDL3 for Windows (use pre-built DLLs)
 [target.'cfg(target_os = "windows")'.dependencies]
-sdl2 = { version = "0.37.0", features = ["ttf", "gfx"] }
+sdl3 = { version = "0.17.1", features = ["ttf"] }
+sdl3-ttf-sys = { version = "0.6", features = ["sdlttf-plutosvg", "sdlttf-harfbuzz"] }
 
 [target.'cfg(target_os = "macos")'.dependencies.libproc]
 version = "0.14"

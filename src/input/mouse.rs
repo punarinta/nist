@@ -1,4 +1,4 @@
-use sdl2::mouse::MouseButton;
+use sdl3::mouse::MouseButton;
 use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "linux")]
@@ -65,6 +65,9 @@ pub struct MouseState {
     pub mouse_down_for_selection: bool,
     pub selection_start_pos: (i32, i32),
     pub selection_started: bool,
+    pub dragging_tab: bool,
+    pub tab_drag_start_pos: (i32, i32),
+    pub ready_to_drag_tab: bool,
 }
 
 impl MouseState {
@@ -76,6 +79,9 @@ impl MouseState {
             mouse_down_for_selection: false,
             selection_start_pos: (0, 0),
             selection_started: false,
+            dragging_tab: false,
+            tab_drag_start_pos: (0, 0),
+            ready_to_drag_tab: false,
         }
     }
 }
@@ -332,7 +338,7 @@ fn handle_left_button_down(
 ) -> MouseResult {
     // Check if clicking on tab bar
     if mouse_y < tab_bar_height as i32 {
-        return handle_tab_bar_click(mouse_x, mouse_y, tab_bar, tab_bar_gui);
+        return handle_tab_bar_click(mouse_x, mouse_y, tab_bar, tab_bar_gui, mouse_state);
     }
 
     // Click outside tab bar - cancel any editing
@@ -385,7 +391,7 @@ fn handle_left_button_down(
 }
 
 /// Handle tab bar clicks
-fn handle_tab_bar_click(mouse_x: i32, mouse_y: i32, tab_bar: &mut TabBar, tab_bar_gui: &Arc<Mutex<TabBarGui>>) -> MouseResult {
+fn handle_tab_bar_click(mouse_x: i32, mouse_y: i32, tab_bar: &mut TabBar, tab_bar_gui: &Arc<Mutex<TabBarGui>>, mouse_state: &mut MouseState) -> MouseResult {
     // Update hover state
     tab_bar.update_hover(mouse_x, mouse_y);
 
@@ -428,6 +434,9 @@ fn handle_tab_bar_click(mouse_x: i32, mouse_y: i32, tab_bar: &mut TabBar, tab_ba
             }
             // Note: Caller should call text_input().start()
         } else if tab_bar.editing_tab.is_none() {
+            // Prepare for potential tab drag (will be confirmed on mouse move)
+            mouse_state.ready_to_drag_tab = true;
+            mouse_state.tab_drag_start_pos = (mouse_x, mouse_y);
             return MouseResult::with_action(MouseAction::SwitchTab(tab_idx));
         }
     }
@@ -441,6 +450,7 @@ pub fn handle_mouse_button_up(
     mouse_btn: MouseButton,
     mouse_x: i32,
     mouse_y: i32,
+    tab_bar: &mut TabBar,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
     tab_bar_height: u32,
     char_width: f32,
@@ -493,6 +503,25 @@ pub fn handle_mouse_button_up(
         result.needs_render = true;
     }
 
+    // Handle end of tab dragging
+    if mouse_btn == MouseButton::Left && mouse_state.dragging_tab {
+        mouse_state.dragging_tab = false;
+        mouse_state.ready_to_drag_tab = false;
+        mouse_state.tab_drag_start_pos = (0, 0);
+        if let Some((from_idx, to_idx)) = tab_bar.stop_dragging_tab() {
+            // Reorder the tabs
+            if let Ok(mut gui) = tab_bar_gui.try_lock() {
+                gui.reorder_tab(from_idx, to_idx);
+            }
+        }
+        result.needs_render = true;
+    }
+
+    // If left button released but no drag happened, clear ready state
+    if mouse_btn == MouseButton::Left && mouse_state.ready_to_drag_tab {
+        mouse_state.ready_to_drag_tab = false;
+    }
+
     // Send mouse release events to terminal
     if mouse_y >= tab_bar_height as i32 {
         let button = match mouse_btn {
@@ -532,7 +561,7 @@ fn handle_context_menu_click(mouse_x: i32, mouse_y: i32, tab_bar_gui: &Arc<Mutex
     if let Some(pane_layout) = gui.get_active_pane_layout() {
         if let Some((menu_pane_id, menu_x, menu_y)) = pane_layout.context_menu_open {
             // Check if clicking on context menu
-            let menu_rect = sdl2::rect::Rect::new(menu_x, menu_y, 400, 175);
+            let menu_rect = sdl3::rect::Rect::new(menu_x, menu_y, 400, 175);
             if menu_rect.contains_point((mouse_x, mouse_y)) {
                 // Handle menu item clicks
                 let relative_y = mouse_y - menu_y - 5;
@@ -654,8 +683,30 @@ pub fn handle_mouse_motion(
         needs_render = true;
     }
 
+    // Handle tab dragging in tab bar
+    if mouse_y < tab_bar_height as i32 && !mouse_state.dragging_tab && mouse_state.ready_to_drag_tab {
+        // Check if we should start dragging a tab
+        let distance_moved = ((mouse_x - mouse_state.tab_drag_start_pos.0).pow(2) + (mouse_y - mouse_state.tab_drag_start_pos.1).pow(2)) as f32;
+        // Threshold: about 5 pixels (5^2 = 25) to distinguish from click
+        if distance_moved > 25.0 {
+            if let Some(tab_idx) = tab_bar.get_clicked_tab(mouse_state.tab_drag_start_pos.0, mouse_state.tab_drag_start_pos.1) {
+                // Don't start dragging if editing a tab
+                if tab_bar.editing_tab.is_none() {
+                    tab_bar.start_dragging_tab(tab_idx, mouse_state.tab_drag_start_pos.0);
+                    mouse_state.dragging_tab = true;
+                    mouse_state.ready_to_drag_tab = false;
+                    needs_render = true;
+                }
+            }
+        }
+    } else if mouse_state.dragging_tab {
+        // Update tab drag position
+        tab_bar.update_drag(mouse_x);
+        needs_render = true;
+    }
+
     // Start/update selection if mouse is dragging with left button down
-    if mouse_state.mouse_down_for_selection && mouse_y >= tab_bar_height as i32 {
+    if mouse_state.mouse_down_for_selection && mouse_y >= tab_bar_height as i32 && !mouse_state.dragging_tab {
         let distance_moved = ((mouse_x - mouse_state.selection_start_pos.0).pow(2) + (mouse_y - mouse_state.selection_start_pos.1).pow(2)) as f32;
         // Threshold: about 5 pixels (5^2 = 25)
         if distance_moved > 25.0 {

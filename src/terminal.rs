@@ -445,7 +445,7 @@ impl Terminal {
                 };
 
                 for col in line_start..=line_end {
-                    if let Some(cell) = screen_buffer.get_cell(col, row) {
+                    if let Some(cell) = screen_buffer.get_cell_with_scrollback(col, row) {
                         text.push(cell.ch);
                     }
                 }

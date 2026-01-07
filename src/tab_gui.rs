@@ -120,6 +120,33 @@ impl TabBarGui {
         }
     }
 
+    pub fn reorder_tab(&mut self, from_index: usize, to_index: usize) {
+        if from_index >= self.tab_states.len() || to_index >= self.tab_states.len() {
+            return;
+        }
+        if from_index == to_index {
+            return;
+        }
+
+        // Remove the tab from its current position
+        let tab = self.tab_states.remove(from_index);
+
+        // Insert it at the new position
+        self.tab_states.insert(to_index, tab);
+
+        // Update active_tab index if needed
+        if self.active_tab == from_index {
+            // The active tab was moved
+            self.active_tab = to_index;
+        } else if from_index < self.active_tab && to_index >= self.active_tab {
+            // A tab before the active tab was moved to after it
+            self.active_tab -= 1;
+        } else if from_index > self.active_tab && to_index <= self.active_tab {
+            // A tab after the active tab was moved to before it
+            self.active_tab += 1;
+        }
+    }
+
     pub fn get_active_terminal(&self) -> Option<Arc<Mutex<Terminal>>> {
         self.tab_states.get(self.active_tab).and_then(|ts| ts.pane_layout.get_active_terminal())
     }

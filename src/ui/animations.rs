@@ -1,4 +1,4 @@
-use sdl2::rect::Rect;
+use sdl3::rect::Rect;
 use std::time::{Duration, Instant};
 
 /// Animation that plays when text is copied (Ctrl+Shift+C)
@@ -57,11 +57,5 @@ impl CopyAnimation {
         // Start at full opacity, fade to nearly transparent (but not completely 0)
         let opacity = 255.0 * (1.0 - progress);
         opacity.max(10.0) as u8 // Minimum 10 for "nearly transparent"
-    }
-
-    /// Get the corner radius for rounded corners (increases with expansion)
-    pub fn corner_radius(&self) -> i16 {
-        let progress = self.progress();
-        (8.0 + progress * 4.0) as i16 // Start at 8px, grow to 12px
     }
 }

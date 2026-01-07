@@ -1,5 +1,5 @@
 use crate::ansi::{DEFAULT_BG_COLOR, DEFAULT_FG_COLOR};
-use sdl2::pixels::Color;
+use sdl3::pixels::Color;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Cell {
