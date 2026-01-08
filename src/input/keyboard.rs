@@ -224,6 +224,16 @@ pub fn handle_hotkey_action(
                 }
                 KeyboardResult::render()
             }
+
+            NavigationAction::GoToPrompt => {
+                // Reset scroll position to 0 (go back to the prompt)
+                if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
+                    if let Ok(t) = terminal.lock() {
+                        t.screen_buffer.lock().unwrap().reset_view_offset();
+                    }
+                }
+                KeyboardResult::render()
+            }
         },
 
         HotkeyAction::Copy => {

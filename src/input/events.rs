@@ -365,10 +365,7 @@ fn handle_mouse_wheel_event(
 
     let mouse_state_sdl = event_pump.mouse_state();
     let (mouse_x, mouse_y) = if mouse_coords_need_scaling {
-        (
-            (mouse_state_sdl.x() * scale_factor) as i32,
-            (mouse_state_sdl.y() * scale_factor) as i32,
-        )
+        ((mouse_state_sdl.x() * scale_factor) as i32, (mouse_state_sdl.y() * scale_factor) as i32)
     } else {
         (mouse_state_sdl.x() as i32, mouse_state_sdl.y() as i32)
     };
@@ -426,6 +423,30 @@ fn handle_key_down_event(
         };
     }
 
+    // Check for sequential navigation hotkey completion from settings
+    if let Some(nav_action) = super::hotkeys::match_sequential_navigation_hotkey(keycode, &tab_bar.sequential_hotkey_state, &settings.hotkeys.navigation) {
+        // Clear the sequential state since we found a match
+        tab_bar.sequential_hotkey_state.clear();
+
+        let result = super::keyboard::handle_hotkey_action(
+            super::hotkeys::HotkeyAction::Navigation(nav_action),
+            tab_bar_gui,
+            scale_factor,
+            char_width,
+            char_height,
+            tab_bar_height,
+            canvas_window,
+            #[cfg(target_os = "linux")]
+            clipboard_tx,
+        );
+
+        return EventResult {
+            action: EventAction::None,
+            needs_render: result.needs_render,
+            needs_resize: result.needs_resize,
+        };
+    }
+
     // Check for sequential hotkey completion (second key in a sequence like Alt-G-P)
     if let Some(action) = super::hotkeys::match_sequential_hotkey(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed, &tab_bar.sequential_hotkey_state)
     {
@@ -451,8 +472,10 @@ fn handle_key_down_event(
         };
     }
 
-    // Check if this key starts a sequential hotkey
-    if super::hotkeys::is_sequential_hotkey_start(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed) {
+    // Check if this key starts a sequential hotkey (settings or hardcoded)
+    if super::hotkeys::is_sequential_navigation_hotkey_start(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed, &settings.hotkeys.navigation)
+        || super::hotkeys::is_sequential_hotkey_start(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed)
+    {
         // Record this as the first key in a potential sequence
         tab_bar
             .sequential_hotkey_state
@@ -480,6 +503,7 @@ fn handle_key_down_event(
             NavigationAction::NextPane | NavigationAction::PreviousPane => super::keyboard::KeyboardAction::None, // Will be handled below
             NavigationAction::NewTab => super::keyboard::KeyboardAction::NewTab,
             NavigationAction::NextTab | NavigationAction::PreviousTab => super::keyboard::KeyboardAction::None, // Will be handled below
+            NavigationAction::GoToPrompt => super::keyboard::KeyboardAction::None,                              // Will be handled below
         };
 
         // Handle the action

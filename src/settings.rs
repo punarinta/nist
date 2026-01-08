@@ -123,6 +123,8 @@ pub struct KeyBinding {
     #[serde(default)]
     pub alt: bool,
     pub key: Key,
+    #[serde(default)]
+    pub key2: Option<Key>,
 }
 
 impl Key {
@@ -219,8 +221,18 @@ impl Key {
 }
 
 impl KeyBinding {
-    /// Check if this key binding matches the given keycode and modifiers
+    /// Check if this is a sequential hotkey (has a second key)
+    pub fn is_sequential(&self) -> bool {
+        self.key2.is_some()
+    }
+
+    /// Check if this key binding matches the given keycode and modifiers (for single-key bindings)
     pub fn matches(&self, keycode: Keycode, is_ctrl: bool, is_shift: bool, is_alt: bool) -> bool {
+        // Only match single-key bindings
+        if self.is_sequential() {
+            return false;
+        }
+
         if self.ctrl != is_ctrl || self.shift != is_shift || self.alt != is_alt {
             return false;
         }
@@ -230,6 +242,39 @@ impl KeyBinding {
         } else {
             false
         }
+    }
+
+    /// Check if the first key of this binding matches (for sequential hotkeys)
+    pub fn matches_first_key(&self, keycode: Keycode, is_ctrl: bool, is_shift: bool, is_alt: bool) -> bool {
+        if self.ctrl != is_ctrl || self.shift != is_shift || self.alt != is_alt {
+            return false;
+        }
+
+        if let Some(binding_keycode) = self.key.to_keycode() {
+            binding_keycode == keycode
+        } else {
+            false
+        }
+    }
+
+    /// Check if the second key of this binding matches (for sequential hotkeys)
+    /// The second key doesn't require modifier matching - modifiers are checked on the first key
+    pub fn matches_second_key(&self, keycode: Keycode) -> bool {
+        if let Some(key2) = &self.key2 {
+            if let Some(binding_keycode) = key2.to_keycode() {
+                return binding_keycode == keycode;
+            }
+        }
+        false
+    }
+
+    /// Check if this sequential hotkey matches the complete sequence
+    pub fn matches_sequence(&self, first_keycode: Keycode, first_ctrl: bool, first_shift: bool, first_alt: bool, second_keycode: Keycode) -> bool {
+        if !self.is_sequential() {
+            return false;
+        }
+
+        self.matches_first_key(first_keycode, first_ctrl, first_shift, first_alt) && self.matches_second_key(second_keycode)
     }
 }
 
@@ -253,6 +298,8 @@ pub struct NavigationHotkeys {
     pub next_tab: Vec<KeyBinding>,
     #[serde(rename = "previousTab", default = "default_previous_tab")]
     pub previous_tab: Vec<KeyBinding>,
+    #[serde(rename = "goToPrompt", default = "default_go_to_prompt")]
+    pub go_to_prompt: Vec<KeyBinding>,
 }
 
 // Default functions for NavigationHotkeys fields
@@ -262,6 +309,7 @@ fn default_split_right() -> Vec<KeyBinding> {
         shift: true,
         alt: false,
         key: Key::J,
+        key2: None,
     }]
 }
 
@@ -271,6 +319,7 @@ fn default_split_down() -> Vec<KeyBinding> {
         shift: true,
         alt: false,
         key: Key::H,
+        key2: None,
     }]
 }
 
@@ -280,6 +329,7 @@ fn default_close_pane() -> Vec<KeyBinding> {
         shift: true,
         alt: false,
         key: Key::W,
+        key2: None,
     }]
 }
 
@@ -289,6 +339,7 @@ fn default_next_pane() -> Vec<KeyBinding> {
         shift: false,
         alt: false,
         key: Key::RightBracket,
+        key2: None,
     }]
 }
 
@@ -298,6 +349,7 @@ fn default_previous_pane() -> Vec<KeyBinding> {
         shift: false,
         alt: false,
         key: Key::LeftBracket,
+        key2: None,
     }]
 }
 
@@ -307,6 +359,7 @@ fn default_new_tab() -> Vec<KeyBinding> {
         shift: true,
         alt: false,
         key: Key::T,
+        key2: None,
     }]
 }
 
@@ -317,18 +370,30 @@ fn default_next_tab() -> Vec<KeyBinding> {
             shift: true,
             alt: false,
             key: Key::Tab,
+            key2: None,
         },
         KeyBinding {
             ctrl: true,
             shift: false,
             alt: false,
             key: Key::Tab,
+            key2: None,
         },
     ]
 }
 
 fn default_previous_tab() -> Vec<KeyBinding> {
     vec![]
+}
+
+fn default_go_to_prompt() -> Vec<KeyBinding> {
+    vec![KeyBinding {
+        ctrl: false,
+        shift: false,
+        alt: true,
+        key: Key::G,
+        key2: Some(Key::P),
+    }]
 }
 
 impl Default for NavigationHotkeys {
@@ -342,6 +407,7 @@ impl Default for NavigationHotkeys {
             new_tab: default_new_tab(),
             next_tab: default_next_tab(),
             previous_tab: default_previous_tab(),
+            go_to_prompt: default_go_to_prompt(),
         }
     }
 }
@@ -374,15 +440,13 @@ impl Default for TerminalSettings {
 }
 
 /// Settings structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
     pub external: Vec<String>,
     pub terminal: TerminalSettings,
     #[serde(default)]
     pub hotkeys: Hotkeys,
 }
-
 
 /// Get the path to the settings file based on build profile
 ///
@@ -560,6 +624,7 @@ mod tests {
             shift: true,
             alt: false,
             key: Key::H,
+            key2: None,
         });
 
         let json = serde_json::to_string_pretty(&settings).unwrap();
@@ -608,6 +673,7 @@ mod tests {
             shift: true,
             alt: false,
             key: Key::H,
+            key2: None,
         };
 
         // Should match Ctrl+Shift+H
@@ -731,6 +797,7 @@ mod tests {
             shift: true,
             alt: false,
             key: Key::H,
+            key2: None,
         });
 
         // Add newTab binding: Ctrl+Shift+T
@@ -738,7 +805,8 @@ mod tests {
             ctrl: true,
             shift: true,
             alt: false,
-            key: Key::T,
+            key: Key::N,
+            key2: None,
         });
 
         // Test matching splitRight
@@ -773,6 +841,7 @@ mod tests {
             shift: true,
             alt: false,
             key: Key::ArrowUp,
+            key2: None,
         };
 
         let json = serde_json::to_string(&binding).unwrap();
@@ -830,5 +899,78 @@ mod tests {
         assert_eq!(settings.hotkeys.navigation.next_tab[1].shift, false);
 
         assert_eq!(settings.hotkeys.navigation.previous_tab.len(), 0); // No default binding
+    }
+
+    #[test]
+    fn test_sequential_hotkey_configuration() {
+        // Test single-key binding (no key2)
+        let single_key = KeyBinding {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            key: Key::T,
+            key2: None,
+        };
+        assert!(!single_key.is_sequential());
+        assert!(single_key.matches(Keycode::T, true, false, false));
+
+        // Test sequential hotkey binding (with key2)
+        let sequential = KeyBinding {
+            ctrl: false,
+            shift: false,
+            alt: true,
+            key: Key::G,
+            key2: Some(Key::P),
+        };
+        assert!(sequential.is_sequential());
+
+        // Should not match as a single-key binding
+        assert!(!sequential.matches(Keycode::G, false, false, true));
+
+        // Should match first key
+        assert!(sequential.matches_first_key(Keycode::G, false, false, true));
+        assert!(!sequential.matches_first_key(Keycode::G, true, false, false)); // Wrong modifiers
+
+        // Should match second key
+        assert!(sequential.matches_second_key(Keycode::P));
+        assert!(!sequential.matches_second_key(Keycode::X));
+
+        // Should match complete sequence
+        assert!(sequential.matches_sequence(Keycode::G, false, false, true, Keycode::P));
+        assert!(!sequential.matches_sequence(Keycode::G, false, false, true, Keycode::X)); // Wrong second key
+        assert!(!sequential.matches_sequence(Keycode::X, false, false, true, Keycode::P));
+        // Wrong first key
+    }
+
+    #[test]
+    fn test_sequential_hotkey_json_serialization() {
+        use serde_json;
+
+        // Test JSON with sequential hotkey
+        let json = r#"{
+            "ctrl": true,
+            "shift": false,
+            "alt": false,
+            "key": "G",
+            "key2": "P"
+        }"#;
+
+        let binding: KeyBinding = serde_json::from_str(json).unwrap();
+        assert_eq!(binding.ctrl, true);
+        assert_eq!(binding.shift, false);
+        assert_eq!(binding.alt, false);
+        assert_eq!(binding.key, Key::G);
+        assert_eq!(binding.key2, Some(Key::P));
+        assert!(binding.is_sequential());
+
+        // Test JSON without key2 (defaults to None)
+        let json_single = r#"{
+            "ctrl": true,
+            "key": "T"
+        }"#;
+
+        let single_binding: KeyBinding = serde_json::from_str(json_single).unwrap();
+        assert_eq!(single_binding.key2, None);
+        assert!(!single_binding.is_sequential());
     }
 }
