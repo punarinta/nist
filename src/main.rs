@@ -609,7 +609,16 @@ Searched directories:
                 Vec::new()
             }
         };
-        match TestServer::new(port, terminals, Arc::clone(&tab_bar_gui), char_width, char_height, tab_bar_height) {
+        match TestServer::new(
+            port,
+            terminals,
+            Arc::clone(&tab_bar_gui),
+            char_width,
+            char_height,
+            tab_bar_height,
+            drawable_width,
+            drawable_height,
+        ) {
             Ok(server) => {
                 eprintln!("[MAIN] Test server enabled on port {}", port);
                 Some(server)
@@ -855,6 +864,10 @@ Searched directories:
                         if let Ok(mut gui) = tab_bar_gui.try_lock() {
                             gui.set_active_tab(tab_idx);
                         }
+                        // Resize terminals in the newly active tab to match their pane dimensions
+                        // This ensures terminals that were inactive during window resizing get properly sized
+                        let (window_width, window_height) = canvas.window().size_in_pixels();
+                        resize_terminals_to_panes(&tab_bar_gui, char_width, char_height, tab_bar_height, window_width, window_height);
                     }
 
                     input::events::EventAction::MinimizeWindow => {

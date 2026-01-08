@@ -209,6 +209,8 @@ pub struct TestServer {
     char_width: f32,
     char_height: f32,
     _tab_bar_height: u32,
+    window_width: Arc<Mutex<u32>>,
+    window_height: Arc<Mutex<u32>>,
 }
 
 impl TestServer {
@@ -219,6 +221,8 @@ impl TestServer {
         char_width: f32,
         char_height: f32,
         tab_bar_height: u32,
+        window_width: u32,
+        window_height: u32,
     ) -> Result<Self, std::io::Error> {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", port))?;
         listener.set_nonblocking(true)?;
@@ -233,6 +237,8 @@ impl TestServer {
             char_width,
             char_height,
             _tab_bar_height: tab_bar_height,
+            window_width: Arc::new(Mutex::new(window_width)),
+            window_height: Arc::new(Mutex::new(window_height)),
         })
     }
 
@@ -567,6 +573,28 @@ impl TestServer {
 
                     gui.set_active_tab(index);
                     *self.active_tab.lock().unwrap() = index;
+
+                    // Resize terminals in the newly active tab to match their pane dimensions
+                    // This ensures terminals that were inactive get properly sized
+                    if let Some(pane_layout) = gui.tab_states.get(gui.active_tab) {
+                        let window_width = *self.window_width.lock().unwrap();
+                        let window_height = *self.window_height.lock().unwrap();
+                        let tab_bar_height = self._tab_bar_height;
+                        let pane_area_height = window_height.saturating_sub(tab_bar_height);
+                        let pane_rects = pane_layout.pane_layout.get_pane_rects(0, tab_bar_height as i32, window_width, pane_area_height);
+
+                        for (_pane_id, rect, terminal, _is_active) in pane_rects {
+                            let (cols, rows) = crate::ui::render::calculate_terminal_size(rect.width(), rect.height(), self.char_width, self.char_height);
+
+                            if let Ok(mut t) = terminal.lock() {
+                                if t.width != cols || t.height != rows {
+                                    eprintln!("[TEST_SERVER] SwitchTab: Resizing terminal from {}x{} to {}x{}", t.width, t.height, cols, rows);
+                                    t.set_size(cols, rows, false);
+                                }
+                            }
+                        }
+                    }
+
                     return TestResponse::Ok;
                 }
                 TestResponse::Error {
