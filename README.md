@@ -5,7 +5,7 @@ A terminal we use at Nisdos and decided to open-source. It aims at low CPU and m
 Features
 ===
 - flexible layout: movable tabs, resizable panes
-- state (layout, cwd, tab names) is saved and loaded automatically
+- extensive state, restored on startup
 - cross-platform (Linux, Mac, Windows)
 - configurable hotkeys and mouse tricks
 - scrollable output history
@@ -25,6 +25,10 @@ Next steps
 - ligatures support
 - Kitty protocol support
 
+State
+===
+State includes layout structure, relative pane sizes, current working directory, tab names, a few of last commands of each terminal and some amount of previous output of each terminal. State is saved and loaded automatically.
+
 Settings
 ===
 Click on CPU load indicator on the top right corner to open settings in your default text editor. There are only a few settings for now, more will come soon.
@@ -35,4 +39,4 @@ Current platform support
 - macOS -- low bugs probability; GUI is a bit unstable, the rest is okay
 - Windows -- average bugs probability due to a non-UNIX-like environment
 
-The builds included in "releases" directory may be slightly outdated. If you want to get the most recent version, please build it from source.
+The builds included in "releases" directory may be slightly outdated. If you want to get the most recent version, please build it from source. I'll add details on that later.

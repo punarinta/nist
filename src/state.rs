@@ -16,6 +16,7 @@ const STATE_VERSION: i64 = 1;
 enum SerializablePaneNode {
     Leaf {
         working_directory: Option<String>,
+        history: Option<TerminalHistory>,
     },
     Split {
         direction: String, // "horizontal" or "vertical"
@@ -23,6 +24,12 @@ enum SerializablePaneNode {
         first: Box<SerializablePaneNode>,
         second: Box<SerializablePaneNode>,
     },
+}
+
+#[derive(Clone, Debug)]
+struct TerminalHistory {
+    input: Vec<String>,  // Last MAX_COMMAND_HISTORY commands
+    output: Vec<String>, // Last MAX_OUTPUT_HISTORY output lines
 }
 
 impl SerializablePaneNode {
@@ -37,7 +44,19 @@ impl SerializablePaneNode {
                     .and_then(|t| t.get_cwd())
                     .and_then(|path| path.to_str().map(|s| s.to_string()));
 
-                SerializablePaneNode::Leaf { working_directory }
+                // Capture output history before extracting
+                if let Ok(t) = terminal.lock() {
+                    t.capture_output_history();
+                }
+
+                // Extract command and output history
+                let history = terminal.lock().ok().map(|t| {
+                    let input = t.get_command_history();
+                    let output = t.get_output_history();
+                    TerminalHistory { input, output }
+                });
+
+                SerializablePaneNode::Leaf { working_directory, history }
             }
             PaneNode::Split {
                 direction,
@@ -61,11 +80,23 @@ impl SerializablePaneNode {
     /// Convert to JSON for serialization
     fn to_json(&self) -> JsonValue {
         match self {
-            SerializablePaneNode::Leaf { working_directory } => {
+            SerializablePaneNode::Leaf { working_directory, history } => {
                 let mut map = HashMap::new();
                 map.insert("type".to_string(), JsonValue::String("leaf".to_string()));
                 if let Some(cwd) = working_directory {
                     map.insert("workdir".to_string(), JsonValue::String(cwd.clone()));
+                }
+                if let Some(hist) = history {
+                    let mut history_map = HashMap::new();
+                    history_map.insert(
+                        "input".to_string(),
+                        JsonValue::Array(hist.input.iter().map(|s| JsonValue::String(s.clone())).collect()),
+                    );
+                    history_map.insert(
+                        "output".to_string(),
+                        JsonValue::Array(hist.output.iter().map(|s| JsonValue::String(s.clone())).collect()),
+                    );
+                    map.insert("history".to_string(), JsonValue::Object(history_map));
                 }
                 JsonValue::Object(map)
             }
@@ -94,7 +125,24 @@ impl SerializablePaneNode {
         match node_type.as_str() {
             "leaf" => {
                 let working_directory = obj.get("workdir").and_then(|v| v.get::<String>()).cloned();
-                Some(SerializablePaneNode::Leaf { working_directory })
+
+                // Parse history if present
+                let history = obj.get("history").and_then(|h| {
+                    let hist_map = h.get::<HashMap<String, JsonValue>>()?;
+                    let input = hist_map
+                        .get("input")
+                        .and_then(|v| v.get::<Vec<JsonValue>>())
+                        .map(|arr| arr.iter().filter_map(|v| v.get::<String>().cloned()).collect::<Vec<String>>())
+                        .unwrap_or_default();
+                    let output = hist_map
+                        .get("output")
+                        .and_then(|v| v.get::<Vec<JsonValue>>())
+                        .map(|arr| arr.iter().filter_map(|v| v.get::<String>().cloned()).collect::<Vec<String>>())
+                        .unwrap_or_default();
+                    Some(TerminalHistory { input, output })
+                });
+
+                Some(SerializablePaneNode::Leaf { working_directory, history })
             }
             "split" => {
                 let direction = obj.get("direction")?.get::<String>()?.clone();
@@ -119,9 +167,19 @@ impl SerializablePaneNode {
         F: FnMut(Option<std::path::PathBuf>) -> Arc<Mutex<Terminal>>,
     {
         match self {
-            SerializablePaneNode::Leaf { working_directory } => {
+            SerializablePaneNode::Leaf { working_directory, history } => {
                 let start_dir = working_directory.as_ref().and_then(|s| std::path::PathBuf::from(s).canonicalize().ok());
-                PaneNode::new_leaf(terminal_factory(start_dir))
+                let terminal = terminal_factory(start_dir);
+
+                // Restore history if present
+                if let Some(hist) = history {
+                    if let Ok(term) = terminal.lock() {
+                        term.set_command_history(hist.input.clone());
+                        term.set_output_history(hist.output.clone());
+                    }
+                }
+
+                PaneNode::new_leaf(terminal)
             }
             SerializablePaneNode::Split {
                 direction,

@@ -8,6 +8,10 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::screen_buffer::ScreenBuffer;
 use crate::terminal_config::ShellConfig;
 
+// History persistence limits
+const MAX_COMMAND_HISTORY: usize = 5; // Maximum number of commands to keep in history
+const MAX_OUTPUT_HISTORY: usize = 100; // Maximum number of output lines to keep in history
+
 pub(crate) struct Terminal {
     master: Box<dyn portable_pty::MasterPty>,
     writer: Arc<Mutex<Box<dyn std::io::Write + Send>>>,
@@ -21,6 +25,10 @@ pub(crate) struct Terminal {
     pub(crate) mouse_sgr_mode: Arc<Mutex<bool>>,
     pub(crate) selection: Arc<Mutex<Option<Selection>>>,
     pub(crate) bracketed_paste_mode: Arc<Mutex<bool>>,
+    // History tracking for state persistence
+    pub(crate) command_history: Arc<Mutex<Vec<String>>>, // Last MAX_COMMAND_HISTORY commands
+    pub(crate) output_history: Arc<Mutex<Vec<String>>>,  // Last MAX_OUTPUT_HISTORY output lines
+    pub(crate) current_command: Arc<Mutex<String>>,      // Current command being typed
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -229,6 +237,9 @@ impl Terminal {
             mouse_sgr_mode,
             selection: Arc::new(Mutex::new(None)),
             bracketed_paste_mode,
+            command_history: Arc::new(Mutex::new(Vec::new())),
+            output_history: Arc::new(Mutex::new(Vec::new())),
+            current_command: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -276,6 +287,20 @@ impl Terminal {
     }
 
     pub(crate) fn send_key(&mut self, keys: &[u8]) {
+        // Detect Enter key to capture command for history
+        let is_enter = keys.len() == 1 && keys[0] == b'\r';
+
+        if is_enter {
+            // Save current command to history and clear the buffer
+            if let Ok(mut current_cmd) = self.current_command.lock() {
+                let cmd = current_cmd.trim().to_string();
+                if !cmd.is_empty() {
+                    self.add_command_to_history(cmd);
+                }
+                current_cmd.clear();
+            }
+        }
+
         // Check if we need to translate arrow keys for application cursor keys mode
         let app_cursor_mode = *self.application_cursor_keys.lock().unwrap();
 
@@ -302,6 +327,31 @@ impl Terminal {
     }
 
     pub(crate) fn send_text(&mut self, text: &str) {
+        // Accumulate text in current command buffer (before converting \n to \r)
+        if let Ok(mut current_cmd) = self.current_command.lock() {
+            // Only accumulate if text doesn't contain newline (Enter)
+            if !text.contains('\n') && !text.contains('\r') {
+                current_cmd.push_str(text);
+            } else {
+                // If text contains Enter, save the command and clear buffer
+                // Split on newlines and process each part
+                let parts: Vec<&str> = text.split(|c| c == '\n' || c == '\r').collect();
+                for (i, part) in parts.iter().enumerate() {
+                    if i > 0 && !current_cmd.is_empty() {
+                        // Save previous command before newline
+                        let cmd = current_cmd.trim().to_string();
+                        if !cmd.is_empty() {
+                            self.add_command_to_history(cmd);
+                        }
+                        current_cmd.clear();
+                    }
+                    if !part.is_empty() {
+                        current_cmd.push_str(part);
+                    }
+                }
+            }
+        }
+
         if let Ok(mut writer) = self.writer.lock() {
             // Convert \n to \r for terminal input (newline -> carriage return)
             let converted = text.replace('\n', "\r");
@@ -1333,6 +1383,97 @@ impl Terminal {
                     eprintln!("[TERMINAL] Ignoring unknown CSI sequence: {:?}", sequence);
                 }
             }
+        }
+    }
+
+    /// Add a command to the history (keeps last MAX_COMMAND_HISTORY commands)
+    pub(crate) fn add_command_to_history(&self, command: String) {
+        if let Ok(mut history) = self.command_history.lock() {
+            // Don't add empty commands or duplicates of the last command
+            if !command.trim().is_empty() && (history.is_empty() || history.last() != Some(&command)) {
+                history.push(command);
+                // Keep only last MAX_COMMAND_HISTORY commands
+                if history.len() > MAX_COMMAND_HISTORY {
+                    history.remove(0);
+                }
+            }
+        }
+    }
+
+    /// Capture current output lines (keeps last MAX_OUTPUT_HISTORY lines)
+    pub(crate) fn capture_output_history(&self) {
+        if let Ok(sb) = self.screen_buffer.lock() {
+            let mut lines = Vec::new();
+
+            // Get lines from scrollback buffer
+            let scrollback = sb.get_scrollback_buffer();
+            for row in scrollback.iter() {
+                let line: String = row.iter().map(|cell| cell.ch.as_str()).collect();
+                let trimmed = line.trim_end();
+                if !trimmed.is_empty() {
+                    lines.push(trimmed.to_string());
+                }
+            }
+
+            // Get lines from current screen
+            for y in 0..sb.height() {
+                let mut line = String::new();
+                for x in 0..sb.width() {
+                    if let Some(cell) = sb.get_cell(x, y) {
+                        line.push_str(&cell.ch);
+                    }
+                }
+                let trimmed = line.trim_end();
+                if !trimmed.is_empty() {
+                    lines.push(trimmed.to_string());
+                }
+            }
+
+            // Keep only last MAX_OUTPUT_HISTORY lines
+            let start = if lines.len() > MAX_OUTPUT_HISTORY {
+                lines.len() - MAX_OUTPUT_HISTORY
+            } else {
+                0
+            };
+            let last_lines = lines[start..].to_vec();
+
+            if let Ok(mut output_history) = self.output_history.lock() {
+                *output_history = last_lines;
+            }
+        }
+    }
+
+    /// Get command history
+    pub(crate) fn get_command_history(&self) -> Vec<String> {
+        self.command_history.lock().ok().map(|h| h.clone()).unwrap_or_default()
+    }
+
+    /// Set command history (for loading from state)
+    pub(crate) fn set_command_history(&self, history: Vec<String>) {
+        if let Ok(mut h) = self.command_history.lock() {
+            *h = history;
+        }
+    }
+
+    /// Get output history
+    pub(crate) fn get_output_history(&self) -> Vec<String> {
+        self.output_history.lock().ok().map(|h| h.clone()).unwrap_or_default()
+    }
+
+    /// Set output history and restore to scrollback (for loading from state)
+    pub(crate) fn set_output_history(&self, history: Vec<String>) {
+        if let Ok(mut h) = self.output_history.lock() {
+            *h = history.clone();
+        }
+
+        // Restore output to scrollback buffer
+        self.restore_output_to_scrollback(history);
+    }
+
+    /// Restore saved output lines to scrollback buffer
+    fn restore_output_to_scrollback(&self, lines: Vec<String>) {
+        if let Ok(mut sb) = self.screen_buffer.lock() {
+            sb.restore_to_scrollback(lines);
         }
     }
 }

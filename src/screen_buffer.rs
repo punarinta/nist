@@ -794,6 +794,44 @@ impl ScreenBuffer {
         self.scroll_region
     }
 
+    /// Restore output lines to scrollback buffer (for loading from saved state)
+    pub fn restore_to_scrollback(&mut self, lines: Vec<String>) {
+        for line in lines {
+            let mut row = Vec::with_capacity(self.width);
+
+            // Convert string to cells
+            for ch in line.chars() {
+                let cell = Cell {
+                    ch: ch.to_string(),
+                    fg_color: DEFAULT_FG_COLOR,
+                    bg_color: DEFAULT_BG_COLOR,
+                    width: 1,
+                };
+                row.push(cell);
+            }
+
+            // Pad with empty cells to match width
+            while row.len() < self.width {
+                row.push(Cell::default());
+            }
+
+            // Truncate if too long
+            row.truncate(self.width);
+
+            // Add to scrollback buffer
+            self.scrollback_buffer.push(row);
+        }
+
+        // Enforce scrollback limit
+        if self.scrollback_limit > 0 {
+            while self.scrollback_buffer.len() > self.scrollback_limit {
+                self.scrollback_buffer.remove(0);
+            }
+        }
+
+        self.dirty = true;
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
