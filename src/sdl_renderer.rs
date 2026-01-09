@@ -703,11 +703,6 @@ impl TabBar {
         let _ = canvas.fill_rect(line_rect);
         self.minimize_button_rect = ClickableRect::new(min_rect);
 
-        // Draw bottom border for tab bar (matching pane navigation bar style)
-        canvas.set_draw_color(Color::RGB(60, 60, 60));
-        let border_y = self.height as i32 - 1;
-        canvas.draw_line((0, border_y), (window_width as i32, border_y)).map_err(|e| e.to_string())?;
-
         Ok(())
     }
 }
