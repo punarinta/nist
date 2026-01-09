@@ -50,6 +50,9 @@ pub struct TabBar {
     pub drag_start_x: i32,
     pub drag_offset_x: i32,
     pub sequential_hotkey_state: SequentialHotkeyState,
+    pub first_visible_tab_index: usize,
+    pub left_scroll_button_rect: ClickableRect,
+    pub right_scroll_button_rect: ClickableRect,
 }
 
 impl TabBar {
@@ -72,6 +75,9 @@ impl TabBar {
             dragging_tab: None,
             drag_start_x: 0,
             drag_offset_x: 0,
+            first_visible_tab_index: 0,
+            left_scroll_button_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
+            right_scroll_button_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
         }
     }
 
@@ -177,6 +183,20 @@ impl TabBar {
         None
     }
 
+    pub fn scroll_left(&mut self) {
+        // Scroll left by one tab (move to previous tab)
+        if self.first_visible_tab_index > 0 {
+            self.first_visible_tab_index -= 1;
+        }
+    }
+
+    pub fn scroll_right(&mut self) {
+        // Scroll right by one tab (move to next tab)
+        if self.first_visible_tab_index + 1 < self.tabs.len() {
+            self.first_visible_tab_index += 1;
+        }
+    }
+
     pub fn render<T>(
         &mut self,
         canvas: &mut Canvas<Window>,
@@ -198,7 +218,7 @@ impl TabBar {
         let cpu_text = format!("{:02.0}%", cpu_usage.min(99.0));
         let surface = cpu_font.render(&cpu_text).blended(TEXT_WHITE).map_err(|e| e.to_string())?;
         let texture = texture_creator.create_texture_from_surface(&surface).map_err(|e| e.to_string())?;
-        let cpu_width = surface.width() + 24; // Increased horizontal padding
+        let cpu_width = 70; // Fixed width to prevent jumping when numbers change
         let cpu_rect = Rect::new(x, y, cpu_width, self.height - 6);
 
         // Store CPU indicator rect for click detection
@@ -214,28 +234,170 @@ impl TabBar {
 
         x += cpu_width as i32 + 12;
 
-        // Clear old rects
-        self.tab_rects.clear();
-        self.close_button_rects.clear();
+        // Calculate available space for tabs
+        // Reserve space for: add button + dev mode indicator + window controls
+        let button_size = (self.height - 12) as i32;
+        let window_controls_width = (button_size + 6) * 2 + 6; // Two buttons + spacing
+        #[cfg(not(production))]
+        let dev_mode_width = 150; // Approximate width for "[DEV MODE]"
+        #[cfg(production)]
+        let dev_mode_width = 0;
+        // Adjust reserved space based on whether dev mode indicator is present
+        #[cfg(not(production))]
+        let right_reserved_space = window_controls_width + dev_mode_width + 180; // More padding when dev mode present
+        #[cfg(production)]
+        let right_reserved_space = window_controls_width + 80; // Less padding in production
+        let add_button_width = button_size + 24;
 
-        // Render tabs (in two passes: non-dragged tabs first, then dragged tab on top)
-        let mut dragged_tab_data: Option<(usize, String, i32, u32)> = None;
-
+        // Calculate total tabs width (without scroll offset)
+        let mut total_tabs_width = 0i32;
         for (idx, tab_name) in self.tabs.iter().enumerate() {
-            // If this tab is being dragged, save it for later rendering
-            if Some(idx) == self.dragging_tab {
-                let close_size = self.height - 12;
-                // Measure text for the dragged tab
+            let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { tab_name };
+            let (text_width, _, _) = if let Some(surface) = safe_render_text(font, display_text, TEXT_GRAY) {
+                (surface.width(), surface.height(), Some(()))
+            } else {
+                (40, 16, Some(()))
+            };
+            let close_size = self.height - 12;
+            let tab_width = 24 + text_width + close_size + 30;
+            total_tabs_width += tab_width as i32 + 1;
+        }
+
+        // Determine if we need scroll buttons
+        let available_width_for_tabs = window_width as i32 - x - add_button_width - right_reserved_space;
+        let scroll_button_size = 30u32; // Fixed smaller size for scroll buttons
+        let needs_scrolling = total_tabs_width > available_width_for_tabs;
+
+        // Clamp first_visible_tab_index to valid range
+        if self.first_visible_tab_index >= self.tabs.len() {
+            self.first_visible_tab_index = self.tabs.len().saturating_sub(1);
+        }
+
+        // Prevent overscrolling: ensure we don't scroll past the point where all remaining tabs fit
+        if needs_scrolling {
+            // Calculate width of tabs starting from first_visible_tab_index
+            let mut visible_width = 0i32;
+            let available_for_visible = available_width_for_tabs - (scroll_button_size as i32 * 2) - 12;
+
+            for idx in self.first_visible_tab_index..self.tabs.len() {
+                let tab_name = &self.tabs[idx];
                 let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { tab_name };
                 let (text_width, _, _) = if let Some(surface) = safe_render_text(font, display_text, TEXT_GRAY) {
                     (surface.width(), surface.height(), Some(()))
                 } else {
                     (40, 16, Some(()))
                 };
+                let close_size = self.height - 12;
                 let tab_width = 24 + text_width + close_size + 30;
+                visible_width += tab_width as i32 + 1;
+            }
+
+            // If all remaining tabs fit, move first_visible_tab_index back
+            while self.first_visible_tab_index > 0 && visible_width <= available_for_visible {
+                // Try including the previous tab
+                self.first_visible_tab_index -= 1;
+                let idx = self.first_visible_tab_index;
+                let tab_name = &self.tabs[idx];
+                let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { tab_name };
+                let (text_width, _, _) = if let Some(surface) = safe_render_text(font, display_text, TEXT_GRAY) {
+                    (surface.width(), surface.height(), Some(()))
+                } else {
+                    (40, 16, Some(()))
+                };
+                let close_size = self.height - 12;
+                let tab_width = 24 + text_width + close_size + 30;
+                visible_width += tab_width as i32 + 1;
+
+                // If it doesn't fit, undo
+                if visible_width > available_for_visible {
+                    self.first_visible_tab_index += 1;
+                    break;
+                }
+            }
+        }
+
+        let mut tabs_start_x = x;
+        let mut tabs_end_x = x + available_width_for_tabs;
+
+        // Draw left scroll button if needed
+        if needs_scrolling {
+            // Vertically center the scroll button
+            let scroll_btn_y = y + ((self.height - 6 - scroll_button_size) / 2) as i32;
+            let left_scroll_rect = Rect::new(x, scroll_btn_y, scroll_button_size, scroll_button_size);
+            self.left_scroll_button_rect = ClickableRect::new(left_scroll_rect);
+
+            // Draw background
+            canvas.set_draw_color(BG_MEDIUM);
+            canvas.fill_rect(left_scroll_rect).map_err(|e| e.to_string())?;
+
+            // Draw "<" using SDL primitives (left-pointing chevron)
+            canvas.set_draw_color(TEXT_WHITE);
+            let center_x = x + (scroll_button_size as i32 / 2);
+            let center_y = scroll_btn_y + (scroll_button_size as i32 / 2);
+            let size = scroll_button_size as i32 / 4; // Smaller icon
+
+            // Draw two lines forming "<"
+            for i in 0..2 {
+                // Top line of chevron (pointing left)
+                let _ = canvas.draw_line((center_x + size / 2, center_y - size + i), (center_x - size / 2, center_y + i));
+                // Bottom line of chevron (pointing left)
+                let _ = canvas.draw_line((center_x - size / 2, center_y + i), (center_x + size / 2, center_y + size + i));
+            }
+
+            x += scroll_button_size as i32 + 6;
+            tabs_start_x = x; // Update tabs_start_x to prevent overlap with scroll button
+            tabs_end_x = x + available_width_for_tabs - scroll_button_size as i32 - 6 - scroll_button_size as i32 - 6;
+        }
+
+        // Clear old rects
+        self.tab_rects.clear();
+        self.close_button_rects.clear();
+
+        // Render tabs (in two passes: non-dragged tabs first, then dragged tab on top)
+        // Render from first_visible_tab_index (no pixel offset)
+        let mut dragged_tab_data: Option<(usize, String, i32, u32)> = None;
+
+        for (idx, tab_name) in self.tabs.iter().enumerate() {
+            // Skip tabs before first_visible_tab_index (unless being dragged)
+            if idx < self.first_visible_tab_index && Some(idx) != self.dragging_tab {
+                // Still need to store empty rects for proper indexing
+                self.tab_rects.push(ClickableRect::new(Rect::new(-1000, -1000, 0, 0)));
+                self.close_button_rects.push(ClickableRect::new(Rect::new(-1000, -1000, 0, 0)));
+                continue;
+            }
+
+            let close_size = self.height - 12;
+            let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { tab_name };
+            let (text_width, _, _) = if let Some(surface) = safe_render_text(font, display_text, TEXT_GRAY) {
+                (surface.width(), surface.height(), Some(()))
+            } else {
+                (40, 16, Some(()))
+            };
+            let tab_width = 24 + text_width + close_size + 30;
+
+            // If this tab is being dragged, save it for later rendering
+            if Some(idx) == self.dragging_tab {
                 dragged_tab_data = Some((idx, tab_name.clone(), x, tab_width));
 
                 // Still need to advance x and store rect for drop position calculation
+                let tab_rect = Rect::new(x, y, tab_width, self.height - 6);
+                self.tab_rects.push(ClickableRect::new(tab_rect));
+                let close_x = x + tab_width as i32 - (close_size as i32) - 6;
+                let close_y = y + 6;
+                let close_rect = Rect::new(close_x, close_y, close_size, close_size);
+                self.close_button_rects.push(ClickableRect::new(close_rect));
+                x += tab_width as i32 + 1;
+                continue;
+            }
+
+            // Check if tab is completely out of view or partially clipped
+            let tab_right = x + tab_width as i32;
+            let tab_out_of_view = (tab_right < tabs_start_x) || (x > tabs_end_x);
+            let tab_clipped_left = x < tabs_start_x && tab_right > tabs_start_x;
+            let tab_clipped_right = x < tabs_end_x && tab_right > tabs_end_x;
+
+            if tab_out_of_view || (needs_scrolling && (tab_clipped_left || tab_clipped_right)) {
+                // Still need to store rect and advance x for proper positioning
                 let tab_rect = Rect::new(x, y, tab_width, self.height - 6);
                 self.tab_rects.push(ClickableRect::new(tab_rect));
                 let close_x = x + tab_width as i32 - (close_size as i32) - 6;
@@ -255,9 +417,6 @@ impl TabBar {
             } else {
                 BG_DARK
             };
-
-            // Measure text
-            let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { tab_name };
 
             // Try to render text, with fallback for unsupported characters
             let (text_width, text_height, text_texture) = if let Some(surface) = safe_render_text(font, display_text, TEXT_GRAY) {
@@ -282,9 +441,6 @@ impl TabBar {
             };
 
             // Calculate tab dimensions
-            // We need: left padding (24) + text + spacing (6) + close button (close_size) + right padding (6)
-            let close_size = self.height - 12;
-            let tab_width = 24 + text_width + close_size + 30; // Increased left padding
             let tab_rect = Rect::new(x, y, tab_width, self.height - 6);
 
             // Draw tab background
@@ -418,7 +574,39 @@ impl TabBar {
             }
         }
 
-        x += 12;
+        // Draw right scroll button if needed
+        if needs_scrolling {
+            x = tabs_end_x + 6;
+            // Vertically center the scroll button
+            let scroll_btn_y = y + ((self.height - 6 - scroll_button_size) / 2) as i32;
+            let right_scroll_rect = Rect::new(x, scroll_btn_y, scroll_button_size, scroll_button_size);
+            self.right_scroll_button_rect = ClickableRect::new(right_scroll_rect);
+
+            // Draw background
+            canvas.set_draw_color(BG_MEDIUM);
+            canvas.fill_rect(right_scroll_rect).map_err(|e| e.to_string())?;
+
+            // Draw ">" using SDL primitives (right-pointing chevron)
+            canvas.set_draw_color(TEXT_WHITE);
+            let center_x = x + (scroll_button_size as i32 / 2);
+            let center_y = scroll_btn_y + (scroll_button_size as i32 / 2);
+            let size = scroll_button_size as i32 / 4; // Smaller icon
+
+            // Draw two lines forming ">"
+            for i in 0..2 {
+                // Top line of chevron
+                let _ = canvas.draw_line((center_x - size / 2, center_y - size + i), (center_x + size / 2, center_y + i));
+                // Bottom line of chevron
+                let _ = canvas.draw_line((center_x - size / 2, center_y + size + i), (center_x + size / 2, center_y + i));
+            }
+
+            x += scroll_button_size as i32 + 12;
+        } else {
+            // Reset scroll button rects when not needed
+            self.left_scroll_button_rect = ClickableRect::new(Rect::new(0, 0, 0, 0));
+            self.right_scroll_button_rect = ClickableRect::new(Rect::new(0, 0, 0, 0));
+            x += 12;
+        }
 
         // Add button - bigger and perfectly vertically centered
         let add_size = self.height - 12;
@@ -514,6 +702,11 @@ impl TabBar {
         let line_rect = Rect::new(line_x_start, line_y, line_width as u32, line_thickness);
         let _ = canvas.fill_rect(line_rect);
         self.minimize_button_rect = ClickableRect::new(min_rect);
+
+        // Draw bottom border for tab bar (matching pane navigation bar style)
+        canvas.set_draw_color(Color::RGB(60, 60, 60));
+        let border_y = self.height as i32 - 1;
+        canvas.draw_line((0, border_y), (window_width as i32, border_y)).map_err(|e| e.to_string())?;
 
         Ok(())
     }

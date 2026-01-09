@@ -358,10 +358,10 @@ fn handle_left_button_down(
                 mouse_state.dragging_divider = true;
                 mouse_state.last_mouse_pos = (mouse_x, mouse_y);
                 return MouseResult::with_divider_drag();
-            } else {
-                // Activate pane
-                pane_layout.handle_click(mouse_x, mouse_y, 0, pane_area_y, window_width, pane_area_height);
             }
+
+            // Activate pane
+            pane_layout.handle_click(mouse_x, mouse_y, 0, pane_area_y, window_width, pane_area_height);
         }
     }
 
@@ -391,6 +391,16 @@ fn handle_left_button_down(
 fn handle_tab_bar_click(mouse_x: i32, mouse_y: i32, tab_bar: &mut TabBar, tab_bar_gui: &Arc<Mutex<TabBarGui>>, mouse_state: &mut MouseState) -> MouseResult {
     // Update hover state
     tab_bar.update_hover(mouse_x, mouse_y);
+
+    // Check scroll buttons
+    if tab_bar.left_scroll_button_rect.contains_point(mouse_x, mouse_y) {
+        tab_bar.scroll_left();
+        return MouseResult::render();
+    }
+    if tab_bar.right_scroll_button_rect.contains_point(mouse_x, mouse_y) {
+        tab_bar.scroll_right();
+        return MouseResult::render();
+    }
 
     // Check CPU indicator
     if tab_bar.cpu_indicator_rect.contains_point(mouse_x, mouse_y) {

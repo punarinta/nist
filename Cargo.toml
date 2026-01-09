@@ -24,6 +24,7 @@ sysinfo = "0.30"
 image = "0.24"
 directories = "5.0"
 signal-hook = "0.3"
+unicode-segmentation = "1.11"
 
 # SDL3 for Linux (build from source with plutosvg and HarfBuzz support)
 [target.'cfg(target_os = "linux")'.dependencies]

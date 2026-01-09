@@ -101,7 +101,7 @@ pub struct ScreenBufferSnapshot {
 
 #[derive(Serialize, Debug, Clone)]
 pub struct CellSnapshot {
-    pub ch: char,
+    pub ch: String,
     pub fg_r: u8,
     pub fg_g: u8,
     pub fg_b: u8,
@@ -161,9 +161,9 @@ impl ScreenBufferSnapshot {
 
             for x in 0..sb.width() {
                 if let Some(cell) = sb.get_cell_with_scrollback(x, y) {
-                    line.push(cell.ch);
+                    line.push_str(&cell.ch);
                     row.push(CellSnapshot {
-                        ch: cell.ch,
+                        ch: cell.ch.clone(),
                         fg_r: cell.fg_color.r,
                         fg_g: cell.fg_color.g,
                         fg_b: cell.fg_color.b,
@@ -172,9 +172,9 @@ impl ScreenBufferSnapshot {
                         bg_b: cell.bg_color.b,
                     });
                 } else {
-                    line.push(' ');
+                    line.push_str(" ");
                     row.push(CellSnapshot {
-                        ch: ' ',
+                        ch: " ".to_string(),
                         fg_r: 255,
                         fg_g: 255,
                         fg_b: 255,

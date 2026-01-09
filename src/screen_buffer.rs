@@ -1,21 +1,71 @@
 use crate::ansi::{DEFAULT_BG_COLOR, DEFAULT_FG_COLOR};
 use sdl3::pixels::Color;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Cell {
-    pub ch: char,
+    pub ch: String, // Changed to String to support grapheme clusters (combined emojis, modifiers)
     pub fg_color: Color,
     pub bg_color: Color,
+    pub width: u8, // 1 for normal chars, 2 for wide/emoji chars
 }
 
 impl Default for Cell {
     fn default() -> Self {
         Cell {
-            ch: ' ',
+            ch: " ".to_string(),
             fg_color: DEFAULT_FG_COLOR,
             bg_color: DEFAULT_BG_COLOR,
+            width: 1,
         }
     }
+}
+
+/// Check if a character is likely an emoji based on Unicode ranges
+#[inline]
+fn is_emoji_char(ch: char) -> bool {
+    let codepoint = ch as u32;
+    matches!(codepoint,
+        // Emoticons
+        0x1F600..=0x1F64F |
+        // Miscellaneous Symbols and Pictographs
+        0x1F300..=0x1F5FF |
+        // Transport and Map Symbols
+        0x1F680..=0x1F6FF |
+        // Supplemental Symbols and Pictographs
+        0x1F900..=0x1F9FF |
+        // Symbols and Pictographs Extended-A
+        0x1FA00..=0x1FA6F |
+        0x1FA70..=0x1FAFF |
+        // Miscellaneous Symbols (including weather, zodiac)
+        0x2600..=0x26FF |
+        // Dingbats
+        0x2700..=0x27BF |
+        // Enclosed Alphanumeric Supplement
+        0x1F100..=0x1F1FF |
+        // Enclosed Ideographic Supplement
+        0x1F200..=0x1F2FF |
+        // Miscellaneous Symbols and Arrows
+        0x2B00..=0x2BFF |
+        // Supplemental Arrows-B
+        0x2900..=0x297F |
+        // Variation Selectors (emoji presentation)
+        0xFE00..=0xFE0F |
+        // Mahjong Tiles, Domino Tiles
+        0x1F000..=0x1F02F |
+        // Playing Cards
+        0x1F0A0..=0x1F0FF |
+        // Geometric Shapes
+        0x25A0..=0x25FF |
+        // Arrows
+        0x2190..=0x21FF
+    )
+}
+
+/// Check if a string contains an emoji (including combined emojis with modifiers)
+#[inline]
+fn is_emoji_grapheme(s: &str) -> bool {
+    // Check if any character in the grapheme cluster is an emoji
+    s.chars().any(is_emoji_char)
 }
 
 #[derive(Clone)]
@@ -77,7 +127,9 @@ impl ScreenBuffer {
         let copy_height = self.height.min(height);
         let copy_width = self.width.min(width);
         for (y, row) in new_cells.iter_mut().enumerate().take(copy_height) {
-            row[..copy_width].copy_from_slice(&self.cells[y][..copy_width]);
+            for x in 0..copy_width {
+                row[x] = self.cells[y][x].clone();
+            }
         }
 
         self.cells = new_cells;
@@ -90,7 +142,8 @@ impl ScreenBuffer {
         self.dirty = true;
     }
 
-    pub fn put_char(&mut self, ch: char) {
+    /// Put a grapheme cluster (potentially multi-character emoji with modifiers)
+    pub fn put_grapheme(&mut self, grapheme: &str) {
         // Handle pending wrap from previous character
         if self.pending_wrap {
             self.cursor_x = 0;
@@ -105,12 +158,29 @@ impl ScreenBuffer {
         }
 
         if self.cursor_y < self.height && self.cursor_x < self.width {
+            // Check if this grapheme contains an emoji (including combined emojis)
+            let is_emoji = is_emoji_grapheme(grapheme);
+            let char_width = if is_emoji { 2 } else { 1 };
+
+            // Write the grapheme cluster
             self.cells[self.cursor_y][self.cursor_x] = Cell {
-                ch,
+                ch: grapheme.to_string(),
                 fg_color: self.fg_color,
                 bg_color: self.bg_color,
+                width: char_width,
             };
-            self.cursor_x += 1;
+
+            // For double-width emojis, mark the next cell as a continuation
+            if is_emoji && self.cursor_x + 1 < self.width {
+                self.cells[self.cursor_y][self.cursor_x + 1] = Cell {
+                    ch: String::new(), // Empty string indicates continuation of previous cell
+                    fg_color: self.fg_color,
+                    bg_color: self.bg_color,
+                    width: 0, // Width 0 means this is a continuation cell
+                };
+            }
+
+            self.cursor_x += char_width as usize;
             self.dirty = true;
 
             // Set pending wrap if we're past the last column
@@ -221,7 +291,7 @@ impl ScreenBuffer {
         self.pending_wrap = false;
         for row in &mut self.cells {
             for cell in row {
-                cell.ch = ' ';
+                cell.ch = " ".to_string();
                 cell.fg_color = self.fg_color;
                 cell.bg_color = self.bg_color;
             }
@@ -236,7 +306,7 @@ impl ScreenBuffer {
         if self.cursor_y < self.height {
             for x in self.cursor_x..self.width {
                 let cell = &mut self.cells[self.cursor_y][x];
-                cell.ch = ' ';
+                cell.ch = " ".to_string();
                 cell.fg_color = self.fg_color;
                 cell.bg_color = self.bg_color;
             }
@@ -245,7 +315,7 @@ impl ScreenBuffer {
             for y in (self.cursor_y + 1)..self.height {
                 for x in 0..self.width {
                     let cell = &mut self.cells[y][x];
-                    cell.ch = ' ';
+                    cell.ch = " ".to_string();
                     cell.fg_color = self.fg_color;
                     cell.bg_color = self.bg_color;
                 }
@@ -259,7 +329,7 @@ impl ScreenBuffer {
         for y in 0..self.cursor_y {
             for x in 0..self.width {
                 let cell = &mut self.cells[y][x];
-                cell.ch = ' ';
+                cell.ch = " ".to_string();
                 cell.fg_color = self.fg_color;
                 cell.bg_color = self.bg_color;
             }
@@ -269,7 +339,7 @@ impl ScreenBuffer {
         if self.cursor_y < self.height {
             for x in 0..=self.cursor_x.min(self.width - 1) {
                 let cell = &mut self.cells[self.cursor_y][x];
-                cell.ch = ' ';
+                cell.ch = " ".to_string();
                 cell.fg_color = self.fg_color;
                 cell.bg_color = self.bg_color;
             }
@@ -281,7 +351,7 @@ impl ScreenBuffer {
         if self.cursor_y < self.height {
             for x in 0..self.width {
                 let cell = &mut self.cells[self.cursor_y][x];
-                cell.ch = ' ';
+                cell.ch = " ".to_string();
                 cell.fg_color = self.fg_color;
                 cell.bg_color = self.bg_color;
             }
@@ -293,7 +363,7 @@ impl ScreenBuffer {
         if self.cursor_y < self.height {
             for x in self.cursor_x..self.width {
                 let cell = &mut self.cells[self.cursor_y][x];
-                cell.ch = ' ';
+                cell.ch = " ".to_string();
                 cell.fg_color = self.fg_color;
                 cell.bg_color = self.bg_color;
             }
@@ -305,7 +375,7 @@ impl ScreenBuffer {
         if self.cursor_y < self.height {
             for x in 0..=self.cursor_x.min(self.width - 1) {
                 let cell = &mut self.cells[self.cursor_y][x];
-                cell.ch = ' ';
+                cell.ch = " ".to_string();
                 cell.fg_color = self.fg_color;
                 cell.bg_color = self.bg_color;
             }
@@ -320,7 +390,7 @@ impl ScreenBuffer {
             let end_x = (self.cursor_x + n).min(self.width);
             for x in self.cursor_x..end_x {
                 let cell = &mut self.cells[self.cursor_y][x];
-                cell.ch = ' ';
+                cell.ch = " ".to_string();
                 cell.fg_color = self.fg_color;
                 cell.bg_color = self.bg_color;
             }
@@ -333,9 +403,10 @@ impl ScreenBuffer {
         for y in top..=bottom.min(self.height - 1) {
             for x in 0..self.width {
                 self.cells[y][x] = Cell {
-                    ch: ' ',
+                    ch: " ".to_string(),
                     fg_color: self.fg_color,
                     bg_color: self.bg_color,
+                    width: 1,
                 };
             }
         }
@@ -367,7 +438,7 @@ impl ScreenBuffer {
         for x in (cursor_x..self.width.saturating_sub(n)).rev() {
             let new_pos = x + n;
             if new_pos < self.width {
-                row[new_pos] = row[x];
+                row[new_pos] = row[x].clone();
             }
         }
 
@@ -375,9 +446,10 @@ impl ScreenBuffer {
         let end = (cursor_x + n).min(self.width);
         for cell in row.iter_mut().take(end).skip(cursor_x) {
             *cell = Cell {
-                ch: ' ',
+                ch: " ".to_string(),
                 fg_color: self.fg_color,
                 bg_color: self.bg_color,
+                width: 1,
             };
         }
 
@@ -407,13 +479,14 @@ impl ScreenBuffer {
         for x in cursor_x..self.width {
             let source_pos = x + n;
             if source_pos < self.width {
-                row[x] = row[source_pos];
+                row[x] = row[source_pos].clone();
             } else {
                 // Fill with blank at the end
                 row[x] = Cell {
-                    ch: ' ',
+                    ch: " ".to_string(),
                     fg_color: self.fg_color,
                     bg_color: self.bg_color,
+                    width: 1,
                 };
             }
         }
@@ -456,7 +529,7 @@ impl ScreenBuffer {
         for y in (scroll_bottom - n + 1)..=scroll_bottom {
             for x in 0..self.width {
                 let cell = &mut self.cells[y][x];
-                cell.ch = ' ';
+                cell.ch = " ".to_string();
                 cell.fg_color = self.fg_color;
                 cell.bg_color = self.bg_color;
             }
@@ -486,7 +559,7 @@ impl ScreenBuffer {
         for y in scroll_top..(scroll_top + n) {
             for x in 0..self.width {
                 let cell = &mut self.cells[y][x];
-                cell.ch = ' ';
+                cell.ch = " ".to_string();
                 cell.fg_color = self.fg_color;
                 cell.bg_color = self.bg_color;
             }
@@ -520,9 +593,10 @@ impl ScreenBuffer {
         for y in self.cursor_y..(self.cursor_y + n) {
             for x in 0..self.width {
                 self.cells[y][x] = Cell {
-                    ch: ' ',
+                    ch: " ".to_string(),
                     fg_color: self.fg_color,
                     bg_color: self.bg_color,
+                    width: 1,
                 };
             }
         }
@@ -555,9 +629,10 @@ impl ScreenBuffer {
         for y in (scroll_bottom - n + 1)..=scroll_bottom {
             for x in 0..self.width {
                 self.cells[y][x] = Cell {
-                    ch: ' ',
+                    ch: " ".to_string(),
                     fg_color: self.fg_color,
                     bg_color: self.bg_color,
+                    width: 1,
                 };
             }
         }

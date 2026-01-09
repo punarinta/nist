@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::screen_buffer::ScreenBuffer;
 use crate::terminal_config::ShellConfig;
@@ -446,7 +447,7 @@ impl Terminal {
                 let mut line = String::new();
                 for col in line_start..=line_end {
                     if let Some(cell) = screen_buffer.get_cell_with_scrollback(col, row) {
-                        line.push(cell.ch);
+                        line.push_str(&cell.ch);
                     }
                 }
 
@@ -861,12 +862,12 @@ impl Terminal {
                                 sb.clear_screen();
                             }
                             '7' => {
-                                // DECSC (Save Cursor)
+                                // Save cursor position (DECSC)
                                 chars.next(); // consume '7'
                                 sb.save_cursor();
                             }
                             '8' => {
-                                // DECRC (Restore Cursor)
+                                // Restore cursor position (DECRC)
                                 chars.next(); // consume '8'
                                 sb.restore_cursor();
                             }
@@ -907,6 +908,11 @@ impl Terminal {
                                 chars.next(); // consume 'E'
                                 sb.cursor_x = 0;
                                 sb.move_cursor_down(1);
+                            }
+                            'H' => {
+                                // Set tab stop at current column
+                                chars.next(); // consume 'H'
+                                              // We can ignore this for now
                             }
                             '=' => {
                                 // DECKPAM (Keypad Application Mode)
@@ -957,8 +963,23 @@ impl Terminal {
                     // Other control characters - ignore for now
                 }
                 _ => {
-                    // Regular character
-                    sb.put_char(ch);
+                    // Regular character - collect into a buffer to handle grapheme clusters
+                    // We need to collect all text until the next control character
+                    let mut text_buffer = String::new();
+                    text_buffer.push(ch);
+
+                    // Peek ahead and collect more characters until we hit a control char
+                    while let Some(&peek_ch) = chars.peek() {
+                        if peek_ch.is_control() || peek_ch == '\x1b' {
+                            break;
+                        }
+                        text_buffer.push(chars.next().unwrap());
+                    }
+
+                    // Now process the buffer as grapheme clusters
+                    for grapheme in text_buffer.graphemes(true) {
+                        sb.put_grapheme(grapheme);
+                    }
                 }
             }
         }

@@ -7,7 +7,6 @@ use std::collections::HashMap;
 pub struct ShellConfig {
     pub command: String,
     pub args: Vec<String>,
-    pub _env_term: String,
     pub keys: KeyMappings,
 }
 
@@ -34,7 +33,6 @@ impl TerminalLibrary {
             ShellConfig {
                 command: "sh".to_string(),
                 args: vec![],
-                _env_term: "xterm-256color".to_string(),
                 keys: KeyMappings {
                     backspace: vec![127],           // DEL character
                     _delete: vec![27, 91, 51, 126], // ESC [ 3 ~
@@ -49,8 +47,7 @@ impl TerminalLibrary {
             "bash".to_string(),
             ShellConfig {
                 command: "bash".to_string(),
-                args: vec![],
-                _env_term: "xterm-256color".to_string(),
+                args: vec!["--noprofile".to_string()],
                 keys: KeyMappings {
                     backspace: vec![8, 32, 8],      // BS SPACE BS sequence
                     _delete: vec![27, 91, 51, 126], // ESC [ 3 ~
@@ -65,8 +62,7 @@ impl TerminalLibrary {
             "cmd".to_string(),
             ShellConfig {
                 command: "cmd.exe".to_string(),
-                args: vec![],
-                _env_term: "xterm-256color".to_string(),
+                args: vec!["/D".to_string()],
                 keys: KeyMappings {
                     backspace: vec![8],             // BS character
                     _delete: vec![27, 91, 51, 126], // ESC [ 3 ~
@@ -81,24 +77,7 @@ impl TerminalLibrary {
             "powershell".to_string(),
             ShellConfig {
                 command: "powershell.exe".to_string(),
-                args: vec!["-NoLogo".to_string()],
-                _env_term: "xterm-256color".to_string(),
-                keys: KeyMappings {
-                    backspace: vec![8],             // BS character
-                    _delete: vec![27, 91, 51, 126], // ESC [ 3 ~
-                    _return_key: vec![13],          // CR
-                },
-            },
-        );
-
-        // PowerShell Core (pwsh) - Cross-platform PowerShell
-        // Uses simple BS for backspace, same as Windows PowerShell
-        shells.insert(
-            "pwsh".to_string(),
-            ShellConfig {
-                command: "pwsh".to_string(),
-                args: vec!["-NoLogo".to_string()],
-                _env_term: "xterm-256color".to_string(),
+                args: vec!["-NoLogo".to_string(), "-NoProfile".to_string()],
                 keys: KeyMappings {
                     backspace: vec![8],             // BS character
                     _delete: vec![27, 91, 51, 126], // ESC [ 3 ~
@@ -113,8 +92,7 @@ impl TerminalLibrary {
             "zsh".to_string(),
             ShellConfig {
                 command: "zsh".to_string(),
-                args: vec![],
-                _env_term: "xterm-256color".to_string(),
+                args: vec!["--no-globalrcs".to_string()],
                 keys: KeyMappings {
                     backspace: vec![127],           // DEL character
                     _delete: vec![27, 91, 51, 126], // ESC [ 3 ~

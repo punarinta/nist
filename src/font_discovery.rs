@@ -90,6 +90,24 @@ const PREFERRED_MONOSPACE_FONTS: &[&str] = &[
     "DejaVuSansMono-Bold.ttf",
 ];
 
+/// List of preferred emoji fonts with color emoji support, in order of preference
+const PREFERRED_EMOJI_FONTS: &[&str] = &[
+    // Noto Color Emoji - excellent cross-platform emoji support
+    "NotoColorEmoji.ttf",
+    // Apple Color Emoji - macOS
+    "AppleColorEmoji.ttc",
+    "Apple Color Emoji.ttc",
+    // Segoe UI Emoji - Windows
+    "seguiemj.ttf",
+    "Segoe UI Emoji.ttf",
+    // EmojiOne - open source alternative
+    "EmojiOneColor.otf",
+    "emojione-color.otf",
+    // Twemoji - Twitter's emoji font
+    "TwitterColorEmoji.ttf",
+    "Twemoji.ttf",
+];
+
 /// Common font directories on Windows, Linux, and macOS systems
 const FONT_DIRECTORIES: &[&str] = &[
     // Windows paths
@@ -172,6 +190,40 @@ pub fn find_best_monospace_font() -> Option<String> {
     }
 
     eprintln!("[FONT] WARNING: No emoji-supporting monospace fonts found in system directories");
+    None
+}
+
+/// Discovers the best available emoji font with color emoji support
+///
+/// Searches through system font directories for emoji fonts that support
+/// color rendering. Returns the first match found, or None if no suitable
+/// font is available.
+///
+/// # Returns
+///
+/// The full path to the best available emoji font file, or None if no suitable font is found
+pub fn find_emoji_font() -> Option<String> {
+    eprintln!("[FONT] Searching for color emoji fonts...");
+
+    // Expand home directory in paths
+    let mut search_paths = Vec::new();
+    for dir in FONT_DIRECTORIES {
+        if let Some(expanded) = expand_home_dir(dir) {
+            search_paths.push(expanded);
+        }
+    }
+
+    // Search for each preferred emoji font in each directory
+    for font_name in PREFERRED_EMOJI_FONTS {
+        for base_path in &search_paths {
+            if let Some(font_path) = search_font_recursive(base_path, font_name) {
+                eprintln!("[FONT] Found color emoji font: {}", font_path.display());
+                return Some(font_path.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    eprintln!("[FONT] WARNING: No color emoji fonts found in system directories");
     None
 }
 

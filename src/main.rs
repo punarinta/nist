@@ -472,7 +472,7 @@ Searched directories:
     })?;
 
     // Load smaller font for CPU indicator in tab bar (use UI font for emoji support)
-    let cpu_font_size = 15.0 * scale_factor;
+    let cpu_font_size = 13.0 * scale_factor;
     let cpu_font = ttf_context.load_font(&ui_font_path, cpu_font_size).map_err(|e| {
         eprintln!("[MAIN] Failed to load CPU font from {}: {}", ui_font_path, e);
         format!("CPU font loading failed from {}: {}", ui_font_path, e)
@@ -500,6 +500,24 @@ Searched directories:
     })?;
 
     eprintln!("[MAIN] Loaded UI font: {} for tabs, menus, and controls", ui_font_path);
+
+    // Load emoji fallback font for emoji rendering in terminal
+    let emoji_font_path = font_discovery::find_emoji_font().unwrap_or_else(|| {
+        eprintln!("[MAIN] WARNING: No emoji font found, emoji rendering may not work properly");
+        ui_font_path.clone()
+    });
+    let emoji_font = ttf_context.load_font(&emoji_font_path, font_size).map_err(|e| {
+        eprintln!("[MAIN] Failed to load emoji font from {}: {}", emoji_font_path, e);
+        format!("Emoji font loading failed from {}: {}", emoji_font_path, e)
+    })?;
+    eprintln!("[MAIN] Loaded emoji font: {} for emoji rendering", emoji_font_path);
+
+    // Load Unicode fallback font for symbols not in monospace font (use UI font which has broad Unicode coverage)
+    let unicode_fallback_font = ttf_context.load_font(&ui_font_path, font_size).map_err(|e| {
+        eprintln!("[MAIN] Failed to load Unicode fallback font from {}: {}", ui_font_path, e);
+        format!("Unicode fallback font loading failed from {}: {}", ui_font_path, e)
+    })?;
+    eprintln!("[MAIN] Loaded Unicode fallback font: {} for symbol rendering", ui_font_path);
 
     // Measure character dimensions
     let test_char = 'M';
@@ -639,7 +657,7 @@ Searched directories:
 
     // Glyph cache to avoid re-rendering characters every frame
     // Key: (character, fg_color_rgb, bg_color_rgb), Value: texture
-    let mut glyph_cache: HashMap<(char, (u8, u8, u8)), sdl3::render::Texture> = HashMap::new();
+    let mut glyph_cache: HashMap<(String, (u8, u8, u8)), sdl3::render::Texture> = HashMap::new();
     let mut last_cache_clear = Instant::now();
 
     let mut needs_render = true;
@@ -726,8 +744,9 @@ Searched directories:
 
         // Collect all events first
         let mut events = Vec::new();
-        // Use 1ms timeout to quickly catch dirty updates from PTY reader
-        let first_event = event_pump.wait_event_timeout(1);
+        // Use 16ms timeout for ~60 FPS responsiveness while reducing CPU wake-ups
+        // PTY reader threads mark terminals as dirty, so we don't need aggressive 1ms polling
+        let first_event = event_pump.wait_event_timeout(16);
         if let Some(event) = first_event {
             events.push(event);
         }
@@ -1308,6 +1327,8 @@ Searched directories:
                 &button_font,
                 &cpu_font,
                 &font,
+                &emoji_font,
+                &unicode_fallback_font,
                 &context_menu_font,
                 cpu_usage,
                 tab_bar_height,

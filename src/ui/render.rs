@@ -75,15 +75,17 @@ pub fn render_frame<'a, T>(
     button_font: &Font,
     cpu_font: &Font,
     terminal_font: &Font,
+    emoji_font: &Font,
+    unicode_fallback_font: &Font,
     context_menu_font: &Font,
     cpu_usage: f32,
     tab_bar_height: u32,
-    _scale_factor: f32,
+    scale_factor: f32,
     char_width: f32,
     char_height: f32,
     cursor_visible: bool,
     settings: &Settings,
-    glyph_cache: &mut HashMap<(char, (u8, u8, u8)), sdl3::render::Texture<'a>>,
+    glyph_cache: &mut HashMap<(String, (u8, u8, u8)), sdl3::render::Texture<'a>>,
 ) -> Result<bool, String> {
     // Clear screen with terminal background color
     canvas.set_draw_color(DEFAULT_BG_COLOR);
@@ -108,16 +110,16 @@ pub fn render_frame<'a, T>(
     // Get active tab's pane layout data (quickly, then release lock)
     // OPTIMIZATION: Only render the active tab, not inactive tabs
     let (pane_rects, pane_count, dividers, context_menu_data, copy_animation_data, context_menu_images) = {
-        let gui = tab_bar_gui.lock().unwrap();
+        let mut gui = tab_bar_gui.lock().unwrap();
 
-        match gui.tab_states.get(gui.active_tab) {
+        match gui.get_active_pane_layout() {
             Some(pane_layout) => {
-                let pane_rects = pane_layout.pane_layout.get_pane_rects(0, pane_area_y, window_w, pane_area_height);
+                let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_w, pane_area_height);
                 let pane_count = pane_rects.len();
-                let dividers = pane_layout.pane_layout.get_divider_rects(0, pane_area_y, window_w, pane_area_height);
-                let context_menu_data = pane_layout.pane_layout.context_menu_open;
-                let copy_animation_data = pane_layout.pane_layout.copy_animation.clone();
-                let context_menu_images = pane_layout.pane_layout.context_menu_images.clone();
+                let dividers = pane_layout.get_divider_rects(0, pane_area_y, window_w, pane_area_height);
+                let context_menu_data = pane_layout.context_menu_open;
+                let copy_animation_data = pane_layout.copy_animation.clone();
+                let context_menu_images = pane_layout.context_menu_images.clone();
 
                 (pane_rects, pane_count, dividers, context_menu_data, copy_animation_data, context_menu_images)
             }
@@ -132,12 +134,15 @@ pub fn render_frame<'a, T>(
     // Render each pane in the active tab (inactive tabs are NOT rendered)
     let mut any_dirty = false;
     for (_pane_id, rect, terminal, is_active) in pane_rects {
-        let dirty = render_pane(
+        let was_dirty = render_pane(
             canvas,
             texture_creator,
             terminal_font,
+            emoji_font,
+            unicode_fallback_font,
+            tab_font,
             rect,
-            terminal,
+            terminal.clone(),
             is_active,
             pane_count,
             char_width,
@@ -145,8 +150,9 @@ pub fn render_frame<'a, T>(
             cursor_visible,
             settings,
             glyph_cache,
+            scale_factor,
         )?;
-        any_dirty = any_dirty || dirty;
+        any_dirty = any_dirty || was_dirty;
     }
 
     // Render dividers between panes
@@ -179,6 +185,9 @@ fn render_pane<'a, T>(
     canvas: &mut Canvas<Window>,
     texture_creator: &'a TextureCreator<T>,
     font: &Font,
+    emoji_font: &Font,
+    unicode_fallback_font: &Font,
+    _ui_font: &Font,
     rect: Rect,
     terminal: Arc<Mutex<crate::terminal::Terminal>>,
     is_active: bool,
@@ -187,7 +196,8 @@ fn render_pane<'a, T>(
     char_height: f32,
     cursor_visible: bool,
     settings: &Settings,
-    glyph_cache: &mut HashMap<(char, (u8, u8, u8)), sdl3::render::Texture<'a>>,
+    glyph_cache: &mut HashMap<(String, (u8, u8, u8)), sdl3::render::Texture<'a>>,
+    scale_factor: f32,
 ) -> Result<bool, String> {
     let t = terminal.lock().unwrap();
     let mut sb = t.screen_buffer.lock().unwrap();
@@ -213,8 +223,16 @@ fn render_pane<'a, T>(
     for row in 0..visible_rows {
         for col in 0..cols.min(sb.width()) {
             if let Some(cell) = sb.get_cell_with_scrollback(col, row) {
+                // Skip continuation cells (used by double-width emojis)
+                if cell.width == 0 || cell.ch.is_empty() {
+                    continue;
+                }
+
                 let x = rect.x() + pane_padding as i32 + (col as f32 * char_width) as i32;
                 let y = rect.y() + pane_padding as i32 + (row as f32 * char_height) as i32;
+
+                // Calculate actual width for this character (1 or 2 cells)
+                let actual_cell_width = char_width * cell.width as f32;
 
                 // Check if cell is selected
                 let is_selected = if let Some(ref sel) = selection { sel.contains(col, row) } else { false };
@@ -222,27 +240,32 @@ fn render_pane<'a, T>(
                 // Render background (selection highlight or cell background)
                 if is_selected {
                     canvas.set_draw_color(Color::RGB(70, 130, 180));
-                    let cell_rect = Rect::new(x, y, char_width as u32, char_height as u32);
+                    let cell_rect = Rect::new(x, y, actual_cell_width as u32, char_height as u32);
                     canvas.fill_rect(cell_rect).map_err(|e| e.to_string())?;
                 } else if cell.bg_color.r != 0 || cell.bg_color.g != 0 || cell.bg_color.b != 0 {
                     canvas.set_draw_color(Color::RGB(cell.bg_color.r, cell.bg_color.g, cell.bg_color.b));
-                    let cell_rect = Rect::new(x, y, char_width as u32, char_height as u32);
+                    let cell_rect = Rect::new(x, y, actual_cell_width as u32, char_height as u32);
                     canvas.fill_rect(cell_rect).map_err(|e| e.to_string())?;
                 }
 
                 // OPTIMIZATION: Render character if not space (skip spaces with default bg)
-                if cell.ch != ' ' {
+                if cell.ch != " " {
                     render_glyph(
                         canvas,
                         texture_creator,
                         font,
+                        emoji_font,
+                        unicode_fallback_font,
                         glyph_cache,
-                        cell.ch,
+                        &cell.ch,
                         x,
                         y,
                         cell.fg_color.r,
                         cell.fg_color.g,
                         cell.fg_color.b,
+                        actual_cell_width as u32,
+                        char_height as u32,
+                        scale_factor,
                     )?;
                 }
             }
@@ -266,17 +289,21 @@ fn render_pane<'a, T>(
         render_scrollback_indicator(canvas, texture_creator, font, rect, sb.scroll_offset, pane_padding)?;
     }
 
-    // Draw border for active pane (only if multiple panes)
-    if is_active && pane_count > 1 {
-        canvas.set_draw_color(Color::RGB(50, 90, 130));
-        canvas.draw_rect(rect).map_err(|e| e.to_string())?;
-    }
-
     let was_dirty = sb.is_dirty();
     sb.clear_dirty();
 
     // Check if dirty flag was set again during render (race condition)
     let still_dirty = sb.is_dirty();
+
+    // Release locks
+    drop(sb);
+    drop(t);
+
+    // Draw border for active pane (only if multiple panes)
+    if is_active && pane_count > 1 {
+        canvas.set_draw_color(Color::RGB(50, 90, 130));
+        canvas.draw_rect(rect).map_err(|e| e.to_string())?;
+    }
 
     Ok(was_dirty || still_dirty)
 }
@@ -286,27 +313,104 @@ fn render_glyph<'a, T>(
     canvas: &mut Canvas<Window>,
     texture_creator: &'a TextureCreator<T>,
     font: &Font,
-    glyph_cache: &mut HashMap<(char, (u8, u8, u8)), sdl3::render::Texture<'a>>,
-    ch: char,
+    emoji_font: &Font,
+    unicode_fallback_font: &Font,
+    glyph_cache: &mut HashMap<(String, (u8, u8, u8)), sdl3::render::Texture<'a>>,
+    text: &str,
     x: i32,
     y: i32,
     r: u8,
     g: u8,
     b: u8,
+    cell_width: u32,
+    cell_height: u32,
+    _scale_factor: f32,
 ) -> Result<(), String> {
     let fg_color = Color::RGB(r, g, b);
-    let cache_key = (ch, (r, g, b));
+    let cache_key = (text.to_string(), (r, g, b));
 
     // Check cache first
     if let Some(cached_texture) = glyph_cache.get(&cache_key) {
         let query = cached_texture.query();
-        let char_rect = Rect::new(x, y, query.width, query.height);
-        canvas.copy(cached_texture, None, char_rect).map_err(|e| e.to_string())?;
+
+        // Check if this is an emoji - if so, scale it to fit in cell
+        let is_likely_emoji = is_emoji_grapheme(text);
+
+        if is_likely_emoji {
+            // Scale emoji to fill available space (double-width emojis get 2x cell_width)
+            // Use the smaller of width or height to maintain square aspect ratio
+            let target_size = cell_width.min(cell_height);
+
+            let emoji_width = query.width;
+            let emoji_height = query.height;
+
+            // Calculate scaling to fit the target size while maintaining aspect ratio
+            let scale_x = target_size as f32 / emoji_width as f32;
+            let scale_y = target_size as f32 / emoji_height as f32;
+            let scale = scale_x.min(scale_y);
+
+            let scaled_width = (emoji_width as f32 * scale) as u32;
+            let scaled_height = (emoji_height as f32 * scale) as u32;
+
+            // Center the emoji in the cell (horizontally and vertically)
+            let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
+            let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
+
+            let char_rect = Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height);
+            canvas.copy(cached_texture, None, char_rect).map_err(|e| e.to_string())?;
+        } else {
+            // Regular character - use original size
+            let char_rect = Rect::new(x, y, query.width, query.height);
+            canvas.copy(cached_texture, None, char_rect).map_err(|e| e.to_string())?;
+        }
         return Ok(());
     }
 
-    // Not in cache, render and cache it
-    let render_result = font.render_char(ch).blended(fg_color);
+    // Check if this is an emoji character - if so, try emoji font FIRST
+    let is_likely_emoji = is_emoji_grapheme(text);
+
+    if is_likely_emoji {
+        // Try emoji font first for emoji characters
+        let emoji_result = emoji_font.render(text).blended(Color::RGB(255, 255, 255));
+        if let Ok(surface) = emoji_result {
+            if surface.width() > 0 && surface.height() > 0 {
+                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
+                    // Scale emoji to fill available space (double-width emojis get 2x cell_width)
+                    // Use the smaller of width or height to maintain square aspect ratio
+                    let target_size = cell_width.min(cell_height);
+
+                    let emoji_width = surface.width();
+                    let emoji_height = surface.height();
+
+                    // Calculate scaling to fit the target size while maintaining aspect ratio
+                    let scale_x = target_size as f32 / emoji_width as f32;
+                    let scale_y = target_size as f32 / emoji_height as f32;
+                    let scale = scale_x.min(scale_y);
+
+                    let scaled_width = (emoji_width as f32 * scale) as u32;
+                    let scaled_height = (emoji_height as f32 * scale) as u32;
+
+                    // Center the emoji in the cell (horizontally and vertically)
+                    let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
+                    let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
+
+                    let char_rect = Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height);
+                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                    // Cache the texture for next frame
+                    glyph_cache.insert(cache_key, texture);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Not in cache, render and cache it (try main font for non-emoji or if emoji font failed)
+    // For single characters use render_char, for grapheme clusters use render
+    let render_result = if text.chars().count() == 1 {
+        font.render_char(text.chars().next().unwrap()).blended(fg_color)
+    } else {
+        font.render(text).blended(fg_color)
+    };
 
     if let Ok(surface) = render_result {
         if surface.width() > 0 && surface.height() > 0 {
@@ -319,8 +423,37 @@ fn render_glyph<'a, T>(
             }
         }
 
-        // Character not supported, try fallback '□'
-        let fallback_key = ('□', (r, g, b));
+        // Main font produced empty surface - try fallback fonts
+        if !is_likely_emoji {
+            // Try emoji font for non-emoji characters (might be symbols with emoji variants)
+            let emoji_fallback_result = emoji_font.render(text).blended(Color::RGB(255, 255, 255));
+            if let Ok(emoji_surface) = emoji_fallback_result {
+                if emoji_surface.width() > 0 && emoji_surface.height() > 0 {
+                    if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&emoji_surface) {
+                        let char_rect = Rect::new(x, y, emoji_surface.width(), emoji_surface.height());
+                        canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                        glyph_cache.insert(cache_key, texture);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // Try Unicode fallback font (for all characters that failed emoji/main fonts)
+        let unicode_fallback_result = unicode_fallback_font.render(text).blended(fg_color);
+        if let Ok(unicode_surface) = unicode_fallback_result {
+            if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
+                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
+                    let char_rect = Rect::new(x, y, unicode_surface.width(), unicode_surface.height());
+                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                    glyph_cache.insert(cache_key, texture);
+                    return Ok(());
+                }
+            }
+        }
+
+        // Character not supported in any font, try fallback '□'
+        let fallback_key = ("□".to_string(), (r, g, b));
         if let Some(cached_fallback) = glyph_cache.get(&fallback_key) {
             let query = cached_fallback.query();
             let char_rect = Rect::new(x, y, query.width, query.height);
@@ -337,6 +470,53 @@ fn render_glyph<'a, T>(
     }
 
     Ok(())
+}
+
+/// Check if a grapheme cluster is likely an emoji
+#[inline]
+fn is_emoji_grapheme(text: &str) -> bool {
+    text.chars().any(is_emoji_char)
+}
+
+/// Check if a character is likely an emoji based on Unicode ranges
+#[inline]
+fn is_emoji_char(ch: char) -> bool {
+    let codepoint = ch as u32;
+    matches!(codepoint,
+        // Emoticons
+        0x1F600..=0x1F64F |
+        // Miscellaneous Symbols and Pictographs
+        0x1F300..=0x1F5FF |
+        // Transport and Map Symbols
+        0x1F680..=0x1F6FF |
+        // Supplemental Symbols and Pictographs
+        0x1F900..=0x1F9FF |
+        // Symbols and Pictographs Extended-A
+        0x1FA00..=0x1FA6F |
+        0x1FA70..=0x1FAFF |
+        // Miscellaneous Symbols (including weather, zodiac)
+        0x2600..=0x26FF |
+        // Dingbats
+        0x2700..=0x27BF |
+        // Enclosed Alphanumeric Supplement (includes circled numbers and regional indicators for flags)
+        0x1F100..=0x1F1FF |
+        // Enclosed Ideographic Supplement
+        0x1F200..=0x1F2FF |
+        // Miscellaneous Symbols and Arrows
+        0x2B00..=0x2BFF |
+        // Supplemental Arrows-B
+        0x2900..=0x297F |
+        // Variation Selectors (emoji presentation)
+        0xFE00..=0xFE0F |
+        // Mahjong Tiles, Domino Tiles
+        0x1F000..=0x1F02F |
+        // Playing Cards
+        0x1F0A0..=0x1F0FF |
+        // Geometric Shapes
+        0x25A0..=0x25FF |
+        // Arrows
+        0x2190..=0x21FF
+    )
 }
 
 /// Render scrollback position indicator

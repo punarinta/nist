@@ -9,16 +9,16 @@ Features
 - cross-platform (Linux, Mac, Windows)
 - configurable hotkeys and mouse tricks
 - explicitly scrollable history
-- primary buffer for Linux
-- smart Ctrl+C & Ctrl+V (work when it doesn't interfere with terminal apps)
+- primary buffer support on Linux
+- smart Ctrl+C & Ctrl+V (works when it doesn't interfere with terminal apps)
 - sequential hotkeys (built-in example: Alt-G-P -- go to prompt)
+- emojis, including modifiers and combined emojis
 
-Planned
+Next steps
 ===
-- emoji support
-- get rid of underlying terminals (bash, cmd etc) for resource efficiency
+- private pane history items
 - AI-agent to assist working with OS (not for coding)
-- proper settings
+- expand settings
 - themes
 - voice input
 - ligatures support
