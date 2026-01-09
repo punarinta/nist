@@ -101,6 +101,7 @@ pub fn handle_event(
             char_height,
             tab_bar_height,
             canvas_window,
+            event_pump,
             #[cfg(target_os = "linux")]
             clipboard_tx,
         ),
@@ -185,6 +186,7 @@ fn handle_mouse_button_down_event(
     char_height: f32,
     tab_bar_height: u32,
     canvas_window: &sdl3::video::Window,
+    event_pump: &sdl3::EventPump,
     #[cfg(target_os = "linux")] clipboard_tx: &Sender<Clipboard>,
 ) -> EventResult {
     let (mouse_x, mouse_y) = if mouse_coords_need_scaling {
@@ -207,6 +209,7 @@ fn handle_mouse_button_down_event(
         w,
         h,
         mouse_state,
+        event_pump,
         #[cfg(target_os = "linux")]
         clipboard_tx,
     );

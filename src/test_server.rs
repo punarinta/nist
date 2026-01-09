@@ -651,7 +651,7 @@ impl TestServer {
                         let pane_area_height = window_height.saturating_sub(tab_bar_height);
                         let pane_rects = pane_layout.pane_layout.get_pane_rects(0, tab_bar_height as i32, window_width, pane_area_height);
 
-                        for (_pane_id, rect, terminal, _is_active) in pane_rects {
+                        for (_pane_id, rect, terminal, _is_active, _is_selected) in pane_rects {
                             let (cols, rows) = crate::ui::render::calculate_terminal_size(rect.width(), rect.height(), self.char_width, self.char_height);
 
                             if let Ok(mut t) = terminal.lock() {
@@ -739,7 +739,7 @@ impl TestServer {
                         let pane_rects = pane_layout.get_pane_rects(0, tab_bar_height as i32, window_width, pane_area_height);
 
                         // Find the active pane's dimensions
-                        let can_split = if let Some((_, rect, _, _)) = pane_rects.iter().find(|(id, _, _, _)| *id == pane_layout.active_pane) {
+                        let can_split = if let Some((_, rect, _, _, _)) = pane_rects.iter().find(|(id, _, _, _, _)| *id == pane_layout.active_pane) {
                             let (current_cols, current_rows) =
                                 crate::ui::render::calculate_terminal_size(rect.width(), rect.height(), self.char_width, self.char_height);
                             eprintln!(
@@ -823,7 +823,7 @@ impl TestServer {
                         let pane_rects = pane_layout.get_pane_rects(0, tab_bar_height as i32, window_width, pane_area_height);
                         eprintln!("[TEST_SERVER] Resizing {} terminals after split", pane_rects.len());
 
-                        for (pane_id, rect, terminal, _is_active) in pane_rects {
+                        for (pane_id, rect, terminal, _is_active, _is_selected) in pane_rects {
                             let cols = (rect.width() as f32 / self.char_width).floor() as u32;
                             let rows = (rect.height() as f32 / self.char_height).floor() as u32;
 

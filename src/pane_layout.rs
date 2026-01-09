@@ -1,6 +1,7 @@
 use crate::terminal::Terminal;
 use crate::ui::animations::CopyAnimation;
 use sdl3::rect::Rect;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "linux")]
@@ -251,6 +252,8 @@ pub struct PaneLayout {
     pub pending_context_action: Option<(PaneId, String)>,
     /// Copy animation (expanding and fading rectangle after Ctrl+Shift+C)
     pub copy_animation: Option<CopyAnimation>,
+    /// Panes selected for group input (Ctrl+click to toggle)
+    pub selected_panes: HashSet<PaneId>,
 }
 
 impl PaneLayout {
@@ -270,6 +273,7 @@ impl PaneLayout {
             context_menu: None,
             pending_context_action: None,
             copy_animation: None,
+            selected_panes: HashSet::new(),
         }
     }
 
@@ -389,18 +393,19 @@ impl PaneLayout {
 
     /// Get pane layout rectangles for rendering (SDL-compatible)
     /// Returns: Vec<(PaneId, Rect, Arc<Mutex<Terminal>>, is_active)>
-    pub fn get_pane_rects(&self, x: i32, y: i32, width: u32, height: u32) -> Vec<(PaneId, Rect, Arc<Mutex<Terminal>>, bool)> {
+    pub fn get_pane_rects(&self, x: i32, y: i32, width: u32, height: u32) -> Vec<(PaneId, Rect, Arc<Mutex<Terminal>>, bool, bool)> {
         let mut panes = Vec::new();
         self.collect_pane_rects(&self.root, x, y, width, height, &mut panes);
         panes
     }
 
-    fn collect_pane_rects(&self, node: &PaneNode, x: i32, y: i32, width: u32, height: u32, panes: &mut Vec<(PaneId, Rect, Arc<Mutex<Terminal>>, bool)>) {
+    fn collect_pane_rects(&self, node: &PaneNode, x: i32, y: i32, width: u32, height: u32, panes: &mut Vec<(PaneId, Rect, Arc<Mutex<Terminal>>, bool, bool)>) {
         match node {
             PaneNode::Leaf { id, terminal } => {
                 let is_active = *id == self.active_pane;
+                let is_selected = self.selected_panes.contains(id);
                 let rect = Rect::new(x, y, width, height);
-                panes.push((*id, rect, terminal.clone(), is_active));
+                panes.push((*id, rect, terminal.clone(), is_active, is_selected));
             }
             PaneNode::Split {
                 id,
@@ -506,7 +511,7 @@ impl PaneLayout {
     /// Handle mouse click on pane area (returns the clicked pane ID if any)
     pub fn handle_click(&mut self, mouse_x: i32, mouse_y: i32, area_x: i32, area_y: i32, area_width: u32, area_height: u32) -> Option<PaneId> {
         let panes = self.get_pane_rects(area_x, area_y, area_width, area_height);
-        for (pane_id, pane_rect, _, _) in panes {
+        for (pane_id, pane_rect, _, _, _) in panes {
             if pane_rect.contains_point((mouse_x, mouse_y)) {
                 self.set_active_pane(pane_id);
                 return Some(pane_id);
@@ -610,13 +615,6 @@ impl PaneLayout {
         eprintln!("[PANE_LAYOUT] Context menu opened for pane {:?} at ({}, {})", pane_id, x, y);
     }
 
-    /// Close the context menu
-    #[allow(dead_code)]
-    pub fn close_context_menu(&mut self) {
-        self.context_menu_open = None;
-        self.context_menu = None;
-    }
-
     /// Handle a click on the context menu. Returns true if the click was handled.
     /// Sets pending_context_action if a menu item was clicked.
     pub fn handle_context_menu_click(&mut self, mouse_x: i32, mouse_y: i32) -> bool {
@@ -640,6 +638,34 @@ impl PaneLayout {
     pub fn update_context_menu_hover(&mut self, mouse_x: i32, mouse_y: i32) {
         if let Some(ref mut menu) = self.context_menu {
             menu.update_hover(mouse_x, mouse_y);
+        }
+    }
+
+    /// Toggle pane selection for group input (Ctrl+click)
+    pub fn toggle_pane_selection(&mut self, pane_id: PaneId) {
+        if self.selected_panes.contains(&pane_id) {
+            // Always allow deselection
+            self.selected_panes.remove(&pane_id);
+        } else {
+            // Only allow selection if there's more than one pane
+            if self.root.count_leaf_panes() > 1 {
+                self.selected_panes.insert(pane_id);
+            }
+        }
+    }
+
+    /// Get terminals for group input: either selected panes or just the active pane
+    pub fn get_group_input_terminals(&self) -> Vec<Arc<Mutex<Terminal>>> {
+        if self.selected_panes.is_empty() {
+            // No panes selected - send to active pane only
+            if let Some(terminal) = self.root.find_terminal(self.active_pane) {
+                vec![terminal]
+            } else {
+                vec![]
+            }
+        } else {
+            // Send to all selected panes
+            self.selected_panes.iter().filter_map(|&pane_id| self.root.find_terminal(pane_id)).collect()
         }
     }
 }

@@ -220,4 +220,14 @@ impl TabBarGui {
         }
         None
     }
+
+    /// Check if any tab other than the current active tab has selections
+    pub fn has_selections_on_other_tab(&self) -> bool {
+        for (index, tab) in self.tab_states.iter().enumerate() {
+            if index != self.active_tab && !tab.pane_layout.selected_panes.is_empty() {
+                return true;
+            }
+        }
+        false
+    }
 }

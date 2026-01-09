@@ -109,7 +109,7 @@ pub fn send_mouse_to_terminal(
         let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_width, pane_area_height);
 
         // Find which pane contains the mouse
-        for (_pane_id, rect, terminal, _is_active) in pane_rects {
+        for (_pane_id, rect, terminal, _is_active, _is_selected) in pane_rects {
             if rect.contains_point((mouse_x, mouse_y)) {
                 // Convert screen coordinates to terminal coordinates (1-based)
                 let (relative_x, relative_y) = crate::ui::render::adjust_mouse_coords_for_padding(mouse_x, mouse_y, rect.x(), rect.y());
@@ -145,7 +145,7 @@ pub fn handle_selection_start(
         let pane_area_height = window_height - tab_bar_height;
         let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_width, pane_area_height);
 
-        for (_pane_id, rect, terminal, _is_active) in pane_rects {
+        for (_pane_id, rect, terminal, _is_active, _is_selected) in pane_rects {
             if rect.contains_point((mouse_x, mouse_y)) {
                 let (relative_x, relative_y) = crate::ui::render::adjust_mouse_coords_for_padding(mouse_x, mouse_y, rect.x(), rect.y());
                 let col = ((relative_x as f32 / char_width).floor() as usize).max(0);
@@ -180,7 +180,7 @@ pub fn handle_selection_update(
         let pane_area_height = window_height - tab_bar_height;
         let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_width, pane_area_height);
 
-        for (_pane_id, rect, terminal, _is_active) in pane_rects {
+        for (_pane_id, rect, terminal, _is_active, _is_selected) in pane_rects {
             if rect.contains_point((mouse_x, mouse_y)) {
                 let (relative_x, relative_y) = crate::ui::render::adjust_mouse_coords_for_padding(mouse_x, mouse_y, rect.x(), rect.y());
                 let col = ((relative_x as f32 / char_width).floor() as usize).max(0);
@@ -209,6 +209,7 @@ pub fn handle_mouse_button_down(
     window_width: u32,
     window_height: u32,
     mouse_state: &mut MouseState,
+    event_pump: &sdl3::EventPump,
     #[allow(unused_variables)]
     #[cfg(target_os = "linux")]
     clipboard_tx: &Sender<Clipboard>,
@@ -238,7 +239,7 @@ pub fn handle_mouse_button_down(
                     if let Some(pane_layout) = gui.get_active_pane_layout() {
                         // Find which pane was clicked and open context menu
                         let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_width, pane_area_height);
-                        for (pane_id, rect, _, _) in pane_rects {
+                        for (pane_id, rect, _, _, _) in pane_rects {
                             if rect.contains_point((mouse_x, mouse_y)) {
                                 pane_layout.open_context_menu(pane_id, mouse_x, mouse_y);
                                 break;
@@ -312,6 +313,7 @@ pub fn handle_mouse_button_down(
             window_width,
             window_height,
             mouse_state,
+            event_pump,
         ),
         _ => MouseResult::none(),
     }
@@ -331,6 +333,7 @@ fn handle_left_button_down(
     window_width: u32,
     window_height: u32,
     mouse_state: &mut MouseState,
+    event_pump: &sdl3::EventPump,
 ) -> MouseResult {
     // Check if clicking on tab bar
     if mouse_y < tab_bar_height as i32 {
@@ -350,7 +353,15 @@ fn handle_left_button_down(
     let pane_area_y = tab_bar_height as i32;
     let pane_area_height = window_height - tab_bar_height;
 
+    // Check if Ctrl is pressed for group selection
+    let keyboard_state = event_pump.keyboard_state();
+    let is_ctrl_pressed =
+        keyboard_state.is_scancode_pressed(sdl3::keyboard::Scancode::LCtrl) || keyboard_state.is_scancode_pressed(sdl3::keyboard::Scancode::RCtrl);
+
     if let Ok(mut gui) = tab_bar_gui.try_lock() {
+        // Check if other tabs have selections (before mutable borrow)
+        let has_other_tab_selections = if is_ctrl_pressed { gui.has_selections_on_other_tab() } else { false };
+
         if let Some(pane_layout) = gui.get_active_pane_layout() {
             // Try to start dragging a divider
             if pane_layout.start_drag_divider(mouse_x, mouse_y, 0, pane_area_y, window_width, pane_area_height) {
@@ -359,8 +370,23 @@ fn handle_left_button_down(
                 return MouseResult::with_divider_drag();
             }
 
-            // Activate pane
-            pane_layout.handle_click(mouse_x, mouse_y, 0, pane_area_y, window_width, pane_area_height);
+            // Handle pane click
+            if let Some(clicked_pane_id) = pane_layout.handle_click(mouse_x, mouse_y, 0, pane_area_y, window_width, pane_area_height) {
+                if is_ctrl_pressed {
+                    // Ctrl+click: toggle pane selection for group input
+                    // Only allow if no other tab has selections
+                    if !has_other_tab_selections {
+                        pane_layout.toggle_pane_selection(clicked_pane_id);
+                        eprintln!(
+                            "[GROUP INPUT] Toggled pane {:?} selection. Selected panes: {:?}",
+                            clicked_pane_id, pane_layout.selected_panes
+                        );
+                    } else {
+                        eprintln!("[GROUP INPUT] Cannot select on this tab - another tab has selections");
+                    }
+                }
+                // Note: handle_click already sets the active pane
+            }
         }
     }
 

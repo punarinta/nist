@@ -397,6 +397,7 @@ where
             context_menu: None,
             pending_context_action: None,
             copy_animation: None,
+            selected_panes: std::collections::HashSet::new(),
         };
 
         // Set active pane to the first leaf

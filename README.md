@@ -13,10 +13,10 @@ Features
 - smart Ctrl+C & Ctrl+V (works when it doesn't interfere with terminal apps)
 - sequential hotkeys (built-in example: Alt-G-P -- go to prompt)
 - emojis, including modifiers and combined emojis
+- multiterminal typing (send input to several terminals simultaneously)
 
 Next steps
 ===
-- multiterminal typing (send input to several terminals simultaneously)
 - private pane history items
 - AI-agent to assist working with OS (not for coding)
 - further expand settings
@@ -32,6 +32,10 @@ State includes layout structure, relative pane sizes, current working directory,
 Settings
 ===
 Click on CPU load indicator on the top right corner to open settings in your default text editor. There are only a few settings for now, more will come soon.
+
+Sending input to several terminals simultaneously
+===
+Holding Ctrl key and mouse clicking on a terminal pane adds it to the list of terminals to send input to. Ctrl-clicking on a selected terminal removes it from the list. When you have several active terminals, everything you type will be sent to all of them simultaneously.
 
 Current platform support
 ===

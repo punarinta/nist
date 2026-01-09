@@ -465,8 +465,8 @@ fn handle_copy_selection(
                         // Find the active pane rect
                         pane_rects
                             .iter()
-                            .find(|(_, _, term, is_active)| *is_active && Arc::ptr_eq(term, &terminal))
-                            .map(|(_, rect, _, _)| {
+                            .find(|(_, _, term, is_active, _)| *is_active && Arc::ptr_eq(term, &terminal))
+                            .map(|(_, rect, _, _, _)| {
                                 // Calculate selection bounds in screen coordinates
                                 let pane_padding = crate::ui::render::get_pane_padding();
                                 let (start_col, start_row, end_col, end_row) = sel.normalized();
@@ -535,65 +535,71 @@ fn handle_copy_selection(
 
 /// Handle normal key presses (arrow keys, function keys, etc.)
 pub fn handle_normal_key(keycode: Keycode, tab_bar_gui: &Arc<Mutex<TabBarGui>>) -> KeyboardResult {
-    if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
-        let mut t = terminal.lock().unwrap();
-        let backspace_key = t.shell_config.keys.backspace.clone();
+    // Send keys to all selected terminals (or just active if none selected)
+    let mut gui = tab_bar_gui.lock().unwrap();
+    if let Some(pane_layout) = gui.get_active_pane_layout() {
+        let terminals = pane_layout.get_group_input_terminals();
 
-        // Check if application cursor keys mode is enabled
-        let app_cursor_mode = *t.application_cursor_keys.lock().unwrap();
+        for terminal in terminals {
+            let mut t = terminal.lock().unwrap();
+            let backspace_key = t.shell_config.keys.backspace.clone();
 
-        match keycode {
-            Keycode::Return => t.send_key(b"\r"),
-            Keycode::Backspace => t.send_key(&backspace_key),
-            Keycode::Tab => t.send_key(b"\t"),
-            Keycode::Escape => t.send_key(b"\x1b"),
-            Keycode::Up => {
-                if app_cursor_mode {
-                    t.send_key(b"\x1bOA")
-                } else {
-                    t.send_key(b"\x1b[A")
+            // Check if application cursor keys mode is enabled
+            let app_cursor_mode = *t.application_cursor_keys.lock().unwrap();
+
+            match keycode {
+                Keycode::Return => t.send_key(b"\r"),
+                Keycode::Backspace => t.send_key(&backspace_key),
+                Keycode::Tab => t.send_key(b"\t"),
+                Keycode::Escape => t.send_key(b"\x1b"),
+                Keycode::Up => {
+                    if app_cursor_mode {
+                        t.send_key(b"\x1bOA")
+                    } else {
+                        t.send_key(b"\x1b[A")
+                    }
                 }
-            }
-            Keycode::Down => {
-                if app_cursor_mode {
-                    t.send_key(b"\x1bOB")
-                } else {
-                    t.send_key(b"\x1b[B")
+                Keycode::Down => {
+                    if app_cursor_mode {
+                        t.send_key(b"\x1bOB")
+                    } else {
+                        t.send_key(b"\x1b[B")
+                    }
                 }
-            }
-            Keycode::Right => {
-                if app_cursor_mode {
-                    t.send_key(b"\x1bOC")
-                } else {
-                    t.send_key(b"\x1b[C")
+                Keycode::Right => {
+                    if app_cursor_mode {
+                        t.send_key(b"\x1bOC")
+                    } else {
+                        t.send_key(b"\x1b[C")
+                    }
                 }
-            }
-            Keycode::Left => {
-                if app_cursor_mode {
-                    t.send_key(b"\x1bOD")
-                } else {
-                    t.send_key(b"\x1b[D")
+                Keycode::Left => {
+                    if app_cursor_mode {
+                        t.send_key(b"\x1bOD")
+                    } else {
+                        t.send_key(b"\x1b[D")
+                    }
                 }
+                Keycode::Home => t.send_key(b"\x1b[H"),
+                Keycode::End => t.send_key(b"\x1b[F"),
+                Keycode::PageUp => t.send_key(b"\x1b[5~"),
+                Keycode::PageDown => t.send_key(b"\x1b[6~"),
+                Keycode::Insert => t.send_key(b"\x1b[2~"),
+                Keycode::Delete => t.send_key(b"\x1b[3~"),
+                Keycode::F1 => t.send_key(b"\x1bOP"),
+                Keycode::F2 => t.send_key(b"\x1bOQ"),
+                Keycode::F3 => t.send_key(b"\x1bOR"),
+                Keycode::F4 => t.send_key(b"\x1bOS"),
+                Keycode::F5 => t.send_key(b"\x1b[15~"),
+                Keycode::F6 => t.send_key(b"\x1b[17~"),
+                Keycode::F7 => t.send_key(b"\x1b[18~"),
+                Keycode::F8 => t.send_key(b"\x1b[19~"),
+                Keycode::F9 => t.send_key(b"\x1b[20~"),
+                Keycode::F10 => t.send_key(b"\x1b[21~"),
+                Keycode::F11 => t.send_key(b"\x1b[23~"),
+                Keycode::F12 => t.send_key(b"\x1b[24~"),
+                _ => {}
             }
-            Keycode::Home => t.send_key(b"\x1b[H"),
-            Keycode::End => t.send_key(b"\x1b[F"),
-            Keycode::PageUp => t.send_key(b"\x1b[5~"),
-            Keycode::PageDown => t.send_key(b"\x1b[6~"),
-            Keycode::Insert => t.send_key(b"\x1b[2~"),
-            Keycode::Delete => t.send_key(b"\x1b[3~"),
-            Keycode::F1 => t.send_key(b"\x1bOP"),
-            Keycode::F2 => t.send_key(b"\x1bOQ"),
-            Keycode::F3 => t.send_key(b"\x1bOR"),
-            Keycode::F4 => t.send_key(b"\x1bOS"),
-            Keycode::F5 => t.send_key(b"\x1b[15~"),
-            Keycode::F6 => t.send_key(b"\x1b[17~"),
-            Keycode::F7 => t.send_key(b"\x1b[18~"),
-            Keycode::F8 => t.send_key(b"\x1b[19~"),
-            Keycode::F9 => t.send_key(b"\x1b[20~"),
-            Keycode::F10 => t.send_key(b"\x1b[21~"),
-            Keycode::F11 => t.send_key(b"\x1b[23~"),
-            Keycode::F12 => t.send_key(b"\x1b[24~"),
-            _ => {}
         }
     }
     // Request render after sending key to terminal so visual feedback is immediate
@@ -603,8 +609,13 @@ pub fn handle_normal_key(keycode: Keycode, tab_bar_gui: &Arc<Mutex<TabBarGui>>) 
 /// Handle Ctrl+key combinations for control characters
 pub fn handle_ctrl_key(scancode: Scancode, ctrl_keys: &HashMap<Scancode, u8>, tab_bar_gui: &Arc<Mutex<TabBarGui>>) -> KeyboardResult {
     if let Some(&ctrl_byte) = ctrl_keys.get(&scancode) {
-        if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
-            terminal.lock().unwrap().send_key(&[ctrl_byte]);
+        // Send ctrl key to all selected terminals (or just active if none selected)
+        let mut gui = tab_bar_gui.lock().unwrap();
+        if let Some(pane_layout) = gui.get_active_pane_layout() {
+            let terminals = pane_layout.get_group_input_terminals();
+            for terminal in terminals {
+                terminal.lock().unwrap().send_key(&[ctrl_byte]);
+            }
         }
         return KeyboardResult::render();
     }
@@ -620,11 +631,16 @@ pub fn handle_text_input(text: &str, tab_bar: &mut TabBar, tab_bar_gui: &Arc<Mut
         tab_bar.edit_text = gui.tab_states[idx].temp_name.clone();
         tab_bar.edit_cursor_pos = gui.tab_states[idx].cursor_pos;
         KeyboardResult::render()
-    } else if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
-        terminal.lock().unwrap().send_text(text);
+    } else {
+        // Send text to all selected terminals (or just active if none selected)
+        let mut gui = tab_bar_gui.lock().unwrap();
+        if let Some(pane_layout) = gui.get_active_pane_layout() {
+            let terminals = pane_layout.get_group_input_terminals();
+            for terminal in terminals {
+                terminal.lock().unwrap().send_text(text);
+            }
+        }
         // Request render after sending text to terminal so visual feedback is immediate
         KeyboardResult::render()
-    } else {
-        KeyboardResult::none()
     }
 }

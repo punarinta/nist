@@ -413,13 +413,7 @@ impl Terminal {
         let sgr_mode = *sgr_mode_guard;
         drop(sgr_mode_guard);
 
-        eprintln!(
-            "[MOUSE] send_mouse_event called: button={}, col={}, row={}, pressed={}, tracking_mode={:?}, sgr_mode={}",
-            button, col, row, pressed, tracking_mode, sgr_mode
-        );
-
         if tracking_mode == MouseTrackingMode::Disabled {
-            eprintln!("[MOUSE] Mouse tracking is DISABLED, not sending event");
             return;
         }
 

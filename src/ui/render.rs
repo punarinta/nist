@@ -133,7 +133,7 @@ pub fn render_frame<'a, T>(
 
     // Render each pane in the active tab (inactive tabs are NOT rendered)
     let mut any_dirty = false;
-    for (_pane_id, rect, terminal, is_active) in pane_rects {
+    for (_pane_id, rect, terminal, is_active, is_selected) in pane_rects {
         let was_dirty = render_pane(
             canvas,
             texture_creator,
@@ -144,6 +144,7 @@ pub fn render_frame<'a, T>(
             rect,
             terminal.clone(),
             is_active,
+            is_selected,
             pane_count,
             char_width,
             char_height,
@@ -191,6 +192,7 @@ fn render_pane<'a, T>(
     rect: Rect,
     terminal: Arc<Mutex<crate::terminal::Terminal>>,
     is_active: bool,
+    is_selected: bool,
     pane_count: usize,
     char_width: f32,
     char_height: f32,
@@ -302,8 +304,39 @@ fn render_pane<'a, T>(
     drop(sb);
     drop(t);
 
-    // Draw border for active pane (only if multiple panes)
-    if is_active && pane_count > 1 {
+    // Draw border for selected panes (green) or active pane (blue)
+    if is_selected && pane_count > 1 {
+        // Selected panes get a green border
+        canvas.set_draw_color(Color::RGB(50, 180, 80));
+        let border_width = 3;
+        // Top border
+        canvas
+            .fill_rect(Rect::new(rect.x(), rect.y(), rect.width(), border_width))
+            .map_err(|e| e.to_string())?;
+        // Bottom border
+        canvas
+            .fill_rect(Rect::new(
+                rect.x(),
+                rect.y() + rect.height() as i32 - border_width as i32,
+                rect.width(),
+                border_width,
+            ))
+            .map_err(|e| e.to_string())?;
+        // Left border
+        canvas
+            .fill_rect(Rect::new(rect.x(), rect.y(), border_width, rect.height()))
+            .map_err(|e| e.to_string())?;
+        // Right border
+        canvas
+            .fill_rect(Rect::new(
+                rect.x() + rect.width() as i32 - border_width as i32,
+                rect.y(),
+                border_width,
+                rect.height(),
+            ))
+            .map_err(|e| e.to_string())?;
+    } else if is_active && pane_count > 1 {
+        // Active pane gets a blue border
         canvas.set_draw_color(Color::RGB(50, 90, 130));
         canvas.draw_rect(rect).map_err(|e| e.to_string())?;
     }

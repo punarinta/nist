@@ -140,19 +140,6 @@ impl<A: Clone> ContextMenu<A> {
         }
     }
 
-    /// Create a new context menu with custom dimensions
-    #[allow(dead_code)]
-    pub fn with_dimensions(items: Vec<ContextMenuItem<A>>, position: (i32, i32), width: u32, item_height: u32) -> Self {
-        Self {
-            items,
-            position,
-            width,
-            item_height,
-            padding: 5,
-            hovered_item: None,
-        }
-    }
-
     /// Get the bounding rectangle of the menu
     pub fn get_rect(&self) -> Rect {
         let menu_height = (self.items.len() as u32 * self.item_height) + (self.padding as u32 * 2);
