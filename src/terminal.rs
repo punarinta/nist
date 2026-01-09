@@ -1473,7 +1473,18 @@ impl Terminal {
     /// Restore saved output lines to scrollback buffer
     fn restore_output_to_scrollback(&self, lines: Vec<String>) {
         if let Ok(mut sb) = self.screen_buffer.lock() {
-            sb.restore_to_scrollback(lines);
+            // Remove the last line to avoid duplicate prompts after restoration.
+            // When output history is captured, it includes the current screen state,
+            // which typically ends with the active prompt line. When we restore this
+            // history, the terminal will generate a new prompt, resulting in two
+            // prompts if we don't strip the last captured line. By removing it here,
+            // we ensure the restored scrollback contains only completed output, and
+            // the new terminal session starts with exactly one fresh prompt.
+            let mut lines_to_restore = lines;
+            if !lines_to_restore.is_empty() {
+                lines_to_restore.pop();
+            }
+            sb.restore_to_scrollback(lines_to_restore);
         }
     }
 }
