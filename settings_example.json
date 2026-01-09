@@ -1,0 +1,79 @@
+{
+  "external": [],
+  "terminal": {
+    "fontSize": 12.0,
+    "fontFamily": "auto",
+    "cursor": "pipe"
+  },
+  "hotkeys": {
+    "navigation": {
+      "splitRight": [
+        {
+          "ctrl": true,
+          "shift": true,
+          "key": "H"
+        }
+      ],
+      "splitDown": [
+        {
+          "ctrl": true,
+          "shift": true,
+          "key": "J"
+        }
+      ],
+      "closePane": [
+        {
+          "ctrl": true,
+          "shift": true,
+          "key": "W"
+        }
+      ],
+      "nextPane": [
+        {
+          "ctrl": true,
+          "key": "RightBracket"
+        },
+        {
+          "comment": "Sequential hotkey example: Alt+G followed by N",
+          "alt": true,
+          "key": "G",
+          "key2": "N"
+        }
+      ],
+      "previousPane": [
+        {
+          "ctrl": true,
+          "key": "LeftBracket"
+        }
+      ],
+      "newTab": [
+        {
+          "ctrl": true,
+          "shift": true,
+          "key": "T"
+        }
+      ],
+      "nextTab": [
+        {
+          "ctrl": true,
+          "key": "Tab"
+        }
+      ],
+      "previousTab": [
+        {
+          "ctrl": true,
+          "shift": true,
+          "key": "Tab"
+        }
+      ],
+      "goToPrompt": [
+        {
+          "comment": "Example of a sequential hotkey: Alt+G followed by P - scrolls back to the prompt",
+          "alt": true,
+          "key": "G",
+          "key2": "P"
+        }
+      ]
+    }
+  }
+}
