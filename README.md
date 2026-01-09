@@ -14,10 +14,11 @@ Features
 - sequential hotkeys (built-in example: Alt-G-P -- go to prompt)
 - emojis, including modifiers and combined emojis
 - multiterminal typing (send input to several terminals simultaneously)
+- terminal keeps own output history in state
 
 Next steps
 ===
-- private pane history items
+- keep terminal's own input history in state
 - AI-agent to assist working with OS (not for coding)
 - further expand settings
 - voice input
