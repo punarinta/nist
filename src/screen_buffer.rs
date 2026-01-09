@@ -120,15 +120,26 @@ impl ScreenBuffer {
     }
 
     pub fn resize(&mut self, width: usize, height: usize) {
+        // Ensure minimum size to prevent buffer underflow
+        let width = width.max(2);
+        let height = height.max(2);
+
         // Create new buffer
         let mut new_cells = vec![vec![Cell::default(); width]; height];
 
-        // Copy old content
+        // Copy old content with defensive bounds checking
+        // This prevents panics during rapid resizing (e.g., font size changes)
         let copy_height = self.height.min(height);
         let copy_width = self.width.min(width);
         for (y, row) in new_cells.iter_mut().enumerate().take(copy_height) {
-            for x in 0..copy_width {
-                row[x] = self.cells[y][x].clone();
+            // Defensive check: ensure old buffer has this row
+            if y < self.cells.len() {
+                for x in 0..copy_width {
+                    // Defensive check: ensure old buffer has this column
+                    if x < self.cells[y].len() {
+                        row[x] = self.cells[y][x].clone();
+                    }
+                }
             }
         }
 
@@ -753,5 +764,117 @@ impl ScreenBuffer {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resize_minimum_size_enforcement() {
+        // Test that resize enforces minimum size of 2x2
+        let mut buffer = ScreenBuffer::new_with_scrollback(10, 10, 1000);
+
+        // Try to resize to 0x0 - should be clamped to 2x2
+        buffer.resize(0, 0);
+        assert_eq!(buffer.width(), 2, "Width should be clamped to minimum of 2");
+        assert_eq!(buffer.height(), 2, "Height should be clamped to minimum of 2");
+
+        // Try to resize to 1x1 - should be clamped to 2x2
+        buffer.resize(1, 1);
+        assert_eq!(buffer.width(), 2, "Width should be clamped to minimum of 2");
+        assert_eq!(buffer.height(), 2, "Height should be clamped to minimum of 2");
+    }
+
+    #[test]
+    fn test_resize_preserves_content() {
+        // Test that resize preserves content when growing/shrinking
+        let mut buffer = ScreenBuffer::new_with_scrollback(5, 5, 1000);
+
+        // Put some content in the buffer
+        buffer.move_cursor_to(0, 0);
+        buffer.put_grapheme("A");
+        buffer.move_cursor_to(4, 4);
+        buffer.put_grapheme("B");
+
+        // Grow the buffer
+        buffer.resize(10, 10);
+        assert_eq!(buffer.width(), 10);
+        assert_eq!(buffer.height(), 10);
+
+        // Check that original content is preserved
+        if let Some(cell) = buffer.get_cell(0, 0) {
+            assert_eq!(cell.ch, "A");
+        } else {
+            panic!("Cell (0,0) should exist");
+        }
+
+        if let Some(cell) = buffer.get_cell(4, 4) {
+            assert_eq!(cell.ch, "B");
+        } else {
+            panic!("Cell (4,4) should exist");
+        }
+
+        // Shrink the buffer
+        buffer.resize(3, 3);
+        assert_eq!(buffer.width(), 3);
+        assert_eq!(buffer.height(), 3);
+
+        // Original cell should still be there
+        if let Some(cell) = buffer.get_cell(0, 0) {
+            assert_eq!(cell.ch, "A");
+        } else {
+            panic!("Cell (0,0) should exist after shrinking");
+        }
+    }
+
+    #[test]
+    fn test_resize_with_very_small_font() {
+        // Simulate what happens when font is too large for window
+        // This would result in cols=0 or rows=0 without minimum enforcement
+        let mut buffer = ScreenBuffer::new_with_scrollback(80, 24, 1000);
+
+        // Fill with some content
+        for y in 0..24 {
+            for x in 0..80 {
+                buffer.move_cursor_to(x, y);
+                buffer.put_grapheme("X");
+            }
+        }
+
+        // Resize to minimum (simulating large font / small window)
+        buffer.resize(2, 2);
+
+        // Should not panic and should have minimum size
+        assert_eq!(buffer.width(), 2);
+        assert_eq!(buffer.height(), 2);
+
+        // Should be able to access all cells without panic
+        for y in 0..2 {
+            for x in 0..2 {
+                assert!(buffer.get_cell(x, y).is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn test_cursor_stays_in_bounds_after_resize() {
+        let mut buffer = ScreenBuffer::new_with_scrollback(80, 24, 1000);
+
+        // Move cursor to bottom right
+        buffer.move_cursor_to(79, 23);
+        assert_eq!(buffer.cursor_x, 79);
+        assert_eq!(buffer.cursor_y, 23);
+
+        // Shrink buffer - cursor should be clamped
+        buffer.resize(10, 10);
+        assert_eq!(buffer.cursor_x, 9, "Cursor X should be clamped to width-1");
+        assert_eq!(buffer.cursor_y, 9, "Cursor Y should be clamped to height-1");
+
+        // Resize to minimum - cursor should still be valid
+        buffer.resize(2, 2);
+        assert_eq!(buffer.cursor_x, 1, "Cursor X should be clamped to width-1");
+        assert_eq!(buffer.cursor_y, 1, "Cursor Y should be clamped to height-1");
     }
 }

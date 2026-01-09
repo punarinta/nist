@@ -1031,7 +1031,7 @@ Searched directories:
                     }
                     input::events::EventAction::ChangeFontSize(delta) => {
                         // Update font size in settings
-                        settings.terminal.font_size = (settings.terminal.font_size + delta).clamp(6.0, 72.0);
+                        settings.terminal.font_size = (settings.terminal.font_size + delta).clamp(8.0, 48.0);
                         eprintln!("[MAIN] Font size changed to: {}", settings.terminal.font_size);
 
                         // Save updated settings

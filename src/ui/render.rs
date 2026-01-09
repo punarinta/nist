@@ -36,11 +36,18 @@ pub fn get_usable_dimensions(rect_width: u32, rect_height: u32) -> (u32, u32) {
 }
 
 /// Calculate terminal columns and rows from rect dimensions
+/// Ensures minimum size of 2x2 to prevent buffer underflow panics
 #[inline]
 pub fn calculate_terminal_size(rect_width: u32, rect_height: u32, char_width: f32, char_height: f32) -> (u32, u32) {
     let (usable_width, usable_height) = get_usable_dimensions(rect_width, rect_height);
     let cols = (usable_width as f32 / char_width).floor() as u32;
     let rows = (usable_height as f32 / char_height).floor() as u32;
+
+    // Ensure minimum terminal size to prevent buffer underflow
+    // This can happen when font size is too large for the available space
+    let cols = cols.max(2);
+    let rows = rows.max(2);
+
     (cols, rows)
 }
 
@@ -641,4 +648,78 @@ fn render_copy_animation(canvas: &mut Canvas<Window>, animation: &crate::ui::ani
     canvas.fill_rect(current_rect).map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_terminal_size_minimum_enforcement() {
+        // Test that terminal size is never smaller than 2x2
+        // This can happen when font is too large for the available space
+
+        // Extreme case: font larger than available space
+        let (cols, rows) = calculate_terminal_size(10, 10, 100.0, 100.0);
+        assert_eq!(cols, 2, "Cols should be at least 2 when font is too large");
+        assert_eq!(rows, 2, "Rows should be at least 2 when font is too large");
+
+        // Edge case: very small window
+        let (cols, rows) = calculate_terminal_size(1, 1, 10.0, 10.0);
+        assert_eq!(cols, 2, "Cols should be at least 2 for tiny window");
+        assert_eq!(rows, 2, "Rows should be at least 2 for tiny window");
+
+        // Edge case: zero-sized window
+        let (cols, rows) = calculate_terminal_size(0, 0, 10.0, 10.0);
+        assert_eq!(cols, 2, "Cols should be at least 2 for zero-sized window");
+        assert_eq!(rows, 2, "Rows should be at least 2 for zero-sized window");
+    }
+
+    #[test]
+    fn test_calculate_terminal_size_normal_case() {
+        // Test normal terminal size calculation
+        // Assuming 4px padding on each side (8px total on non-Windows)
+
+        // Window: 800x600, char: 10x20
+        // Usable: 792x592 (after 8px padding)
+        // Expected: 79 cols, 29 rows
+        let (cols, rows) = calculate_terminal_size(800, 600, 10.0, 20.0);
+        assert!(cols >= 2, "Cols should be at least 2");
+        assert!(rows >= 2, "Rows should be at least 2");
+        assert!(cols <= 80, "Cols should be reasonable");
+        assert!(rows <= 30, "Rows should be reasonable");
+    }
+
+    #[test]
+    fn test_calculate_terminal_size_with_large_font() {
+        // Simulate Ctrl+MouseWheel zoom to large font (e.g., 72pt)
+        // With large font, available space might only fit 2x2 or slightly more
+
+        // Small pane after split: 400x300, large font: 50x100
+        let (cols, rows) = calculate_terminal_size(400, 300, 50.0, 100.0);
+        assert!(cols >= 2, "Cols should be at least 2 with large font");
+        assert!(rows >= 2, "Rows should be at least 2 with large font");
+
+        // Should not be more than what fits
+        assert!(cols < 10, "Cols should be small with large font");
+        assert!(rows < 5, "Rows should be small with large font");
+    }
+
+    #[test]
+    fn test_calculate_terminal_size_prevents_panic() {
+        // Test various combinations that could cause panics if not handled
+        let test_cases = vec![
+            (0, 0, 1.0, 1.0),
+            (1, 1, 1.0, 1.0),
+            (10, 10, 100.0, 100.0),
+            (100, 100, 1000.0, 1000.0),
+            (u32::MAX, u32::MAX, f32::MAX, f32::MAX),
+        ];
+
+        for (width, height, char_w, char_h) in test_cases {
+            let (cols, rows) = calculate_terminal_size(width, height, char_w, char_h);
+            assert!(cols >= 2, "Cols should always be at least 2");
+            assert!(rows >= 2, "Rows should always be at least 2");
+        }
+    }
 }

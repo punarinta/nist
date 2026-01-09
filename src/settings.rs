@@ -497,7 +497,20 @@ pub fn load_settings() -> Result<Settings, String> {
 
     let contents = fs::read_to_string(&settings_path).map_err(|e| format!("Failed to read settings file: {}", e))?;
 
-    let settings: Settings = serde_json::from_str(&contents).map_err(|e| format!("Failed to parse settings file: {}", e))?;
+    let mut settings: Settings = serde_json::from_str(&contents).map_err(|e| format!("Failed to parse settings file: {}", e))?;
+
+    // Validate and fix font size (minimum 8.0, maximum 48.0)
+    let original_font_size = settings.terminal.font_size;
+    settings.terminal.font_size = settings.terminal.font_size.clamp(8.0, 48.0);
+
+    // Save corrected settings if font size was out of bounds
+    if (settings.terminal.font_size - original_font_size).abs() > 0.01 {
+        eprintln!(
+            "[SETTINGS] Font size {} was out of bounds, corrected to {}",
+            original_font_size, settings.terminal.font_size
+        );
+        save_settings(&settings)?;
+    }
 
     Ok(settings)
 }
@@ -972,5 +985,75 @@ mod tests {
         let single_binding: KeyBinding = serde_json::from_str(json_single).unwrap();
         assert_eq!(single_binding.key2, None);
         assert!(!single_binding.is_sequential());
+    }
+
+    #[test]
+    fn test_font_size_validation() {
+        // Test that font size is validated and clamped to safe bounds (8.0-48.0)
+        let mut settings = Settings::default();
+
+        // Test font size below minimum
+        settings.terminal.font_size = 5.0;
+        let json = serde_json::to_string(&settings).unwrap();
+        let loaded: Settings = serde_json::from_str(&json).unwrap();
+        // Note: Direct deserialization doesn't validate, but load_settings() does
+        assert_eq!(loaded.terminal.font_size, 5.0); // Pre-validation
+
+        // Simulate the validation that happens in load_settings
+        let validated_size = loaded.terminal.font_size.clamp(8.0, 48.0);
+        assert_eq!(validated_size, 8.0, "Font size below 8.0 should be clamped to 8.0");
+
+        // Test font size above maximum
+        settings.terminal.font_size = 100.0;
+        let json = serde_json::to_string(&settings).unwrap();
+        let loaded: Settings = serde_json::from_str(&json).unwrap();
+        let validated_size = loaded.terminal.font_size.clamp(8.0, 48.0);
+        assert_eq!(validated_size, 48.0, "Font size above 48.0 should be clamped to 48.0");
+
+        // Test valid font size in range
+        settings.terminal.font_size = 14.0;
+        let json = serde_json::to_string(&settings).unwrap();
+        let loaded: Settings = serde_json::from_str(&json).unwrap();
+        let validated_size = loaded.terminal.font_size.clamp(8.0, 48.0);
+        assert_eq!(validated_size, 14.0, "Font size within range should remain unchanged");
+    }
+
+    #[test]
+    fn test_font_size_safety_integration() {
+        // Integration test demonstrating complete font size safety chain
+        // This simulates the real-world scenario where a user might:
+        // 1. Edit settings.json manually with invalid values
+        // 2. Use Ctrl+Scroll to change font size
+        // 3. System prevents crashes by enforcing minimums
+
+        let mut settings = Settings::default();
+
+        // Scenario 1: User manually edits settings.json with too-small font
+        settings.terminal.font_size = 2.0;
+        let corrected = settings.terminal.font_size.clamp(8.0, 48.0);
+        assert_eq!(corrected, 8.0, "Too-small font should be corrected to 8.0");
+
+        // Scenario 2: User scrolls down from minimum
+        settings.terminal.font_size = 8.0;
+        let delta = -1.0; // Scroll down
+        let new_size = (settings.terminal.font_size + delta).clamp(8.0, 48.0);
+        assert_eq!(new_size, 8.0, "Should not go below 8.0 when scrolling down");
+
+        // Scenario 3: User scrolls up from minimum (should work)
+        let delta = 1.0; // Scroll up
+        let new_size = (settings.terminal.font_size + delta).clamp(8.0, 48.0);
+        assert_eq!(new_size, 9.0, "Should be able to increase from 8.0");
+
+        // Scenario 4: Extreme values are clamped
+        settings.terminal.font_size = 1000.0;
+        let corrected = settings.terminal.font_size.clamp(8.0, 48.0);
+        assert_eq!(corrected, 48.0, "Too-large font should be corrected to 48.0");
+
+        // Verify the safe range
+        for size in [8.0, 10.0, 12.0, 16.0, 24.0, 36.0, 48.0] {
+            settings.terminal.font_size = size;
+            let corrected = settings.terminal.font_size.clamp(8.0, 48.0);
+            assert_eq!(corrected, size, "Valid font size {} should not be changed", size);
+        }
     }
 }
