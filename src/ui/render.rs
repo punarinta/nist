@@ -8,7 +8,7 @@
 
 use sdl3::pixels::Color;
 use sdl3::rect::Rect;
-use sdl3::render::{Canvas, TextureCreator};
+use sdl3::render::{BlendMode, Canvas, TextureCreator};
 use sdl3::ttf::Font;
 use sdl3::video::Window;
 use std::collections::HashMap;
@@ -569,6 +569,9 @@ fn render_context_menu<T>(
 fn render_copy_animation(canvas: &mut Canvas<Window>, animation: &crate::ui::animations::CopyAnimation) -> Result<(), String> {
     let current_rect = animation.current_rect();
     let opacity = animation.current_opacity();
+
+    // Enable alpha blending for transparency
+    canvas.set_blend_mode(BlendMode::Blend);
 
     // Draw fading rectangle
     let color = Color::RGBA(70, 130, 180, opacity);
