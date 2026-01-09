@@ -523,21 +523,9 @@ fn main() -> Result<(), String> {
                                     Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Unsupported platform"));
 
                                 match result {
-                                    Err(e) => {
-                                        eprintln!("\n========================================");
-                                        eprintln!("❌ FAILED TO OPEN SETTINGS FILE");
-                                        eprintln!("========================================");
-                                        eprintln!("Error: {}", e);
-                                        eprintln!("Location: {:?}", path);
-                                        eprintln!("========================================\n");
-                                    }
+                                    Err(e) => eprintln!("❌ Failed to open settings file | Error: {} | Location: {:?}", e, path),
                                     Ok(_) => {
-                                        eprintln!("\n========================================");
-                                        eprintln!("✓ SETTINGS FILE OPENED");
-                                        eprintln!("========================================");
-                                        eprintln!("Location: {:?}", path);
-                                        eprintln!("Editor should now be in foreground");
-                                        eprintln!("========================================\n");
+                                        eprintln!("✓ Settings file opened | Location: {:?} | Editor should now be in foreground", path);
 
                                         // Show desktop notification (Linux)
                                         #[cfg(target_os = "linux")]
@@ -557,11 +545,7 @@ fn main() -> Result<(), String> {
                                 }
                             }
                             Err(e) => {
-                                eprintln!("\n========================================");
-                                eprintln!("❌ FAILED TO GET SETTINGS PATH");
-                                eprintln!("========================================");
-                                eprintln!("Error: {}", e);
-                                eprintln!("========================================\n");
+                                eprintln!("❌ Failed to get settings path | Error: {}", e);
                             }
                         }
                     }

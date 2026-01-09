@@ -5,10 +5,10 @@ A terminal we use at Nisdos and decided to open-source. It aims at low CPU and m
 Features
 ===
 - flexible layout: movable tabs, resizable panes
-- state is saved and loaded automatically
+- state (layout, cwd, tab names) is saved and loaded automatically
 - cross-platform (Linux, Mac, Windows)
 - configurable hotkeys and mouse tricks
-- explicitly scrollable history
+- scrollable output history
 - primary buffer support on Linux
 - smart Ctrl+C & Ctrl+V (works when it doesn't interfere with terminal apps)
 - sequential hotkeys (built-in example: Alt-G-P -- go to prompt)
@@ -16,17 +16,18 @@ Features
 
 Next steps
 ===
+- multiterminal typing (send input to several terminals simultaneously)
 - private pane history items
 - AI-agent to assist working with OS (not for coding)
-- expand settings
-- themes
+- further expand settings
 - voice input
+- JSON themes
 - ligatures support
 - Kitty protocol support
 
 Settings
 ===
-Click on CPU load indicator on the top right corner to open settings in your default text editor. There are veeery few settings for now, they will come soon.
+Click on CPU load indicator on the top right corner to open settings in your default text editor. There are only a few settings for now, more will come soon.
 
 Current platform support
 ===

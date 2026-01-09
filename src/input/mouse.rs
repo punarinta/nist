@@ -236,12 +236,11 @@ pub fn handle_mouse_button_down(
 
                 if let Ok(mut gui) = tab_bar_gui.try_lock() {
                     if let Some(pane_layout) = gui.get_active_pane_layout() {
-                        // Find which pane was clicked
+                        // Find which pane was clicked and open context menu
                         let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_width, pane_area_height);
                         for (pane_id, rect, _, _) in pane_rects {
                             if rect.contains_point((mouse_x, mouse_y)) {
-                                pane_layout.context_menu_open = Some((pane_id, mouse_x, mouse_y));
-                                eprintln!("[MAIN] Context menu opened for pane {:?} at ({}, {})", pane_id, mouse_x, mouse_y);
+                                pane_layout.open_context_menu(pane_id, mouse_x, mouse_y);
                                 break;
                             }
                         }
@@ -566,35 +565,7 @@ pub fn handle_mouse_button_up(
 fn handle_context_menu_click(mouse_x: i32, mouse_y: i32, tab_bar_gui: &Arc<Mutex<TabBarGui>>) -> Option<MouseAction> {
     let mut gui = tab_bar_gui.lock().unwrap();
     if let Some(pane_layout) = gui.get_active_pane_layout() {
-        if let Some((menu_pane_id, menu_x, menu_y)) = pane_layout.context_menu_open {
-            // Check if clicking on context menu
-            let menu_rect = sdl3::rect::Rect::new(menu_x, menu_y, 400, 230);
-            if menu_rect.contains_point((mouse_x, mouse_y)) {
-                // Handle menu item clicks
-                let relative_y = mouse_y - menu_y - 5;
-                let item_index = (relative_y / 55) as usize;
-
-                // Check pane count to determine if "Turn into a tab" is disabled
-                let pane_count = pane_layout.root.count_leaf_panes();
-
-                if item_index < 4 {
-                    match item_index {
-                        0 => pane_layout.pending_context_action = Some((menu_pane_id, "split_vertical".to_string())),
-                        1 => pane_layout.pending_context_action = Some((menu_pane_id, "split_horizontal".to_string())),
-                        2 => {
-                            // Only allow "Turn into a tab" if there's more than 1 pane
-                            if pane_count > 1 {
-                                pane_layout.pending_context_action = Some((menu_pane_id, "to_tab".to_string()));
-                            }
-                        }
-                        3 => pane_layout.pending_context_action = Some((menu_pane_id, "kill_shell".to_string())),
-                        _ => {}
-                    }
-                }
-            }
-            // Close menu on any click
-            pane_layout.context_menu_open = None;
-        }
+        pane_layout.handle_context_menu_click(mouse_x, mouse_y);
     }
     None
 }
@@ -686,6 +657,16 @@ pub fn handle_mouse_motion(
 
     // Always update tab bar hover to handle unhover correctly
     tab_bar.update_hover(mouse_x, mouse_y);
+
+    // Update context menu hover if open
+    if let Ok(mut gui) = tab_bar_gui.try_lock() {
+        if let Some(pane_layout) = gui.get_active_pane_layout() {
+            if pane_layout.context_menu.is_some() {
+                pane_layout.update_context_menu_hover(mouse_x, mouse_y);
+                needs_render = true;
+            }
+        }
+    }
 
     if mouse_y < tab_bar_height as i32 {
         needs_render = true;

@@ -362,6 +362,33 @@ impl ScreenBuffer {
 
     pub fn clear_screen(&mut self) {
         self.pending_wrap = false;
+
+        // Save current screen content to scrollback buffer before clearing
+        // Only save lines up to the cursor position (or last non-empty line)
+        if self.scrollback_limit > 0 {
+            // Find the last line with actual content
+            let mut last_content_line = self.cursor_y;
+            for y in (0..self.cells.len()).rev() {
+                let has_content = self.cells[y].iter().any(|cell| cell.ch.trim() != "");
+                if has_content {
+                    last_content_line = y;
+                    break;
+                }
+            }
+
+            // Push only lines up to and including the last line with content
+            for i in 0..=last_content_line.min(self.cells.len().saturating_sub(1)) {
+                self.scrollback_buffer.push(self.cells[i].clone());
+            }
+
+            // Trim scrollback buffer if it exceeds the limit
+            if self.scrollback_buffer.len() > self.scrollback_limit {
+                let excess = self.scrollback_buffer.len() - self.scrollback_limit;
+                self.scrollback_buffer.drain(0..excess);
+            }
+        }
+
+        // Clear all cells
         for row in &mut self.cells {
             for cell in row {
                 cell.ch = " ".to_string();
@@ -369,6 +396,11 @@ impl ScreenBuffer {
                 cell.bg_color = self.bg_color;
             }
         }
+
+        // Move cursor to home position
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+
         // Reset scrolling region when clearing screen
         self.scroll_region = None;
         self.dirty = true;
@@ -752,6 +784,10 @@ impl ScreenBuffer {
 
     pub fn scrollback_limit(&self) -> usize {
         self.scrollback_limit
+    }
+
+    pub fn get_scrollback_buffer(&self) -> &Vec<Vec<Cell>> {
+        &self.scrollback_buffer
     }
 
     pub fn get_scroll_region(&self) -> Option<(usize, usize)> {

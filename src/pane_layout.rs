@@ -245,6 +245,8 @@ pub struct PaneLayout {
     pub context_menu_images: Option<ContextMenuImages>,
     /// Context menu state: (pane_id, x, y)
     pub context_menu_open: Option<(PaneId, i32, i32)>,
+    /// Context menu instance
+    pub context_menu: Option<crate::ui::context_menu::ContextMenu<String>>,
     /// Pending context menu action: (pane_id, action_type)
     pub pending_context_action: Option<(PaneId, String)>,
     /// Copy animation (expanding and fading rectangle after Ctrl+Shift+C)
@@ -265,6 +267,7 @@ impl PaneLayout {
             primary_clipboard: None,
             context_menu_images: None,
             context_menu_open: None,
+            context_menu: None,
             pending_context_action: None,
             copy_animation: None,
         }
@@ -583,6 +586,60 @@ impl PaneLayout {
                     Self::find_split_ratio(first, split_id).or_else(|| Self::find_split_ratio(second, split_id))
                 }
             }
+        }
+    }
+
+    /// Open context menu at the specified position for a pane
+    pub fn open_context_menu(&mut self, pane_id: PaneId, x: i32, y: i32) {
+        use crate::ui::context_menu::{ContextMenu, ContextMenuItem};
+
+        self.context_menu_open = Some((pane_id, x, y));
+
+        // Create the context menu with items
+        if let Some(ref menu_images) = self.context_menu_images {
+            let pane_count = self.root.count_leaf_panes();
+            let items = vec![
+                ContextMenuItem::new(menu_images.vertical_split, "Split vertically", "split_vertical".to_string()),
+                ContextMenuItem::new(menu_images.horizontal_split, "Split horizontally", "split_horizontal".to_string()),
+                ContextMenuItem::with_enabled(menu_images.expand_into_tab, "Turn into a tab", "to_tab".to_string(), pane_count > 1),
+                ContextMenuItem::new(menu_images.kill_shell, "Kill terminal", "kill_shell".to_string()),
+            ];
+            self.context_menu = Some(ContextMenu::new(items, (x, y)));
+        }
+
+        eprintln!("[PANE_LAYOUT] Context menu opened for pane {:?} at ({}, {})", pane_id, x, y);
+    }
+
+    /// Close the context menu
+    #[allow(dead_code)]
+    pub fn close_context_menu(&mut self) {
+        self.context_menu_open = None;
+        self.context_menu = None;
+    }
+
+    /// Handle a click on the context menu. Returns true if the click was handled.
+    /// Sets pending_context_action if a menu item was clicked.
+    pub fn handle_context_menu_click(&mut self, mouse_x: i32, mouse_y: i32) -> bool {
+        if let Some((menu_pane_id, _, _)) = self.context_menu_open {
+            if let Some(ref menu) = self.context_menu {
+                if let Some(action) = menu.handle_click(mouse_x, mouse_y) {
+                    self.pending_context_action = Some((menu_pane_id, action));
+                }
+            }
+
+            // Close menu on any click
+            self.context_menu_open = None;
+            self.context_menu = None;
+            return true;
+        }
+
+        false
+    }
+
+    /// Update the context menu hover state based on mouse position
+    pub fn update_context_menu_hover(&mut self, mouse_x: i32, mouse_y: i32) {
+        if let Some(ref mut menu) = self.context_menu {
+            menu.update_hover(mouse_x, mouse_y);
         }
     }
 }

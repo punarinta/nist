@@ -336,6 +336,7 @@ where
             primary_clipboard: None,
             context_menu_images: None,
             context_menu_open: None,
+            context_menu: None,
             pending_context_action: None,
             copy_animation: None,
         };

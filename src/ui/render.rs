@@ -18,6 +18,7 @@ use crate::ansi::DEFAULT_BG_COLOR;
 use crate::sdl_renderer;
 use crate::settings::Settings;
 use crate::tab_gui::TabBarGui;
+use crate::ui::context_menu::ContextMenu;
 
 /// Get the platform-specific pane padding in pixels
 #[inline]
@@ -56,19 +57,6 @@ pub fn calculate_terminal_size(rect_width: u32, rect_height: u32, char_width: f3
 pub fn adjust_mouse_coords_for_padding(mouse_x: i32, mouse_y: i32, rect_x: i32, rect_y: i32) -> (i32, i32) {
     let padding = get_pane_padding() as i32;
     ((mouse_x - rect_x).saturating_sub(padding), (mouse_y - rect_y).saturating_sub(padding))
-}
-
-/// Helper function to create SDL surface from RGBA pixel data
-fn create_sdl_surface_from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Result<sdl3::surface::Surface<'static>, String> {
-    let mut surface =
-        sdl3::surface::Surface::new(width, height, sdl3::pixels::PixelFormat::RGBA32).map_err(|e| format!("Failed to create SDL surface: {}", e))?;
-
-    // Copy pixel data
-    surface.with_lock_mut(|buffer: &mut [u8]| {
-        buffer.copy_from_slice(&pixels);
-    });
-
-    Ok(surface)
 }
 
 /// Render the entire frame including tab bar and active tab's panes
@@ -116,7 +104,7 @@ pub fn render_frame<'a, T>(
 
     // Get active tab's pane layout data (quickly, then release lock)
     // OPTIMIZATION: Only render the active tab, not inactive tabs
-    let (pane_rects, pane_count, dividers, context_menu_data, copy_animation_data, context_menu_images) = {
+    let (pane_rects, pane_count, dividers, context_menu, copy_animation_data) = {
         let mut gui = tab_bar_gui.lock().unwrap();
 
         match gui.get_active_pane_layout() {
@@ -124,11 +112,10 @@ pub fn render_frame<'a, T>(
                 let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_w, pane_area_height);
                 let pane_count = pane_rects.len();
                 let dividers = pane_layout.get_divider_rects(0, pane_area_y, window_w, pane_area_height);
-                let context_menu_data = pane_layout.context_menu_open;
+                let context_menu = pane_layout.context_menu.clone();
                 let copy_animation_data = pane_layout.copy_animation.clone();
-                let context_menu_images = pane_layout.context_menu_images.clone();
 
-                (pane_rects, pane_count, dividers, context_menu_data, copy_animation_data, context_menu_images)
+                (pane_rects, pane_count, dividers, context_menu, copy_animation_data)
             }
             None => {
                 // No active tab, just present empty screen
@@ -166,8 +153,8 @@ pub fn render_frame<'a, T>(
     render_dividers(canvas, &dividers)?;
 
     // Render context menu if open
-    if let Some((_, menu_x, menu_y)) = context_menu_data {
-        render_context_menu(canvas, texture_creator, context_menu_font, menu_x, menu_y, pane_count, &context_menu_images)?;
+    if let Some(ref menu) = context_menu {
+        render_context_menu(canvas, texture_creator, context_menu_font, menu)?;
     }
 
     // Render copy animation if active
@@ -572,72 +559,9 @@ fn render_context_menu<T>(
     canvas: &mut Canvas<Window>,
     texture_creator: &TextureCreator<T>,
     menu_font: &Font,
-    menu_x: i32,
-    menu_y: i32,
-    pane_count: usize,
-    context_menu_images: &Option<crate::pane_layout::ContextMenuImages>,
+    menu: &ContextMenu<String>,
 ) -> Result<(), String> {
-    let menu_width = 400;
-    let item_height = 55;
-    let menu_items = ["Split vertically", "Split horizontally", "Turn into a tab", "Kill terminal"];
-    let menu_height = (menu_items.len() as u32 * item_height) + 10;
-    let menu_rect = Rect::new(menu_x, menu_y, menu_width, menu_height);
-
-    // Draw background
-    canvas.set_draw_color(Color::RGB(40, 40, 40));
-    canvas.fill_rect(menu_rect).map_err(|e| e.to_string())?;
-
-    // Draw border
-    canvas.set_draw_color(Color::RGB(80, 80, 80));
-    canvas.draw_rect(menu_rect).map_err(|e| e.to_string())?;
-
-    // Draw menu items with icons
-    if let Some(ref menu_images) = context_menu_images {
-        for (i, item) in menu_items.iter().enumerate() {
-            let item_y = menu_y + 5 + (i as i32 * item_height as i32);
-
-            // Get icon for this menu item
-            let image_data = match i {
-                0 => menu_images.vertical_split,
-                1 => menu_images.horizontal_split,
-                2 => menu_images.expand_into_tab,
-                3 => menu_images.kill_shell,
-                _ => continue,
-            };
-
-            // Render icon
-            if let Ok(img) = image::load_from_memory(image_data) {
-                let rgba = img.to_rgba8();
-                let (img_width, img_height) = rgba.dimensions();
-                let pixels = rgba.into_raw();
-
-                if let Ok(icon_surface) = create_sdl_surface_from_rgba(img_width, img_height, pixels) {
-                    if let Ok(icon_texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&icon_surface) {
-                        let icon_size = 32u32.min(img_width).min(img_height);
-                        let icon_y = item_y + ((item_height as i32 - icon_size as i32).max(0) / 2);
-                        let icon_rect = Rect::new(menu_x + 10, icon_y, icon_size, icon_size);
-                        canvas.copy(&icon_texture, None, icon_rect).map_err(|e| e.to_string())?;
-                    }
-                }
-            }
-
-            // Render text
-            let text_color = if i == 2 && pane_count == 1 {
-                Color::RGB(100, 100, 100) // Grayed out
-            } else {
-                Color::RGB(200, 200, 200)
-            };
-
-            if let Ok(surface) = menu_font.render(item).blended(text_color) {
-                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                    let text_y = item_y + ((item_height as i32 - surface.height() as i32).max(0) / 2);
-                    let text_rect = Rect::new(menu_x + 52, text_y, surface.width(), surface.height());
-                    canvas.copy(&texture, None, text_rect).map_err(|e| e.to_string())?;
-                }
-            }
-        }
-    }
-
+    menu.render(canvas, texture_creator, menu_font)?;
     Ok(())
 }
 

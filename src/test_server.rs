@@ -94,6 +94,7 @@ pub struct ScreenBufferSnapshot {
     pub lines: Vec<String>,
     pub cells: Vec<Vec<CellSnapshot>>,
     pub scroll_offset: usize,
+    pub scrollback: Vec<Vec<CellSnapshot>>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -186,6 +187,24 @@ impl ScreenBufferSnapshot {
             cells.push(row);
         }
 
+        // Capture scrollback buffer
+        let mut scrollback = Vec::new();
+        for scrollback_row in sb.get_scrollback_buffer() {
+            let mut row = Vec::new();
+            for cell in scrollback_row {
+                row.push(CellSnapshot {
+                    ch: cell.ch.clone(),
+                    fg_r: cell.fg_color.r,
+                    fg_g: cell.fg_color.g,
+                    fg_b: cell.fg_color.b,
+                    bg_r: cell.bg_color.r,
+                    bg_g: cell.bg_color.g,
+                    bg_b: cell.bg_color.b,
+                });
+            }
+            scrollback.push(row);
+        }
+
         ScreenBufferSnapshot {
             width: sb.width(),
             height: sb.height(),
@@ -194,6 +213,7 @@ impl ScreenBufferSnapshot {
             lines,
             cells,
             scroll_offset: sb.scroll_offset,
+            scrollback,
         }
     }
 }
