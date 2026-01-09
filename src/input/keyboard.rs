@@ -104,35 +104,59 @@ pub fn create_ctrl_key_map() -> HashMap<Scancode, u8> {
 /// Handle keyboard events for tab editing mode
 /// Note: Caller should handle text_input().stop() when editing is finished (check tab_bar.editing_tab)
 pub fn handle_tab_editing_key(keycode: Keycode, tab_bar: &mut TabBar, tab_bar_gui: &Arc<Mutex<TabBarGui>>) -> KeyboardResult {
-    match keycode {
-        Keycode::Return => {
-            // Save and finish editing
-            if let Some(idx) = tab_bar.editing_tab {
-                let mut gui = tab_bar_gui.lock().unwrap();
-                gui.tab_states[idx].temp_name = tab_bar.edit_text.clone();
+    if let Some(idx) = tab_bar.editing_tab {
+        let mut gui = tab_bar_gui.lock().unwrap();
+
+        match keycode {
+            Keycode::Return => {
+                // Save and finish editing
                 gui.tab_states[idx].finish_editing(true);
+                tab_bar.finish_editing(true);
+                KeyboardResult::render()
             }
-            tab_bar.finish_editing(true);
-            KeyboardResult::render()
-        }
-        Keycode::Escape => {
-            // Cancel editing
-            if let Some(idx) = tab_bar.editing_tab {
-                let mut gui = tab_bar_gui.lock().unwrap();
+            Keycode::Escape => {
+                // Cancel editing
                 gui.tab_states[idx].finish_editing(false);
+                tab_bar.finish_editing(false);
+                KeyboardResult::render()
             }
-            tab_bar.finish_editing(false);
-            KeyboardResult::render()
+            Keycode::Backspace => {
+                // Remove character before cursor
+                gui.tab_states[idx].backspace_at_cursor();
+                // Sync to tab_bar for rendering
+                tab_bar.edit_text = gui.tab_states[idx].temp_name.clone();
+                tab_bar.edit_cursor_pos = gui.tab_states[idx].cursor_pos;
+                KeyboardResult::render()
+            }
+            Keycode::Delete => {
+                // Remove character at cursor position
+                gui.tab_states[idx].delete_char_at_cursor();
+                // Sync to tab_bar for rendering
+                tab_bar.edit_text = gui.tab_states[idx].temp_name.clone();
+                tab_bar.edit_cursor_pos = gui.tab_states[idx].cursor_pos;
+                KeyboardResult::render()
+            }
+            Keycode::Left => {
+                // Move cursor left
+                gui.tab_states[idx].move_cursor_left();
+                // Sync cursor position to tab_bar for rendering
+                tab_bar.edit_cursor_pos = gui.tab_states[idx].cursor_pos;
+                KeyboardResult::render()
+            }
+            Keycode::Right => {
+                // Move cursor right
+                gui.tab_states[idx].move_cursor_right();
+                // Sync cursor position to tab_bar for rendering
+                tab_bar.edit_cursor_pos = gui.tab_states[idx].cursor_pos;
+                KeyboardResult::render()
+            }
+            _ => {
+                // Ignore other keys during editing
+                KeyboardResult::none()
+            }
         }
-        Keycode::Backspace => {
-            // Remove last character
-            tab_bar.edit_text.pop();
-            KeyboardResult::render()
-        }
-        _ => {
-            // Ignore other keys during editing
-            KeyboardResult::none()
-        }
+    } else {
+        KeyboardResult::none()
     }
 }
 
@@ -589,8 +613,12 @@ pub fn handle_ctrl_key(scancode: Scancode, ctrl_keys: &HashMap<Scancode, u8>, ta
 
 /// Handle text input events
 pub fn handle_text_input(text: &str, tab_bar: &mut TabBar, tab_bar_gui: &Arc<Mutex<TabBarGui>>) -> KeyboardResult {
-    if tab_bar.editing_tab.is_some() {
-        tab_bar.edit_text.push_str(text);
+    if let Some(idx) = tab_bar.editing_tab {
+        let mut gui = tab_bar_gui.lock().unwrap();
+        gui.tab_states[idx].insert_text_at_cursor(text);
+        // Sync to tab_bar for rendering
+        tab_bar.edit_text = gui.tab_states[idx].temp_name.clone();
+        tab_bar.edit_cursor_pos = gui.tab_states[idx].cursor_pos;
         KeyboardResult::render()
     } else if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
         terminal.lock().unwrap().send_text(text);

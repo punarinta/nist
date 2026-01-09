@@ -411,6 +411,7 @@ where
             name: tab_name.clone(),
             is_editing: false,
             temp_name: tab_name.clone(),
+            cursor_pos: 0,
         };
 
         tab_bar.tab_states.push(tab_state);

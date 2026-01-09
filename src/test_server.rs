@@ -45,6 +45,10 @@ pub enum TestCommand {
     FinishEditingTab { index: usize, save: bool },
     #[serde(rename = "simulate_tab_edit_enter")]
     SimulateTabEditEnter { index: usize, new_name: String },
+    #[serde(rename = "send_tab_edit_key")]
+    SendTabEditKey { key: String },
+    #[serde(rename = "send_tab_edit_text")]
+    SendTabEditText { text: String },
     #[serde(rename = "split_pane")]
     SplitPane { direction: String }, // "horizontal" or "vertical"
     #[serde(rename = "list_panes")]
@@ -508,6 +512,53 @@ impl TestServer {
                 }
                 TestResponse::Error {
                     message: "Invalid tab index".to_string(),
+                }
+            }
+            TestCommand::SendTabEditKey { key } => {
+                // Find the tab being edited and apply the key action
+                if let Ok(mut gui) = self.tab_bar_gui.lock() {
+                    // Find which tab is being edited
+                    let editing_tab = gui.tab_states.iter_mut().find(|tab| tab.is_editing);
+
+                    if let Some(tab) = editing_tab {
+                        match key.as_str() {
+                            "Left" => tab.move_cursor_left(),
+                            "Right" => tab.move_cursor_right(),
+                            "Delete" => tab.delete_char_at_cursor(),
+                            "Backspace" => tab.backspace_at_cursor(),
+                            "Return" | "Enter" => {
+                                tab.finish_editing(true);
+                                return TestResponse::Ok;
+                            }
+                            "Escape" => {
+                                tab.finish_editing(false);
+                                return TestResponse::Ok;
+                            }
+                            _ => {
+                                return TestResponse::Error {
+                                    message: format!("Unknown key: {}", key),
+                                };
+                            }
+                        }
+                        return TestResponse::Ok;
+                    }
+                }
+                TestResponse::Error {
+                    message: "No tab is being edited".to_string(),
+                }
+            }
+            TestCommand::SendTabEditText { text } => {
+                // Find the tab being edited and insert text at cursor
+                if let Ok(mut gui) = self.tab_bar_gui.lock() {
+                    let editing_tab = gui.tab_states.iter_mut().find(|tab| tab.is_editing);
+
+                    if let Some(tab) = editing_tab {
+                        tab.insert_text_at_cursor(&text);
+                        return TestResponse::Ok;
+                    }
+                }
+                TestResponse::Error {
+                    message: "No tab is being edited".to_string(),
                 }
             }
             TestCommand::SimulateTabEditEnter { index, new_name } => {

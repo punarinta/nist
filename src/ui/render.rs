@@ -90,12 +90,18 @@ pub fn render_frame<'a, T>(
     let (window_w, window_h) = canvas.window().size_in_pixels();
 
     // Update and render tab bar
-    let (tab_names, active_tab_idx) = {
+    let (tab_names, active_tab_idx, editing_tab_idx, editing_state) = {
         let gui = tab_bar_gui.lock().unwrap();
-        (gui.get_tab_names(), gui.active_tab)
+        (gui.get_tab_names(), gui.active_tab, gui.get_editing_tab_index(), gui.get_editing_state())
     };
     tab_bar.set_tabs(tab_names);
     tab_bar.set_active_tab(active_tab_idx);
+    // Sync editing state from TabBarGui to TabBar for rendering
+    tab_bar.editing_tab = editing_tab_idx;
+    if let Some((edit_text, cursor_pos)) = editing_state {
+        tab_bar.edit_text = edit_text;
+        tab_bar.edit_cursor_pos = cursor_pos;
+    }
     tab_bar.render(canvas, tab_font, button_font, cpu_font, texture_creator, window_w, cpu_usage)?;
 
     // Calculate pane area (tab_bar_height is already in physical pixels)

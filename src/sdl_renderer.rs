@@ -44,6 +44,7 @@ pub struct TabBar {
     pub height: u32,
     pub editing_tab: Option<usize>,
     pub edit_text: String,
+    pub edit_cursor_pos: usize,
     pub mouse_x: i32,
     pub mouse_y: i32,
     pub dragging_tab: Option<usize>,
@@ -70,6 +71,7 @@ impl TabBar {
             height,
             editing_tab: None,
             edit_text: String::new(),
+            edit_cursor_pos: 0,
             mouse_x: 0,
             mouse_y: 0,
             dragging_tab: None,
@@ -95,6 +97,7 @@ impl TabBar {
         if index < self.tabs.len() {
             self.editing_tab = Some(index);
             self.edit_text = self.tabs[index].clone();
+            self.edit_cursor_pos = self.edit_text.len();
         }
     }
 
@@ -106,6 +109,7 @@ impl TabBar {
         }
         self.editing_tab = None;
         self.edit_text.clear();
+        self.edit_cursor_pos = 0;
     }
 
     pub fn update_hover(&mut self, mouse_x: i32, mouse_y: i32) {
@@ -457,7 +461,16 @@ impl TabBar {
 
             // Draw cursor if editing this tab
             if is_editing {
-                let cursor_x = x + 24 + text_width as i32 + 3; // Updated for new left padding
+                // Calculate width of text up to cursor position
+                let text_before_cursor = self.edit_text.chars().take(self.edit_cursor_pos).collect::<String>();
+                let cursor_text_width = if text_before_cursor.is_empty() {
+                    0
+                } else if let Some(surface) = safe_render_text(font, &text_before_cursor, TEXT_GRAY) {
+                    surface.width()
+                } else {
+                    0
+                };
+                let cursor_x = x + 24 + cursor_text_width as i32; // Updated for new left padding
                 let cursor_y = y + 6;
                 let cursor_height = self.height - 12;
                 canvas.set_draw_color(Color::RGB(255, 255, 255));
@@ -566,7 +579,16 @@ impl TabBar {
 
             // Draw cursor if editing
             if is_editing {
-                let cursor_x = dragged_x + 24 + text_width as i32 + 3;
+                // Calculate width of text up to cursor position
+                let text_before_cursor = self.edit_text.chars().take(self.edit_cursor_pos).collect::<String>();
+                let cursor_text_width = if text_before_cursor.is_empty() {
+                    0
+                } else if let Some(surface) = safe_render_text(font, &text_before_cursor, TEXT_GRAY) {
+                    surface.width()
+                } else {
+                    0
+                };
+                let cursor_x = dragged_x + 24 + cursor_text_width as i32;
                 let cursor_y = y + 6;
                 let cursor_height = self.height - 12;
                 canvas.set_draw_color(Color::RGB(255, 255, 255));

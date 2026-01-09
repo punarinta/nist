@@ -8,6 +8,7 @@ pub struct TabState {
     pub name: String,
     pub is_editing: bool,
     pub temp_name: String,
+    pub cursor_pos: usize,
 }
 
 impl TabState {
@@ -18,6 +19,7 @@ impl TabState {
             name: name.clone(),
             is_editing: false,
             temp_name: name,
+            cursor_pos: 0,
         }
     }
 
@@ -32,6 +34,7 @@ impl TabState {
     pub fn start_editing(&mut self) {
         self.is_editing = true;
         self.temp_name = self.get_name();
+        self.cursor_pos = self.temp_name.len();
     }
 
     pub fn finish_editing(&mut self, save: bool) {
@@ -41,6 +44,37 @@ impl TabState {
             self.temp_name = self.get_name();
         }
         self.is_editing = false;
+        self.cursor_pos = 0;
+    }
+
+    pub fn insert_text_at_cursor(&mut self, text: &str) {
+        self.temp_name.insert_str(self.cursor_pos, text);
+        self.cursor_pos += text.len();
+    }
+
+    pub fn delete_char_at_cursor(&mut self) {
+        if self.cursor_pos < self.temp_name.len() {
+            self.temp_name.remove(self.cursor_pos);
+        }
+    }
+
+    pub fn backspace_at_cursor(&mut self) {
+        if self.cursor_pos > 0 {
+            self.temp_name.remove(self.cursor_pos - 1);
+            self.cursor_pos -= 1;
+        }
+    }
+
+    pub fn move_cursor_left(&mut self) {
+        if self.cursor_pos > 0 {
+            self.cursor_pos -= 1;
+        }
+    }
+
+    pub fn move_cursor_right(&mut self) {
+        if self.cursor_pos < self.temp_name.len() {
+            self.cursor_pos += 1;
+        }
     }
 }
 
@@ -172,5 +206,18 @@ impl TabBarGui {
 
     pub fn get_tab_names(&self) -> Vec<String> {
         self.tab_states.iter().map(|ts| ts.get_name()).collect()
+    }
+
+    pub fn get_editing_tab_index(&self) -> Option<usize> {
+        self.tab_states.iter().position(|ts| ts.is_editing)
+    }
+
+    pub fn get_editing_state(&self) -> Option<(String, usize)> {
+        for tab in &self.tab_states {
+            if tab.is_editing {
+                return Some((tab.temp_name.clone(), tab.cursor_pos));
+            }
+        }
+        None
     }
 }
