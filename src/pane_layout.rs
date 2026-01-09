@@ -63,7 +63,11 @@ impl PaneNode {
                 if *id == pane_id {
                     // Replace this leaf with a split node
                     let old_terminal = terminal.clone();
-                    let old_leaf = PaneNode::new_leaf(old_terminal);
+                    // Preserve the original pane's ID instead of creating a new one
+                    let old_leaf = PaneNode::Leaf {
+                        id: *id,
+                        terminal: old_terminal,
+                    };
                     let new_leaf = PaneNode::new_leaf(new_terminal);
                     let new_pane_id = new_leaf.id(); // Capture the new pane's ID before boxing
 
@@ -212,6 +216,7 @@ pub struct ContextMenuImages {
     pub vertical_split: &'static [u8],
     pub horizontal_split: &'static [u8],
     pub expand_into_tab: &'static [u8],
+    pub kill_shell: &'static [u8],
 }
 
 impl ContextMenuImages {
@@ -220,6 +225,7 @@ impl ContextMenuImages {
             vertical_split: include_bytes!("../static/gfx/vertical-split.png"),
             horizontal_split: include_bytes!("../static/gfx/horizontal-split.png"),
             expand_into_tab: include_bytes!("../static/gfx/expand-into-tab.png"),
+            kill_shell: include_bytes!("../static/gfx/kill-shell.png"),
         }
     }
 }

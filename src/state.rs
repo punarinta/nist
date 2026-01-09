@@ -391,13 +391,6 @@ fn backup_corrupted_state(state_path: &PathBuf, reason: &str) {
     }
 }
 
-/// Clean up test state file when running in test mode (only called on exit, not used for now)
-#[allow(dead_code)]
-pub fn cleanup_test_state() {
-    // Currently not used - test state cleanup happens during load for invalid states
-    // Valid test states are left for tests to verify and clean up manually
-}
-
 /// Format JSON value as a string (simple pretty-printer)
 fn format_json(value: &JsonValue) -> String {
     format_json_impl(value, 0)

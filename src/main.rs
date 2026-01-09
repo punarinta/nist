@@ -6,10 +6,14 @@ mod screen_buffer;
 mod sdl_renderer;
 mod settings;
 mod state;
+mod system;
 mod tab_gui;
 mod terminal;
 mod terminal_config;
 mod ui;
+
+#[cfg(feature = "test-server")]
+mod test_server;
 
 use ui::render;
 
@@ -17,75 +21,14 @@ use crate::tab_gui::TabBarGui;
 use crate::terminal::Terminal;
 use crate::terminal_config::TerminalLibrary;
 
-use arboard::Clipboard;
 use sdl3::event::Event;
-
-use sdl3::video::Window;
-#[cfg(not(target_os = "windows"))]
-use signal_hook::consts::signal::*;
-#[cfg(not(target_os = "windows"))]
-use signal_hook::iterator::Signals;
-use std::collections::HashMap;
-#[cfg(not(target_os = "windows"))]
-use std::sync::mpsc::channel;
-#[cfg(target_os = "linux")]
-use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use sysinfo::System;
-
-#[cfg(feature = "test-server")]
-mod test_server;
-#[cfg(feature = "test-server")]
-use crate::test_server::TestServer;
 
 // Build-time version information
 const BUILD_DATE: &str = env!("BUILD_DATE");
 const GIT_HASH: &str = env!("GIT_HASH");
 const DEFAULT_SCROLLBACK_LINES: usize = 10000;
-
-/// Set the window icon from embedded PNG data
-fn set_window_icon(window: &mut Window) {
-    const ICON_DATA: &[u8] = include_bytes!("../icon.png");
-
-    match image::load_from_memory(ICON_DATA) {
-        Ok(img) => {
-            let rgba = img.to_rgba8();
-            let (width, height) = rgba.dimensions();
-            let pixels = rgba.into_raw();
-
-            match create_sdl_surface_from_rgba(width, height, pixels) {
-                Ok(surface) => {
-                    window.set_icon(surface);
-                }
-                Err(e) => {
-                    eprintln!("[MAIN] Failed to create icon surface: {}", e);
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("[MAIN] Failed to load window icon: {}", e);
-        }
-    }
-}
-
-/// Create an SDL surface from RGBA pixel data
-fn create_sdl_surface_from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Result<sdl3::surface::Surface<'static>, String> {
-    let mut surface =
-        sdl3::surface::Surface::new(width, height, sdl3::pixels::PixelFormat::RGBA32).map_err(|e| format!("Failed to create SDL surface: {}", e))?;
-
-    // Copy pixel data
-    surface.with_lock_mut(|buffer: &mut [u8]| {
-        buffer.copy_from_slice(&pixels);
-    });
-
-    Ok(surface)
-}
-
-/// Load context menu images from statically embedded data
-fn load_context_menu_images() -> Result<crate::pane_layout::ContextMenuImages, String> {
-    Ok(crate::pane_layout::ContextMenuImages::load())
-}
 
 /// Resize all terminals in the active tab to match their pane dimensions
 fn resize_terminals_to_panes(
@@ -127,6 +70,7 @@ fn resize_terminals_after_split(
     tab_bar_height: u32,
     window_width: u32,
     window_height: u32,
+    new_pane_id: crate::pane_layout::PaneId,
 ) {
     // Use blocking lock - resize after split MUST happen
     let gui = match tab_bar_gui.lock() {
@@ -149,10 +93,14 @@ fn resize_terminals_after_split(
 
             match terminal.lock() {
                 Ok(mut t) => {
-                    // Always resize with clear_screen=true to prevent stale content after split
+                    // Only clear screen for the newly created pane, not existing ones
+                    let clear_screen = pane_id == new_pane_id;
                     if t.width != cols || t.height != rows {
-                        eprintln!("[RESIZE] Pane {:?}: {}x{} -> {}x{}", pane_id, t.width, t.height, cols, rows);
-                        t.set_size(cols, rows, true);
+                        eprintln!(
+                            "[RESIZE] Pane {:?}: {}x{} -> {}x{} (clear={})",
+                            pane_id, t.width, t.height, cols, rows, clear_screen
+                        );
+                        t.set_size(cols, rows, clear_screen);
                     } else {
                         eprintln!("[RESIZE] Pane {:?}: already {}x{}", pane_id, cols, rows);
                     }
@@ -168,381 +116,57 @@ fn resize_terminals_after_split(
 }
 
 fn main() -> Result<(), String> {
-    // Parse command line arguments
-    let args: Vec<String> = std::env::args().collect();
-    let mut test_port: Option<u16> = None;
-
-    // Handle --help and --version before initializing SDL
-    for arg in args.iter().skip(1) {
-        if arg == "--help" || arg == "-h" {
-            println!("Nisdos Terminal v{} ({}, built {})", env!("CARGO_PKG_VERSION"), GIT_HASH, BUILD_DATE);
-            println!();
-            println!("USAGE:");
-            println!("    nist [OPTIONS]");
-            println!();
-            println!("OPTIONS:");
-            println!("    -h, --help          Print help information");
-            println!("    -v, --version       Print version information");
-            println!("    --test-port <PORT>  Enable test server on specified port");
-            std::process::exit(0);
-        } else if arg == "--version" || arg == "-v" {
-            println!("Nisdos Terminal {} ({}, built {})", env!("CARGO_PKG_VERSION"), GIT_HASH, BUILD_DATE);
-            std::process::exit(0);
-        }
-    }
-
-    for (i, arg) in args.iter().enumerate() {
-        if arg == "--test-port" && i + 1 < args.len() {
-            if let Ok(port) = args[i + 1].parse::<u16>() {
-                test_port = Some(port);
-                eprintln!("[MAIN] Test server will be enabled on port {}", port);
-            }
-        }
-    }
-
     eprintln!("[MAIN] Nisdos Terminal starting (built: {})", BUILD_DATE);
 
     // Print feature flags
     #[cfg(feature = "test-server")]
     eprintln!("[MAIN] Feature: test-server enabled");
 
-    // Set up signal handlers to save state on OS termination (reboot, kill, etc.)
-    // Create a Signals iterator for SIGTERM, SIGINT, and SIGHUP
-    #[cfg(not(target_os = "windows"))]
-    let signal_rx = {
-        let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP]).map_err(|e| format!("Failed to register signal handlers: {}", e))?;
-        eprintln!("[MAIN] Registered signal handlers for SIGTERM, SIGINT, SIGHUP");
+    // Parse command-line arguments (exits if --help or --version)
+    let cli_args = system::cli::parse_args(BUILD_DATE, GIT_HASH);
 
-        // Move signals iterator to a thread that can interrupt the main loop
-        let (signal_tx, signal_rx) = channel::<i32>();
-        std::thread::spawn(move || {
-            for sig in signals.forever() {
-                eprintln!("[SIGNAL] Received signal: {}", sig);
-                let _ = signal_tx.send(sig);
-            }
-        });
-        signal_rx
-    };
-
-    let (window_width, window_height) = (2376_u32, 1593_u32);
-
-    let sdl_context = sdl3::init().unwrap();
-
-    // Set window class name for proper desktop integration
-    sdl3::hint::set("SDL_VIDEO_X11_WMCLASS", "nist");
-    sdl3::hint::set("SDL_VIDEO_WAYLAND_WMCLASS", "nist");
-    sdl3::hint::set("SDL_VIDEO_WAYLAND_APP_ID", "nist");
-    sdl3::hint::set("SDL_APP_ID", "nist");
-    sdl3::hint::set("SDL_APP_NAME", "Nisdos Terminal");
-
-    let video_subsystem = sdl_context.video().unwrap();
+    // Initialize TTF context (must outlive fonts)
     let ttf_context = sdl3::ttf::init().map_err(|e| e.to_string())?;
 
-    // Create window with high DPI awareness (borderless for headless mode)
-    let mut window = video_subsystem
-        .window("Nisdos Terminal", window_width, window_height)
-        .position_centered()
-        .resizable()
-        .maximized()
-        .borderless()
-        .high_pixel_density()
-        .build()
-        .map_err(|e| e.to_string())?;
+    // Initialize all components (SDL, fonts, terminals, etc.)
+    let app = system::init::initialize(&ttf_context, cli_args.test_port, DEFAULT_SCROLLBACK_LINES)?;
 
-    // Set window icon
-    set_window_icon(&mut window);
+    // Destructure for easier access
+    let mut canvas = app.canvas;
+    let texture_creator = app.texture_creator;
+    let mut event_pump = app.event_pump;
+    let mut font = app.fonts.font;
+    let tab_font = app.fonts.tab_font;
+    let button_font = app.fonts.button_font;
+    let cpu_font = app.fonts.cpu_font;
+    let context_menu_font = app.fonts.context_menu_font;
+    let emoji_font = app.fonts.emoji_font;
+    let unicode_fallback_font = app.fonts.unicode_fallback_font;
+    let mut char_width = app.char_dims.width;
+    let mut char_height = app.char_dims.height;
+    let scale_factor = app.scale_info.scale_factor;
+    let mouse_coords_need_scaling = app.scale_info.mouse_coords_need_scaling;
+    let tab_bar_height = app.tab_bar_height;
+    let mut tab_bar = app.tab_bar;
+    let tab_bar_gui = app.tab_bar_gui;
+    let mut settings = app.settings;
+    let mut sys = app.sys;
+    let ctrl_keys = app.ctrl_keys;
+    let mut mouse_state = app.mouse_state;
+    let mut glyph_cache = app.glyph_cache;
 
-    // Create canvas for rendering
-    let mut canvas = window.into_canvas();
-
-    // Get initial scale factor before setting render scale
-    let initial_scale = canvas.window().display_scale();
-    eprintln!("[MAIN] Initial display scale before render setup: {:.2}", initial_scale);
-
-    // Enable VSync to limit rendering to display refresh rate (60 Hz)
-    // SDL3 requires explicit VSync enable via SDL_SetRenderVSync (not part of canvas builder)
-    let vsync_success = unsafe { sdl3::sys::render::SDL_SetRenderVSync(canvas.raw(), 1) };
-
-    if vsync_success {
-        // Verify VSync was actually set by reading it back
-        let mut vsync_value: std::os::raw::c_int = 0;
-        let get_success = unsafe { sdl3::sys::render::SDL_GetRenderVSync(canvas.raw(), &mut vsync_value) };
-        if get_success && vsync_value == 1 {
-            eprintln!("[MAIN] Canvas created with VSync enabled (verified: vsync={})", vsync_value);
-        } else if get_success {
-            eprintln!("[MAIN] WARNING: VSync set to unexpected value: {}", vsync_value);
-        } else {
-            eprintln!("[MAIN] WARNING: Could not verify VSync setting");
-        }
-    } else {
-        eprintln!("[MAIN] WARNING: Failed to enable VSync! CPU usage may be high.");
-        eprintln!("[MAIN] Canvas created without VSync");
-    }
-
-    // Get window sizes
-    let (window_width_logical, window_height_logical) = canvas.window().size();
-    let (drawable_width, drawable_height) = canvas.window().size_in_pixels();
-
-    eprintln!("[MAIN] Raw SDL3 window data:");
-    eprintln!("[MAIN]   - window.size() = {}x{}", window_width_logical, window_height_logical);
-    eprintln!("[MAIN]   - window.size_in_pixels() = {}x{}", drawable_width, drawable_height);
-    eprintln!("[MAIN]   - window.pixel_density() = {:.2}", canvas.window().pixel_density());
-
-    // Try to detect real DPI scaling by querying display information
-    // First, try the simple ratio between drawable and logical sizes
-    let mut scale_factor = if window_width_logical > 0 {
-        drawable_width as f32 / window_width_logical as f32
-    } else {
-        1.0
-    };
-
-    // SDL3 provides SDL_GetWindowDisplayScale which combines pixel density and content scale
-    // Use this as the authoritative source for DPI scaling
-    let window_display_scale = canvas.window().display_scale();
-
-    // If window_display_scale is valid and different from our calculated value, use it
-    if window_display_scale > 0.0 {
-        eprintln!("[MAIN] SDL3 window display scale: {:.2}", window_display_scale);
-        if (window_display_scale - scale_factor).abs() > 0.01 {
-            eprintln!("[MAIN] Using SDL3 display scale instead of calculated ratio");
-            scale_factor = window_display_scale;
-        }
-    }
-
-    // If scale_factor is still 1.0, try to detect scaling from pixel density
-    if scale_factor == 1.0 {
-        let pixel_density = canvas.window().pixel_density();
-        if pixel_density > 1.0 {
-            scale_factor = pixel_density;
-            eprintln!("[MAIN] Detected DPI scaling from pixel density: {:.2}", scale_factor);
-        }
-    }
-
-    eprintln!(
-        "[MAIN] Calculated dimensions: {}x{} logical, {}x{} drawable, final scale: {:.2}",
-        window_width_logical, window_height_logical, drawable_width, drawable_height, scale_factor
-    );
-
-    // Calculate what the real physical size should be if OS scaling is 2x
-    let expected_physical_w = (window_width_logical as f32 * scale_factor) as u32;
-    let expected_physical_h = (window_height_logical as f32 * scale_factor) as u32;
-    eprintln!(
-        "[MAIN] Expected physical size with {:.2}x scaling: {}x{} pixels",
-        scale_factor, expected_physical_w, expected_physical_h
-    );
-
-    // Don't use SDL_SetRenderScale - it causes blurry scaling
-    // Instead, we'll render at physical pixel size for crisp output
-    eprintln!("[MAIN] Rendering at physical pixel size for crisp output");
-
-    // Detect if mouse coordinates need scaling: true when window size != drawable size
-    // This handles different SDL2 behaviors across platforms without hardcoding OS checks
-    let mouse_coords_need_scaling = scale_factor > 1.0 && {
-        let (w_width, _) = canvas.window().size();
-        let (d_width, _) = canvas.window().size_in_pixels();
-        w_width != d_width
-    };
-    eprintln!(
-        "[MAIN] Mouse coordinate scaling: {} (window != drawable: {})",
-        if mouse_coords_need_scaling { "ENABLED" } else { "DISABLED" },
-        canvas.window().size() != canvas.window().size_in_pixels()
-    );
-
-    // Load settings to get font configuration
-    let mut settings = settings::load_settings().unwrap_or_else(|e| {
-        eprintln!("[MAIN] Failed to load settings, using defaults: {}", e);
-        settings::Settings::default()
-    });
-
-    // Load monospace font for terminal
-    // Use fontSize from settings (defaults to 12.0 if not set)
-    // Scale font size for physical pixel rendering
-    let font_size = settings.terminal.font_size * scale_factor;
-
-    // Determine font path: use fontFamily from settings, or "auto" to use discovery
-    let font_path = if settings.terminal.font_family == "auto" {
-        font_discovery::find_best_monospace_font().ok_or_else(|| {
-            let error_msg = "\
-[ERROR] No suitable monospace font found on your system!
-
-Please install one of these recommended fonts:
-  - On macOS: Menlo, Monaco, or SF Mono (usually pre-installed)
-  - On Linux: Install fonts-hack, fonts-jetbrains-mono, or fonts-dejavu
-    Example: sudo apt-get install fonts-hack fonts-dejavu
-  - On Windows: Consolas, Cascadia Code (usually pre-installed), or download JetBrains Mono
-
-Searched directories:
-  - C:\\Windows\\Fonts (Windows)
-  - %LOCALAPPDATA%\\Microsoft\\Windows\\Fonts (Windows)
-  - %USERPROFILE%\\AppData\\Local\\Microsoft\\Windows\\Fonts (Windows)
-  - /System/Library/Fonts (macOS)
-  - /Library/Fonts (macOS)
-  - ~/Library/Fonts (macOS)
-  - /usr/share/fonts (Linux)
-  - /usr/local/share/fonts (Linux)
-  - ~/.local/share/fonts (Linux)
-  - ~/.fonts (Linux)
-";
-            eprintln!("{}", error_msg);
-            error_msg.to_string()
-        })?
-    } else {
-        // Use the font family path specified in settings
-        let font_path = settings.terminal.font_family.clone();
-        eprintln!("[MAIN] Using font from settings: {}", font_path);
-
-        // Validate that the font file exists
-        if !std::path::Path::new(&font_path).exists() {
-            let error_msg = format!("[ERROR] Font file not found: {}\n\nFalling back to automatic font discovery.", font_path);
-            eprintln!("{}", error_msg);
-
-            // Fallback to automatic discovery
-            font_discovery::find_best_monospace_font().ok_or_else(|| {
-                let error_msg = "\
-[ERROR] No suitable monospace font found on your system!
-
-Please install one of these recommended fonts:
-  - On macOS: Menlo, Monaco, or SF Mono (usually pre-installed)
-  - On Linux: Install fonts-hack, fonts-jetbrains-mono, or fonts-dejavu
-    Example: sudo apt-get install fonts-hack fonts-dejavu
-  - On Windows: Consolas, Cascadia Code (usually pre-installed), or download JetBrains Mono
-
-Searched directories:
-  - C:\\Windows\\Fonts (Windows)
-  - %LOCALAPPDATA%\\Microsoft\\Windows\\Fonts (Windows)
-  - %USERPROFILE%\\AppData\\Local\\Microsoft\\Windows\\Fonts (Windows)
-  - /System/Library/Fonts (macOS)
-  - /Library/Fonts (macOS)
-  - ~/Library/Fonts (macOS)
-  - /usr/share/fonts (Linux)
-  - /usr/local/share/fonts (Linux)
-  - ~/.local/share/fonts (Linux)
-  - ~/.fonts (Linux)
-";
-                eprintln!("{}", error_msg);
-                error_msg.to_string()
-            })?
-        } else {
-            font_path
-        }
-    };
-
-    let mut font = ttf_context.load_font(&font_path, font_size).map_err(|e| {
-        eprintln!("[MAIN] Failed to load font from {}: {}", font_path, e);
-        format!("Font loading failed from {}: {}", font_path, e)
-    })?;
-
-    eprintln!(
-        "[MAIN] Loaded monospace font: {} at size {} (from settings: fontSize={}, fontFamily={})",
-        font_path,
-        font_size,
-        settings.terminal.font_size,
-        if settings.terminal.font_family == "auto" {
-            "auto (discovered)"
-        } else {
-            &settings.terminal.font_family
-        }
-    );
-
-    // Load proportional UI font with emoji support for tabs, menus, and window controls
-    let ui_font_path = font_discovery::find_best_ui_font().ok_or_else(|| {
-        let error_msg = "\
-[ERROR] No suitable UI font found on your system!
-
-Please install one of these recommended fonts:
-  - On macOS: SF Pro, Helvetica (usually pre-installed)
-  - On Linux: Install fonts-noto, fonts-ubuntu, or fonts-dejavu
-    Example: sudo apt-get install fonts-noto fonts-dejavu
-  - On Windows: Segoe UI (usually pre-installed) or download Noto Sans
-
-Searched directories:
-  - C:\\Windows\\Fonts (Windows)
-  - %LOCALAPPDATA%\\Microsoft\\Windows\\Fonts (Windows)
-  - %USERPROFILE%\\AppData\\Local\\Microsoft\\Windows\\Fonts (Windows)
-  - /System/Library/Fonts (macOS)
-  - /Library/Fonts (macOS)
-  - ~/Library/Fonts (macOS)
-  - /usr/share/fonts (Linux)
-  - /usr/local/share/fonts (Linux)
-  - ~/.local/share/fonts (Linux)
-  - ~/.fonts (Linux)
-";
-        eprintln!("{}", error_msg);
-        error_msg.to_string()
-    })?;
-
-    // Load smaller font for CPU indicator in tab bar (use UI font for emoji support)
-    let cpu_font_size = 13.0 * scale_factor;
-    let cpu_font = ttf_context.load_font(&ui_font_path, cpu_font_size).map_err(|e| {
-        eprintln!("[MAIN] Failed to load CPU font from {}: {}", ui_font_path, e);
-        format!("CPU font loading failed from {}: {}", ui_font_path, e)
-    })?;
-
-    // Load smaller font for tab names (use UI font for emoji support)
-    let tab_font_size = 18.0 * scale_factor;
-    let tab_font = ttf_context.load_font(&ui_font_path, tab_font_size).map_err(|e| {
-        eprintln!("[MAIN] Failed to load tab font from {}: {}", ui_font_path, e);
-        format!("Tab font loading failed from {}: {}", ui_font_path, e)
-    })?;
-
-    // Load smaller font for context menu (use UI font for emoji support)
-    let context_menu_font_size = 12.0 * scale_factor;
-    let context_menu_font = ttf_context.load_font(&ui_font_path, context_menu_font_size).map_err(|e| {
-        eprintln!("[MAIN] Failed to load context menu font from {}: {}", ui_font_path, e);
-        format!("Context menu font loading failed from {}: {}", ui_font_path, e)
-    })?;
-
-    // Load larger font for buttons (window controls and add button)
-    let button_font_size = 27.0 * scale_factor;
-    let button_font = ttf_context.load_font(&ui_font_path, button_font_size).map_err(|e| {
-        eprintln!("[MAIN] Failed to load button font from {}: {}", ui_font_path, e);
-        format!("Button font loading failed from {}: {}", ui_font_path, e)
-    })?;
-
-    eprintln!("[MAIN] Loaded UI font: {} for tabs, menus, and controls", ui_font_path);
-
-    // Load emoji fallback font for emoji rendering in terminal
-    let emoji_font_path = font_discovery::find_emoji_font().unwrap_or_else(|| {
-        eprintln!("[MAIN] WARNING: No emoji font found, emoji rendering may not work properly");
-        ui_font_path.clone()
-    });
-    let emoji_font = ttf_context.load_font(&emoji_font_path, font_size).map_err(|e| {
-        eprintln!("[MAIN] Failed to load emoji font from {}: {}", emoji_font_path, e);
-        format!("Emoji font loading failed from {}: {}", emoji_font_path, e)
-    })?;
-    eprintln!("[MAIN] Loaded emoji font: {} for emoji rendering", emoji_font_path);
-
-    // Load Unicode fallback font for symbols not in monospace font (use UI font which has broad Unicode coverage)
-    let unicode_fallback_font = ttf_context.load_font(&ui_font_path, font_size).map_err(|e| {
-        eprintln!("[MAIN] Failed to load Unicode fallback font from {}: {}", ui_font_path, e);
-        format!("Unicode fallback font loading failed from {}: {}", ui_font_path, e)
-    })?;
-    eprintln!("[MAIN] Loaded Unicode fallback font: {} for symbol rendering", ui_font_path);
-
-    // Measure character dimensions
-    let test_char = 'M';
-    let (char_width_i32, char_height_i32) = font.size_of_char(test_char).map_err(|e| e.to_string())?;
-    // Font is already scaled by scale_factor, no extra scaling needed
-    let mut char_width = char_width_i32 as f32;
-    let mut char_height = char_height_i32 as f32;
-
-    eprintln!("[MAIN] Character dimensions: {:.2}x{:.2} pixels", char_width, char_height);
-
-    let texture_creator = canvas.texture_creator();
-
-    let mut event_pump = sdl_context.event_pump().map_err(|e| e.to_string())?;
-
-    // Enable text input for terminal typing
-    canvas.window().subsystem().text_input().start(canvas.window());
-    eprintln!("[MAIN] Text input enabled");
-
-    // Channel for receiving clipboard objects from background threads
-    // This avoids blocking the main thread with clipboard operations
     #[cfg(target_os = "linux")]
-    let (clipboard_tx, clipboard_rx): (Sender<Clipboard>, Receiver<Clipboard>) = channel();
+    let clipboard_tx = app.clipboard_tx;
+    #[cfg(target_os = "linux")]
+    let clipboard_rx = app.clipboard_rx;
+
+    #[cfg(not(target_os = "windows"))]
+    let signal_rx = app.signal_rx;
+
+    #[cfg(feature = "test-server")]
+    let test_server = app.test_server;
 
     // CPU monitoring state
-    let mut sys = System::new_all();
     let mut cpu_usage = 0.0_f32;
     let mut last_cpu_update = Instant::now();
     let cpu_update_interval = std::time::Duration::from_secs(1);
@@ -560,105 +184,17 @@ Searched directories:
     let term_library = TerminalLibrary::new();
     let shell_config = term_library.get_default_shell().clone();
 
-    // Tab bar state - scale tab bar height for high-DPI displays
-    let tab_bar_height = (36.0 * scale_factor) as u32;
-    let mut tab_bar = sdl_renderer::TabBar::new(tab_bar_height);
-
     // Pending operations
     let mut pending_pane_split: Option<crate::pane_layout::SplitDirection> = None;
     let mut pending_new_tab = false;
-
-    // Calculate terminal dimensions using drawable size (actual pixels with DPI scaling)
-    let terminal_height = ((drawable_height - tab_bar_height) as f32 / char_height).floor() as u32;
-    let terminal_width = (drawable_width as f32 / char_width).floor() as u32;
-
-    // Initialize tab bar GUI
-    let tab_bar_gui = {
-        let shell_config_clone = shell_config.clone();
-        let terminal_factory = |start_dir: Option<std::path::PathBuf>| {
-            Arc::new(Mutex::new(Terminal::new_with_scrollback(
-                terminal_width,
-                terminal_height,
-                shell_config_clone.clone(),
-                DEFAULT_SCROLLBACK_LINES,
-                start_dir,
-            )))
-        };
-
-        match state::load_state(terminal_factory) {
-            Ok((tab_bar_loaded, _active_tab)) => {
-                eprintln!("[MAIN] Successfully loaded state");
-                Arc::new(Mutex::new(tab_bar_loaded))
-            }
-            Err(e) => {
-                eprintln!("[MAIN] Failed to load state: {}, creating default tab", e);
-                let mut tab_bar_new = TabBarGui::new();
-                let first_terminal = Arc::new(Mutex::new(Terminal::new_with_scrollback(
-                    terminal_width,
-                    terminal_height,
-                    shell_config.clone(),
-                    DEFAULT_SCROLLBACK_LINES,
-                    std::env::current_dir().ok(),
-                )));
-                tab_bar_new.add_tab(first_terminal, "Tab 1".to_string());
-                Arc::new(Mutex::new(tab_bar_new))
-            }
-        }
-    };
-
-    // Settings are now loaded earlier (before font loading) and stored in the `settings` variable
-    // This comment is kept for reference - settings initialization happens around line 313
-
-    // Set context menu images on all pane layouts
-    let context_menu_images = load_context_menu_images().ok();
-    if let Some(images) = context_menu_images {
-        if let Ok(mut gui) = tab_bar_gui.try_lock() {
-            gui.set_context_menu_images(images);
-        }
-    }
-
-    // Initialize test server if requested
-    #[cfg(feature = "test-server")]
-    let test_server = if let Some(port) = test_port {
-        let terminals = match tab_bar_gui.try_lock() {
-            Ok(gui) => gui.get_all_terminals(),
-            Err(_) => {
-                eprintln!("[MAIN] Failed to get terminals for test server");
-                Vec::new()
-            }
-        };
-        match TestServer::new(
-            port,
-            terminals,
-            Arc::clone(&tab_bar_gui),
-            char_width,
-            char_height,
-            tab_bar_height,
-            drawable_width,
-            drawable_height,
-        ) {
-            Ok(server) => {
-                eprintln!("[MAIN] Test server enabled on port {}", port);
-                Some(server)
-            }
-            Err(e) => {
-                eprintln!("[MAIN] Failed to start test server: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let ctrl_keys = input::keyboard::create_ctrl_key_map();
-
-    // Mouse state tracker
-    let mut mouse_state = input::mouse::MouseState::new();
-
-    // Glyph cache to avoid re-rendering characters every frame
-    // Key: (character, fg_color_rgb, bg_color_rgb), Value: texture
-    let mut glyph_cache: HashMap<(String, (u8, u8, u8)), sdl3::render::Texture> = HashMap::new();
     let mut last_cache_clear = Instant::now();
+
+    // Store font path for reloading when font size changes
+    let font_path = if settings.terminal.font_family == "auto" {
+        font_discovery::find_best_monospace_font().unwrap_or_default()
+    } else {
+        settings.terminal.font_family.clone()
+    };
 
     let mut needs_render = true;
     let mut skip_render_count = 0;
@@ -1196,6 +732,13 @@ Searched directories:
                                     gui.add_tab(terminal, format!("Tab {}", new_tab_index));
                                 }
                             }
+                            "kill_shell" => {
+                                if let Some(terminal_arc) = pane_layout.root.find_terminal(pane_id) {
+                                    if let Ok(mut terminal) = terminal_arc.lock() {
+                                        let _ = terminal.kill();
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -1299,14 +842,17 @@ Searched directories:
                     )));
 
                     let mut gui = tab_bar_gui.lock().unwrap();
-                    if let Some(pane_layout) = gui.get_active_pane_layout() {
-                        pane_layout.split_active_pane(direction, new_terminal);
-                    }
+                    let new_pane_id = if let Some(pane_layout) = gui.get_active_pane_layout() {
+                        pane_layout.split_active_pane(direction, new_terminal.clone());
+                        pane_layout.active_pane()
+                    } else {
+                        crate::pane_layout::PaneId(0)
+                    };
                     drop(gui); // Release lock before calling resize function
 
                     // Resize all terminals to match their new pane dimensions
                     let (w, h) = canvas.window().size_in_pixels();
-                    resize_terminals_after_split(&tab_bar_gui, char_width, char_height, tab_bar_height, w, h);
+                    resize_terminals_after_split(&tab_bar_gui, char_width, char_height, tab_bar_height, w, h, new_pane_id);
 
                     #[cfg(feature = "test-server")]
                     if let Some(ref server) = test_server {

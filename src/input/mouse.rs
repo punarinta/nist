@@ -568,7 +568,7 @@ fn handle_context_menu_click(mouse_x: i32, mouse_y: i32, tab_bar_gui: &Arc<Mutex
     if let Some(pane_layout) = gui.get_active_pane_layout() {
         if let Some((menu_pane_id, menu_x, menu_y)) = pane_layout.context_menu_open {
             // Check if clicking on context menu
-            let menu_rect = sdl3::rect::Rect::new(menu_x, menu_y, 400, 175);
+            let menu_rect = sdl3::rect::Rect::new(menu_x, menu_y, 400, 230);
             if menu_rect.contains_point((mouse_x, mouse_y)) {
                 // Handle menu item clicks
                 let relative_y = mouse_y - menu_y - 5;
@@ -577,7 +577,7 @@ fn handle_context_menu_click(mouse_x: i32, mouse_y: i32, tab_bar_gui: &Arc<Mutex
                 // Check pane count to determine if "Turn into a tab" is disabled
                 let pane_count = pane_layout.root.count_leaf_panes();
 
-                if item_index < 3 {
+                if item_index < 4 {
                     match item_index {
                         0 => pane_layout.pending_context_action = Some((menu_pane_id, "split_vertical".to_string())),
                         1 => pane_layout.pending_context_action = Some((menu_pane_id, "split_horizontal".to_string())),
@@ -587,6 +587,7 @@ fn handle_context_menu_click(mouse_x: i32, mouse_y: i32, tab_bar_gui: &Arc<Mutex
                                 pane_layout.pending_context_action = Some((menu_pane_id, "to_tab".to_string()));
                             }
                         }
+                        3 => pane_layout.pending_context_action = Some((menu_pane_id, "kill_shell".to_string())),
                         _ => {}
                     }
                 }

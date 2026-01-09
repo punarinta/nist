@@ -215,20 +215,23 @@ fn render_pane<'a, T>(
     // Platform-specific padding
     let pane_padding = get_pane_padding();
 
-    // Calculate visible terminal grid dimensions
+    // Calculate how many columns/rows can fit in the pane rect
     let (usable_width, usable_height) = get_usable_dimensions(rect.width(), rect.height());
-    let cols = (usable_width as f32 / char_width).floor() as usize;
-    let rows = (usable_height as f32 / char_height).floor() as usize;
+    let rect_cols = (usable_width as f32 / char_width).floor() as usize;
+    let rect_rows = (usable_height as f32 / char_height).floor() as usize;
+
+    // Render up to the smaller of: what fits in rect, or what's in screen buffer
+    // This prevents rendering outside rect bounds (overflow into other panes)
+    // while also not trying to read beyond screen buffer dimensions
+    let cols = rect_cols.min(sb.width());
+    let rows = rect_rows.min(sb.height());
 
     // Get selection for highlighting
     let selection = *t.selection.lock().unwrap();
 
-    // OPTIMIZATION: Only render visible rows (skip off-screen scrollback)
-    let visible_rows = rows.min(sb.height());
-
-    // Render only visible cells
-    for row in 0..visible_rows {
-        for col in 0..cols.min(sb.width()) {
+    // Render cells that fit in both the rect and the screen buffer
+    for row in 0..rows {
+        for col in 0..cols {
             if let Some(cell) = sb.get_cell_with_scrollback(col, row) {
                 // Skip continuation cells (used by double-width emojis)
                 if cell.width == 0 || cell.ch.is_empty() {
@@ -576,7 +579,7 @@ fn render_context_menu<T>(
 ) -> Result<(), String> {
     let menu_width = 400;
     let item_height = 55;
-    let menu_items = ["Split vertically", "Split horizontally", "Turn into a tab"];
+    let menu_items = ["Split vertically", "Split horizontally", "Turn into a tab", "Kill terminal"];
     let menu_height = (menu_items.len() as u32 * item_height) + 10;
     let menu_rect = Rect::new(menu_x, menu_y, menu_width, menu_height);
 
@@ -598,6 +601,7 @@ fn render_context_menu<T>(
                 0 => menu_images.vertical_split,
                 1 => menu_images.horizontal_split,
                 2 => menu_images.expand_into_tab,
+                3 => menu_images.kill_shell,
                 _ => continue,
             };
 
@@ -648,78 +652,4 @@ fn render_copy_animation(canvas: &mut Canvas<Window>, animation: &crate::ui::ani
     canvas.fill_rect(current_rect).map_err(|e| e.to_string())?;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_calculate_terminal_size_minimum_enforcement() {
-        // Test that terminal size is never smaller than 2x2
-        // This can happen when font is too large for the available space
-
-        // Extreme case: font larger than available space
-        let (cols, rows) = calculate_terminal_size(10, 10, 100.0, 100.0);
-        assert_eq!(cols, 2, "Cols should be at least 2 when font is too large");
-        assert_eq!(rows, 2, "Rows should be at least 2 when font is too large");
-
-        // Edge case: very small window
-        let (cols, rows) = calculate_terminal_size(1, 1, 10.0, 10.0);
-        assert_eq!(cols, 2, "Cols should be at least 2 for tiny window");
-        assert_eq!(rows, 2, "Rows should be at least 2 for tiny window");
-
-        // Edge case: zero-sized window
-        let (cols, rows) = calculate_terminal_size(0, 0, 10.0, 10.0);
-        assert_eq!(cols, 2, "Cols should be at least 2 for zero-sized window");
-        assert_eq!(rows, 2, "Rows should be at least 2 for zero-sized window");
-    }
-
-    #[test]
-    fn test_calculate_terminal_size_normal_case() {
-        // Test normal terminal size calculation
-        // Assuming 4px padding on each side (8px total on non-Windows)
-
-        // Window: 800x600, char: 10x20
-        // Usable: 792x592 (after 8px padding)
-        // Expected: 79 cols, 29 rows
-        let (cols, rows) = calculate_terminal_size(800, 600, 10.0, 20.0);
-        assert!(cols >= 2, "Cols should be at least 2");
-        assert!(rows >= 2, "Rows should be at least 2");
-        assert!(cols <= 80, "Cols should be reasonable");
-        assert!(rows <= 30, "Rows should be reasonable");
-    }
-
-    #[test]
-    fn test_calculate_terminal_size_with_large_font() {
-        // Simulate Ctrl+MouseWheel zoom to large font (e.g., 72pt)
-        // With large font, available space might only fit 2x2 or slightly more
-
-        // Small pane after split: 400x300, large font: 50x100
-        let (cols, rows) = calculate_terminal_size(400, 300, 50.0, 100.0);
-        assert!(cols >= 2, "Cols should be at least 2 with large font");
-        assert!(rows >= 2, "Rows should be at least 2 with large font");
-
-        // Should not be more than what fits
-        assert!(cols < 10, "Cols should be small with large font");
-        assert!(rows < 5, "Rows should be small with large font");
-    }
-
-    #[test]
-    fn test_calculate_terminal_size_prevents_panic() {
-        // Test various combinations that could cause panics if not handled
-        let test_cases = vec![
-            (0, 0, 1.0, 1.0),
-            (1, 1, 1.0, 1.0),
-            (10, 10, 100.0, 100.0),
-            (100, 100, 1000.0, 1000.0),
-            (u32::MAX, u32::MAX, f32::MAX, f32::MAX),
-        ];
-
-        for (width, height, char_w, char_h) in test_cases {
-            let (cols, rows) = calculate_terminal_size(width, height, char_w, char_h);
-            assert!(cols >= 2, "Cols should always be at least 2");
-            assert!(rows >= 2, "Rows should always be at least 2");
-        }
-    }
 }

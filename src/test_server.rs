@@ -71,9 +71,6 @@ pub enum TestCommand {
     GetCwd,
     #[serde(rename = "get_selection")]
     GetSelection,
-    #[serde(rename = "ctrl_mouse_wheel")]
-    #[allow(dead_code)]
-    CtrlMouseWheel { delta: i32 }, // 1 for scroll up (increase font), -1 for scroll down (decrease font)
     #[serde(rename = "scroll_view")]
     ScrollView { lines: i32 }, // Positive = scroll up (back in history), negative = scroll down (forward)
     #[serde(rename = "send_keypress")]
@@ -632,24 +629,28 @@ impl TestServer {
                     let term_library = TerminalLibrary::new();
                     let shell_config = term_library.get_default_shell().clone();
 
-                    // Calculate window dimensions from active terminal's current size
+                    // Use actual window dimensions instead of calculating from terminal size
                     let (width, height, window_width, window_height) = if let Some(active_term) = gui.get_active_terminal() {
                         if let Ok(t) = active_term.lock() {
                             let term_cols = t.width;
                             let term_rows = t.height;
-                            // Calculate window pixel dimensions from terminal character dimensions
-                            let win_width_pixels = (term_cols as f32 * self.char_width) as u32;
-                            let win_height_pixels = (term_rows as f32 * self.char_height) as u32;
+                            // Use stored window dimensions
+                            let win_width_pixels = *self.window_width.lock().unwrap();
+                            let win_height_pixels = *self.window_height.lock().unwrap();
                             eprintln!(
                                 "[TEST_SERVER] Split: terminal={}x{}, char_size={:.2}x{:.2}, window={}x{}",
                                 term_cols, term_rows, self.char_width, self.char_height, win_width_pixels, win_height_pixels
                             );
                             (term_cols, term_rows, win_width_pixels, win_height_pixels)
                         } else {
-                            (80, 24, (80.0 * self.char_width) as u32, (24.0 * self.char_height) as u32)
+                            let win_width = *self.window_width.lock().unwrap();
+                            let win_height = *self.window_height.lock().unwrap();
+                            (80, 24, win_width, win_height)
                         }
                     } else {
-                        (80, 24, (80.0 * self.char_width) as u32, (24.0 * self.char_height) as u32)
+                        let win_width = *self.window_width.lock().unwrap();
+                        let win_height = *self.window_height.lock().unwrap();
+                        (80, 24, win_width, win_height)
                     };
 
                     // Get cwd from active terminal before splitting
@@ -662,7 +663,9 @@ impl TestServer {
 
                     if let Some(pane_layout) = gui.get_active_pane_layout() {
                         // Check if the pane is large enough to split
-                        let pane_rects = pane_layout.get_pane_rects(0, 0, window_width, window_height);
+                        let tab_bar_height = self._tab_bar_height;
+                        let pane_area_height = window_height.saturating_sub(tab_bar_height);
+                        let pane_rects = pane_layout.get_pane_rects(0, tab_bar_height as i32, window_width, pane_area_height);
 
                         // Find the active pane's dimensions
                         let can_split = if let Some((_, rect, _, _)) = pane_rects.iter().find(|(id, _, _, _)| *id == pane_layout.active_pane) {
@@ -737,11 +740,16 @@ impl TestServer {
                         pane_layout.split_active_pane(split_dir, new_terminal.clone());
                         // Update terminals list
                         if let Ok(mut terminals) = self.terminals.lock() {
-                            terminals.push(new_terminal);
+                            terminals.push(new_terminal.clone());
                         }
 
+                        // Get the active pane ID (which is the newly created pane after split)
+                        let new_pane_id = pane_layout.active_pane();
+
                         // Resize all terminals to match their new pane dimensions
-                        let pane_rects = pane_layout.get_pane_rects(0, 0, window_width, window_height);
+                        let tab_bar_height = self._tab_bar_height;
+                        let pane_area_height = window_height.saturating_sub(tab_bar_height);
+                        let pane_rects = pane_layout.get_pane_rects(0, tab_bar_height as i32, window_width, pane_area_height);
                         eprintln!("[TEST_SERVER] Resizing {} terminals after split", pane_rects.len());
 
                         for (pane_id, rect, terminal, _is_active) in pane_rects {
@@ -750,17 +758,21 @@ impl TestServer {
 
                             if let Ok(mut t) = terminal.lock() {
                                 if t.width != cols || t.height != rows {
-                                    eprintln!("[TEST_SERVER] Pane {:?}: {}x{} -> {}x{}", pane_id, t.width, t.height, cols, rows);
-                                    t.set_size(cols, rows, true);
+                                    // Only clear screen for the newly created pane, not existing ones
+                                    let clear_screen = pane_id == new_pane_id;
+                                    eprintln!(
+                                        "[TEST_SERVER] Pane {:?}: {}x{} -> {}x{} (clear={})",
+                                        pane_id, t.width, t.height, cols, rows, clear_screen
+                                    );
+                                    t.set_size(cols, rows, clear_screen);
                                 } else {
                                     eprintln!("[TEST_SERVER] Pane {:?}: already {}x{}", pane_id, cols, rows);
                                 }
                             }
                         }
 
-                        // Get the new pane ID (the newly created pane becomes active)
-                        let pane_id = pane_layout.active_pane();
-                        return TestResponse::PaneCreated { pane_id: pane_id.0 };
+                        // Return the new pane ID
+                        return TestResponse::PaneCreated { pane_id: new_pane_id.0 };
                     }
                 }
                 TestResponse::Error {
@@ -953,14 +965,7 @@ impl TestServer {
                     message: "Failed to get cwd".to_string(),
                 }
             }
-            TestCommand::CtrlMouseWheel { delta: _ } => {
-                // Font size changes happen in the main event loop via SDL events
-                // This test command is not implemented as it requires SDL event injection
-                // Use manual testing instead
-                TestResponse::Error {
-                    message: "CtrlMouseWheel not implemented in test server - use manual testing".to_string(),
-                }
-            }
+
             TestCommand::ScrollView { lines } => {
                 if let Ok(gui) = self.tab_bar_gui.lock() {
                     if let Some(terminal) = gui.get_active_terminal() {
