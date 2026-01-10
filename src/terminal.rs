@@ -323,6 +323,10 @@ impl Terminal {
                     eprintln!("[TERMINAL] Failed to write key to PTY: {}", err);
                 }
             }
+            // Flush to ensure data is sent immediately to the child process
+            if let Err(err) = writer.flush() {
+                eprintln!("[TERMINAL] Failed to flush PTY writer: {}", err);
+            }
         }
     }
 
@@ -358,6 +362,10 @@ impl Terminal {
             if let Err(err) = writer.write_all(converted.as_bytes()) {
                 eprintln!("[TERMINAL] Failed to write text to PTY: {}", err);
             }
+            // Flush to ensure data is sent immediately to the child process
+            if let Err(err) = writer.flush() {
+                eprintln!("[TERMINAL] Failed to flush PTY writer: {}", err);
+            }
         }
     }
 
@@ -391,6 +399,10 @@ impl Terminal {
                 if let Err(err) = writer.write_all(converted.as_bytes()) {
                     eprintln!("[TERMINAL] Failed to write text to PTY: {}", err);
                 }
+            }
+            // Flush to ensure data is sent immediately to the child process
+            if let Err(err) = writer.flush() {
+                eprintln!("[TERMINAL] Failed to flush PTY writer: {}", err);
             }
         }
     }
@@ -439,6 +451,10 @@ impl Terminal {
         if let Ok(mut writer) = self.writer.lock() {
             if let Err(e) = writer.write_all(sequence.as_bytes()) {
                 eprintln!("[TERMINAL] Failed to write mouse event to PTY: {}", e);
+            }
+            // Flush to ensure data is sent immediately to the child process
+            if let Err(err) = writer.flush() {
+                eprintln!("[TERMINAL] Failed to flush PTY writer: {}", err);
             }
         }
     }
@@ -1129,6 +1145,41 @@ impl Terminal {
             eprintln!("[TERMINAL] Processing CSI: {:?}", sequence);
         }
 
+        // Handle DECRQM (Request Mode) - CSI ? Ps $ p
+        // Applications like opencode query mode status and wait for responses
+        // We respond conservatively to unblock the application
+        if sequence.contains("$p") {
+            let mode_query = sequence.trim_start_matches("\x1b[");
+            if mode_query.starts_with('?') && mode_query.ends_with("$p") {
+                let mode_str = mode_query.trim_start_matches('?').trim_end_matches("$p");
+                if let Ok(mode_num) = mode_str.parse::<u32>() {
+                    // Status: 0=not recognized, 1=set, 2=reset, 3=permanently set, 4=permanently reset
+                    // We conservatively report modes as either not recognized (0) or reset (2)
+                    let status = match mode_num {
+                        1 | 1000 | 1002 | 1003 | 1004 | 1006 | 1016 | 2004 | 2026 | 2027 | 2031 => {
+                            // Known modes - report as reset (off)
+                            2
+                        }
+                        _ => {
+                            // Unknown mode - report as not recognized
+                            0
+                        }
+                    };
+
+                    // Send DECRPM response: CSI ? Ps ; Pm $ y
+                    let response = format!("\x1b[?{};{}$y", mode_num, status);
+                    if let Ok(mut w) = writer.lock() {
+                        if let Err(e) = w.write_all(response.as_bytes()) {
+                            eprintln!("[DECRQM] Failed to send mode report for mode {}: {}", mode_num, e);
+                        } else if let Err(e) = w.flush() {
+                            eprintln!("[DECRQM] Failed to flush mode report: {}", e);
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
         // Extract the final character and arguments
         let chars: Vec<char> = sequence.chars().collect();
         if chars.len() < 3 {
@@ -1199,12 +1250,18 @@ impl Terminal {
                 let arg = if args.is_empty() || args[0].is_empty() {
                     0
                 } else {
-                    args[0].parse::<i32>().unwrap_or(0)
+                    args[0].parse::<usize>().unwrap_or(0)
                 };
                 match arg {
-                    0 => sb.clear_from_cursor_to_end(),
-                    1 => sb.clear_from_start_to_cursor(),
-                    2 | 3 => sb.clear_screen(),
+                    0 => {
+                        sb.clear_from_cursor_to_end();
+                    }
+                    1 => {
+                        sb.clear_from_start_to_cursor();
+                    }
+                    2 | 3 => {
+                        sb.clear_screen();
+                    }
                     _ => {}
                 }
             }
@@ -1213,12 +1270,18 @@ impl Terminal {
                 let arg = if args.is_empty() || args[0].is_empty() {
                     0
                 } else {
-                    args[0].parse::<i32>().unwrap_or(0)
+                    args[0].parse::<usize>().unwrap_or(0)
                 };
                 match arg {
-                    0 => sb.clear_line_from_cursor(),
-                    1 => sb.clear_line_to_cursor(),
-                    2 => sb.clear_line(),
+                    0 => {
+                        sb.clear_line_from_cursor();
+                    }
+                    1 => {
+                        sb.clear_line_to_cursor();
+                    }
+                    2 => {
+                        sb.clear_line();
+                    }
                     _ => {}
                 }
             }
@@ -1249,7 +1312,7 @@ impl Terminal {
             }
             'h' | 'l' => {
                 // Set Mode (h) or Reset Mode (l)
-                let mode_numbers = Self::parse_mode_sequences_old(&sequence[3..sequence.len() - 1], debug);
+                let mode_numbers = Self::parse_mode_sequences_old(&sequence[2..sequence.len() - 1], debug);
 
                 for mode_str in mode_numbers {
                     if debug {
@@ -1257,9 +1320,10 @@ impl Terminal {
                     }
 
                     match mode_str.as_str() {
-                        "1049" => {
+                        "1049" | "?1049" => {
                             // Alternate screen buffer (supports stacking for nested alternate screens)
                             if final_char == 'h' {
+                                eprintln!("[ALTSCREEN] Switching TO alternate screen buffer");
                                 // Save current screen to stack and switch to alternate
                                 let mut saved_stack = saved_screen_buffer.lock().unwrap();
                                 // Save the current (main) buffer
@@ -1270,6 +1334,10 @@ impl Terminal {
                                 let scrollback_limit = sb.scrollback_limit();
                                 *sb = ScreenBuffer::new_with_scrollback(sb.width(), sb.height(), scrollback_limit);
                             } else {
+                                eprintln!("[ALTSCREEN] Switching FROM alternate screen buffer (restoring main)");
+                                // Per xterm spec, clear the alternate screen before switching back
+                                sb.clear_screen();
+
                                 // Restore screen from stack
                                 let mut saved_stack = saved_screen_buffer.lock().unwrap();
                                 if let Some(mut saved_sb) = saved_stack.pop() {
@@ -1281,15 +1349,15 @@ impl Terminal {
                                 }
                             }
                         }
-                        "25" => {
+                        "25" | "?25" => {
                             // Cursor visibility
                             // Cursor visibility - we don't implement this yet
                         }
-                        "1" => {
+                        "1" | "?1" => {
                             // Application cursor keys mode
                             // We can ignore this for now
                         }
-                        "6" => {
+                        "6" | "?6" => {
                             // DECOM - Origin mode
                             // When enabled, cursor positioning is relative to scroll region
                             if final_char == 'h' {
@@ -1300,7 +1368,7 @@ impl Terminal {
                                 sb.move_cursor_to(0, 0); // Move to home position (top-left of screen)
                             }
                         }
-                        "?7" => {
+                        "7" | "?7" => {
                             // Auto-wrap mode
                             // Auto-wrap mode - we don't implement this yet
                         }
@@ -1310,6 +1378,15 @@ impl Terminal {
                         }
                         "?1006" => {
                             // SGR mouse mode - we can ignore for now
+                        }
+                        "?2026" => {
+                            // Synchronized output mode (BSU - Begin Synchronized Update)
+                            // This is used by TUI apps to batch screen updates and prevent flickering
+                            // We don't need to do anything special here - just acknowledge the mode
+                        }
+                        "?2027" => {
+                            // End synchronized output mode (ESU)
+                            // We don't need to do anything special here
                         }
                         "?2004" => {
                             // Bracketed paste mode - we can ignore for now
@@ -1419,8 +1496,6 @@ impl Terminal {
                     args[0].parse::<u32>().unwrap_or(0)
                 };
 
-                eprintln!("[DSR] Received DSR query with param={}", param);
-
                 if param == 6 {
                     // Cursor Position Report (CPR)
                     let row = sb.cursor_y + 1; // 1-based
@@ -1428,14 +1503,11 @@ impl Terminal {
                     let response = format!("\x1b[{};{}R", row, col);
 
                     // Send response back through PTY to the application
-                    eprintln!("[DSR] Sending cursor position report: row={}, col={} (response: {:?})", row, col, response);
                     if let Ok(mut w) = writer.lock() {
                         if let Err(e) = w.write_all(response.as_bytes()) {
                             eprintln!("[DSR] Failed to send cursor position report: {}", e);
                         } else if let Err(e) = w.flush() {
                             eprintln!("[DSR] Failed to flush cursor position report: {}", e);
-                        } else {
-                            eprintln!("[DSR] Successfully sent cursor position report");
                         }
                     } else {
                         eprintln!("[DSR] Failed to acquire writer lock");
@@ -1446,7 +1518,32 @@ impl Terminal {
             }
             'c' => {
                 // Device Attributes (DA)
-                // We ignore this for now as it requires sending responses back
+                // Primary DA: CSI c or CSI 0 c - respond with terminal capabilities
+                // Secondary DA: CSI > Ps c - respond with terminal version
+
+                if args.is_empty() || (args.len() == 1 && (args[0].is_empty() || args[0] == "0")) {
+                    // Primary DA - identify as VT102 compatible
+                    // Response: CSI ? 6 c (VT102)
+                    let response = "\x1b[?6c";
+                    if let Ok(mut w) = writer.lock() {
+                        if let Err(e) = w.write_all(response.as_bytes()) {
+                            eprintln!("[DA] Failed to send device attributes: {}", e);
+                        } else if let Err(e) = w.flush() {
+                            eprintln!("[DA] Failed to flush device attributes: {}", e);
+                        }
+                    }
+                } else if args.len() == 1 && args[0].starts_with('>') {
+                    // Secondary DA - respond with terminal type and version
+                    // Response: CSI > 0 ; 0 ; 0 c (generic terminal)
+                    let response = "\x1b[>0;0;0c";
+                    if let Ok(mut w) = writer.lock() {
+                        if let Err(e) = w.write_all(response.as_bytes()) {
+                            eprintln!("[DA] Failed to send secondary device attributes: {}", e);
+                        } else if let Err(e) = w.flush() {
+                            eprintln!("[DA] Failed to flush secondary device attributes: {}", e);
+                        }
+                    }
+                }
             }
             's' => {
                 // Save cursor position (ANSI.SYS style)

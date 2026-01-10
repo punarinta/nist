@@ -441,14 +441,16 @@ fn render_glyph<'a, T>(
     }
 
     // Check if this is a symbol from ranges that are often missing from terminal fonts
-    // but present in FreeMono: Miscellaneous Technical, Dingbats, Block Elements
+    // but present in FreeMono: Miscellaneous Technical, Dingbats, Block Elements, Geometric Shapes, etc.
     let is_special_missing_symbol = text.chars().count() == 1
         && text.chars().next().map_or(false, |ch| {
             let codepoint = ch as u32;
             matches!(codepoint,
                 0x2300..=0x23FF |  // Miscellaneous Technical (includes ⎿)
                 0x2580..=0x259F |  // Block Elements (includes █)
-                0x2700..=0x27BF    // Dingbats (includes ❯)
+                0x25A0..=0x25FF |  // Geometric Shapes (includes ■)
+                0x2700..=0x27BF |  // Dingbats (includes ❯)
+                0xFF00..=0xFFEF    // Halfwidth and Fullwidth Forms (includes ･)
             )
         });
 

@@ -140,7 +140,6 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
 
     // Enable text input for terminal typing
     canvas.window().subsystem().text_input().start(canvas.window());
-    eprintln!("[INIT] Text input enabled");
 
     // Set up clipboard channel (Linux only)
     #[cfg(target_os = "linux")]
@@ -221,7 +220,6 @@ fn setup_signal_handlers() -> Result<std::sync::mpsc::Receiver<i32>, String> {
     use signal_hook::iterator::Signals;
 
     let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP]).map_err(|e| format!("Failed to register signal handlers: {}", e))?;
-    eprintln!("[INIT] Registered signal handlers for SIGTERM, SIGINT, SIGHUP");
 
     let (signal_tx, signal_rx) = channel::<i32>();
     std::thread::spawn(move || {

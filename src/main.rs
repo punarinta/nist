@@ -280,9 +280,9 @@ fn main() -> Result<(), String> {
 
         // Collect all events first
         let mut events = Vec::new();
-        // Use 16ms timeout for ~60 FPS responsiveness while reducing CPU wake-ups
-        // PTY reader threads mark terminals as dirty, so we don't need aggressive 1ms polling
-        let first_event = event_pump.wait_event_timeout(16);
+        // Use 1ms timeout for responsive PTY output rendering
+        // PTY data can arrive at any time, and we need to wake up quickly to render it
+        let first_event = event_pump.wait_event_timeout(1);
         if let Some(event) = first_event {
             events.push(event);
         }
@@ -305,6 +305,34 @@ fn main() -> Result<(), String> {
             if cursor_needs_update {
                 cursor_visible = !cursor_visible;
                 last_cursor_blink = Instant::now();
+                needs_render = true;
+            }
+        }
+
+        // Late dirty check: PTY data may have arrived during event wait
+        // This catches screen updates that happened after the initial dirty check
+        if !needs_render {
+            let late_dirty_content = {
+                match tab_bar_gui.try_lock() {
+                    Ok(gui) => {
+                        let terminals = gui.get_active_tab_terminals();
+                        terminals.iter().any(|term| {
+                            if let Ok(t) = term.try_lock() {
+                                if let Ok(sb) = t.screen_buffer.try_lock() {
+                                    sb.is_dirty()
+                                } else {
+                                    true // Assume dirty if mutex is locked (PTY thread likely processing)
+                                }
+                            } else {
+                                true // Assume dirty if terminal is locked
+                            }
+                        })
+                    }
+                    Err(_) => true, // Assume dirty if GUI is locked
+                }
+            };
+
+            if late_dirty_content {
                 needs_render = true;
             }
         }
