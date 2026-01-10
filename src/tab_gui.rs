@@ -54,26 +54,35 @@ impl TabState {
 
     pub fn delete_char_at_cursor(&mut self) {
         if self.cursor_pos < self.temp_name.len() {
-            self.temp_name.remove(self.cursor_pos);
+            if let Some(index) = self.temp_name[self.cursor_pos..].char_indices().next().map(|(i, _)| i) {
+                self.temp_name.remove(self.cursor_pos + index);
+            }
         }
     }
 
     pub fn backspace_at_cursor(&mut self) {
         if self.cursor_pos > 0 {
-            self.temp_name.remove(self.cursor_pos - 1);
-            self.cursor_pos -= 1;
+            // Find the previous character boundary
+            let prev_char_len = self.temp_name[..self.cursor_pos].chars().last().map_or(0, |c| c.len_utf8());
+            let new_cursor_pos = self.cursor_pos - prev_char_len;
+
+            // Remove the character at the character boundary
+            self.temp_name.remove(new_cursor_pos);
+            self.cursor_pos = new_cursor_pos;
         }
     }
 
     pub fn move_cursor_left(&mut self) {
         if self.cursor_pos > 0 {
-            self.cursor_pos -= 1;
+            let prev_char_len = self.temp_name[..self.cursor_pos].chars().last().map_or(0, |c| c.len_utf8());
+            self.cursor_pos -= prev_char_len;
         }
     }
 
     pub fn move_cursor_right(&mut self) {
         if self.cursor_pos < self.temp_name.len() {
-            self.cursor_pos += 1;
+            let next_char_len = self.temp_name[self.cursor_pos..].chars().next().map_or(0, |c| c.len_utf8());
+            self.cursor_pos += next_char_len;
         }
     }
 }
