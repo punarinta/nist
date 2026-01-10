@@ -1089,8 +1089,23 @@ impl Terminal {
                         text_buffer.push(chars.next().unwrap());
                     }
 
+                    // a bit risky heuristics
                     // Now process the buffer as grapheme clusters
                     for grapheme in text_buffer.graphemes(true) {
+                        // TUI garbage cleanup: If we're writing a shell prompt at the TOP of the screen (line 0),
+                        // it likely means a TUI app (like Claude) that doesn't use alternate screen buffer
+                        // just exited, leaving garbage on screen. Clear it.
+                        if sb.cursor_x == 0 && sb.cursor_y == 0 && (grapheme == "~" || grapheme == "$" || grapheme == "#" || grapheme == ">") {
+                            // Check if there's non-empty content on screen (likely TUI garbage)
+                            let has_content =
+                                (1..sb.height().min(20)).any(|y| (0..sb.width().min(80)).any(|x| sb.get_cell(x, y).map_or(false, |cell| cell.ch != " ")));
+
+                            if has_content {
+                                // Clear the screen to remove TUI garbage
+                                sb.clear_screen();
+                            }
+                        }
+
                         sb.put_grapheme(grapheme);
                     }
                 }

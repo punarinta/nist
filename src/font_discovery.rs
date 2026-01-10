@@ -193,7 +193,35 @@ pub fn find_best_monospace_font() -> Option<String> {
     None
 }
 
-/// Discovers the best available emoji font with color emoji support
+/// Searches for a specific font file by name across all font directories.
+///
+/// # Arguments
+///
+/// * `font_name` - The exact filename to search for (e.g., "FreeMono.ttf")
+///
+/// # Returns
+///
+/// The full path to the font file if found, or None
+pub fn find_specific_font(font_name: &str) -> Option<String> {
+    // Expand home directory in paths
+    let mut search_paths = Vec::new();
+    for dir in FONT_DIRECTORIES {
+        if let Some(expanded) = expand_home_dir(dir) {
+            search_paths.push(expanded);
+        }
+    }
+
+    // Search for the specific font in each directory
+    for base_path in &search_paths {
+        if let Some(font_path) = search_font_recursive(base_path, font_name) {
+            return Some(font_path.to_string_lossy().to_string());
+        }
+    }
+
+    None
+}
+
+/// Searches for the best available emoji font with color emoji support.
 ///
 /// Searches through system font directories for emoji fonts that support
 /// color rendering. Returns the first match found, or None if no suitable

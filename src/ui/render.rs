@@ -440,6 +440,33 @@ fn render_glyph<'a, T>(
         }
     }
 
+    // Check if this is a symbol from ranges that are often missing from terminal fonts
+    // but present in FreeMono: Miscellaneous Technical, Dingbats, Block Elements
+    let is_special_missing_symbol = text.chars().count() == 1
+        && text.chars().next().map_or(false, |ch| {
+            let codepoint = ch as u32;
+            matches!(codepoint,
+                0x2300..=0x23FF |  // Miscellaneous Technical (includes ⎿)
+                0x2580..=0x259F |  // Block Elements (includes █)
+                0x2700..=0x27BF    // Dingbats (includes ❯)
+            )
+        });
+
+    // For these specific symbols, try unicode fallback font FIRST
+    if is_special_missing_symbol && !is_likely_emoji {
+        let unicode_fallback_result = unicode_fallback_font.render(text).blended(fg_color);
+        if let Ok(unicode_surface) = unicode_fallback_result {
+            if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
+                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
+                    let char_rect = Rect::new(x, y, unicode_surface.width(), unicode_surface.height());
+                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                    glyph_cache.insert(cache_key, texture);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     // Not in cache, render and cache it (try main font for non-emoji or if emoji font failed)
     // For single characters use render_char, for grapheme clusters use render
     let render_result = if text.chars().count() == 1 {
@@ -476,14 +503,17 @@ fn render_glyph<'a, T>(
         }
 
         // Try Unicode fallback font (for all characters that failed emoji/main fonts)
-        let unicode_fallback_result = unicode_fallback_font.render(text).blended(fg_color);
-        if let Ok(unicode_surface) = unicode_fallback_result {
-            if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
-                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
-                    let char_rect = Rect::new(x, y, unicode_surface.width(), unicode_surface.height());
-                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
-                    glyph_cache.insert(cache_key, texture);
-                    return Ok(());
+        // Skip if we already tried it above for the 3 special symbols
+        if !is_special_missing_symbol {
+            let unicode_fallback_result = unicode_fallback_font.render(text).blended(fg_color);
+            if let Ok(unicode_surface) = unicode_fallback_result {
+                if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
+                    if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
+                        let char_rect = Rect::new(x, y, unicode_surface.width(), unicode_surface.height());
+                        canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                        glyph_cache.insert(cache_key, texture);
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -532,26 +562,16 @@ fn is_emoji_char(ch: char) -> bool {
         0x1FA70..=0x1FAFF |
         // Miscellaneous Symbols (including weather, zodiac)
         0x2600..=0x26FF |
-        // Dingbats
-        0x2700..=0x27BF |
         // Enclosed Alphanumeric Supplement (includes circled numbers and regional indicators for flags)
         0x1F100..=0x1F1FF |
         // Enclosed Ideographic Supplement
         0x1F200..=0x1F2FF |
-        // Miscellaneous Symbols and Arrows
-        0x2B00..=0x2BFF |
-        // Supplemental Arrows-B
-        0x2900..=0x297F |
         // Variation Selectors (emoji presentation)
         0xFE00..=0xFE0F |
         // Mahjong Tiles, Domino Tiles
         0x1F000..=0x1F02F |
         // Playing Cards
-        0x1F0A0..=0x1F0FF |
-        // Geometric Shapes
-        0x25A0..=0x25FF |
-        // Arrows
-        0x2190..=0x21FF
+        0x1F0A0..=0x1F0FF
     )
 }
 

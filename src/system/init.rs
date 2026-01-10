@@ -438,11 +438,16 @@ fn load_fonts<'a>(ttf_context: &'a Sdl3TtfContext, settings: &settings::Settings
         .map_err(|e| format!("Emoji font loading failed: {}", e))?;
     eprintln!("[INIT] Loaded emoji font: {}", emoji_font_path);
 
-    // Load Unicode fallback font
+    // Load Unicode fallback font - use FreeMono for specific missing symbols (U+23BF, U+276F, U+2588)
+    // Note: This may cause minor alignment issues in some apps, but allows these symbols to render
+    let unicode_fallback_font_path = font_discovery::find_specific_font("FreeMono.ttf").unwrap_or_else(|| {
+        eprintln!("[INIT] WARNING: FreeMono not found, using terminal font (some symbols may not render)");
+        font_path.clone()
+    });
     let unicode_fallback_font = ttf_context
-        .load_font(&ui_font_path, font_size)
+        .load_font(&unicode_fallback_font_path, font_size)
         .map_err(|e| format!("Unicode fallback font loading failed: {}", e))?;
-    eprintln!("[INIT] Loaded Unicode fallback font: {}", ui_font_path);
+    eprintln!("[INIT] Loaded Unicode fallback font: {} (for special symbols)", unicode_fallback_font_path);
 
     Ok(Fonts {
         font,
