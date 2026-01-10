@@ -1,6 +1,6 @@
 Nisdos Terminal
 ===
-A terminal we use at Nisdos and decided to open-source. It aims at low CPU and memory consumption, high performance, while having all modern features. Built on pure Rust & [SDL3](https://www.libsdl.org/).
+A terminal emulator we are now using at Nisdos, open-sourced for community needs. It aims at high performance, while having all modern features. Built on pure Rust & [SDL3](https://www.libsdl.org/).
 
 Features
 ===
@@ -11,18 +11,19 @@ Features
 - scrollable output history
 - primary buffer support on Linux
 - smart Ctrl+C & Ctrl+V (works when it doesn't interfere with terminal apps)
-- sequential hotkeys (built-in example: Alt-G-P -- go to prompt)
+- sequential hotkeys (built-in example: Alt-G-P — go to prompt)
 - emojis, including modifiers and combined emojis
 - multiterminal typing (send input to several terminals simultaneously)
-- terminal keeps own output history in state
+- terminal keeps own input and output history in state
 
 Next steps
 ===
-- keep terminal's own input history in state
+- convenient command history search
 - AI-agent to assist working with OS (not for coding)
 - further expand settings
 - voice input
 - JSON themes
+- plugins system
 - ligatures support
 - Kitty protocol support
 
@@ -40,8 +41,8 @@ Holding Ctrl key and mouse clicking on a terminal pane adds it to the list of te
 
 Current platform support
 ===
-- Linux -- low bugs probability
-- macOS -- low bugs probability; GUI is a bit unstable, the rest is okay
-- Windows -- average bugs probability due to a non-UNIX-like environment
+- Linux — low bugs probability
+- macOS — low bugs probability; GUI is a bit unstable, the rest is okay
+- Windows — average bugs probability due to a non-UNIX-like environment
 
 The builds included in "releases" directory may be slightly outdated. If you want to get the most recent version, please build it from source. I'll add details on that later.
