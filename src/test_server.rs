@@ -87,6 +87,8 @@ pub enum TestCommand {
         #[serde(default)]
         alt: bool,
     },
+    #[serde(rename = "ctrl_mouse_wheel")]
+    CtrlMouseWheel { delta: i32 }, // 1 for scroll up (zoom in), -1 for scroll down (zoom out)
 }
 
 #[derive(Serialize, Debug)]
@@ -1084,6 +1086,41 @@ impl TestServer {
 
                 TestResponse::Error {
                     message: format!("Keypress simulation not fully implemented for key: {}", key),
+                }
+            }
+            TestCommand::CtrlMouseWheel { delta } => {
+                // Simulate font size change by resizing terminal
+                // When zooming in (delta > 0), font gets bigger, so terminal gets smaller (fewer cols/rows)
+                // When zooming out (delta < 0), font gets smaller, so terminal gets larger (more cols/rows)
+
+                if let Ok(gui) = self.tab_bar_gui.lock() {
+                    if let Some(terminal) = gui.get_active_terminal() {
+                        if let Ok(mut t) = terminal.lock() {
+                            let current_width = t.width;
+                            let current_height = t.height;
+
+                            // Simulate font size change: reduce dimensions by ~10% per zoom level
+                            // In reality, increasing font by 1pt might reduce cols/rows by various amounts
+                            // depending on the font size, but we'll use a fixed percentage for testing
+                            let scale_factor = if delta > 0 { 0.9 } else { 1.1 };
+
+                            let new_width = ((current_width as f32) * scale_factor).max(20.0) as u32;
+                            let new_height = ((current_height as f32) * scale_factor).max(10.0) as u32;
+
+                            eprintln!(
+                                "[TEST_SERVER] Simulating zoom: {}x{} -> {}x{}",
+                                current_width, current_height, new_width, new_height
+                            );
+
+                            // Don't clear screen when resizing due to zoom
+                            t.set_size(new_width, new_height, false);
+
+                            return TestResponse::Ok;
+                        }
+                    }
+                }
+                TestResponse::Error {
+                    message: "Failed to simulate zoom".to_string(),
                 }
             }
         }

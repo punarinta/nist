@@ -135,79 +135,23 @@ impl ScreenBuffer {
         // Create new buffer
         let mut new_cells = vec![vec![Cell::default(); width]; height];
 
-        // If width is decreasing, wrap content to new width
-        // This preserves history and makes long lines wrap to multiple lines
-        if width < old_width {
-            let mut new_row = 0;
-            let mut new_cursor_y = 0;
-            let mut new_cursor_x = old_cursor_x;
-
-            // Process each old row
-            for old_y in 0..old_height {
-                if new_row >= height {
-                    break; // Filled new buffer
-                }
-
-                if old_y >= self.cells.len() {
-                    break;
-                }
-
-                // Track if this is the cursor's row
-                let is_cursor_row = old_y == old_cursor_y;
-
-                // Wrap this old row across multiple new rows if needed
-                let old_row_len = self.cells[old_y].len().min(old_width);
-                let mut old_col = 0;
-
-                while old_col < old_row_len && new_row < height {
-                    // Copy up to 'width' cells to current new row
-                    let cells_to_copy = (old_row_len - old_col).min(width);
-
-                    for i in 0..cells_to_copy {
-                        new_cells[new_row][i] = self.cells[old_y][old_col + i].clone();
-                    }
-
-                    // If this is the cursor row, figure out where cursor ends up after wrapping
-                    if is_cursor_row && old_cursor_x >= old_col && old_cursor_x < old_col + cells_to_copy {
-                        new_cursor_y = new_row;
-                        new_cursor_x = old_cursor_x - old_col;
-                        eprintln!(
-                            "[SCREEN_BUFFER] Found cursor in wrapped row: old_y={}, old_col_range={}..{}, old_cursor_x={}",
-                            old_y,
-                            old_col,
-                            old_col + cells_to_copy,
-                            old_cursor_x
-                        );
-                        eprintln!("[SCREEN_BUFFER] New cursor position: ({}, {})", new_cursor_x, new_cursor_y);
-                    }
-
-                    old_col += cells_to_copy;
-                    new_row += 1;
-                }
-            }
-
-            // Update cursor to new wrapped position
-            self.cursor_x = new_cursor_x.min(width.saturating_sub(1));
-            self.cursor_y = new_cursor_y.min(height.saturating_sub(1));
-            eprintln!("[SCREEN_BUFFER] Final cursor after wrapping: ({}, {})", self.cursor_x, self.cursor_y);
-        } else {
-            // Width increasing or staying same - simple copy
-            let copy_height = old_height.min(height);
-            let copy_width = old_width.min(width);
-            for (y, row) in new_cells.iter_mut().enumerate().take(copy_height) {
-                if y < self.cells.len() {
-                    for x in 0..copy_width {
-                        if x < self.cells[y].len() {
-                            row[x] = self.cells[y][x].clone();
-                        }
+        // Simple copy of content from old buffer to new buffer
+        // This handles both width increase and decrease
+        let copy_height = old_height.min(height);
+        let copy_width = old_width.min(width);
+        for (y, row) in new_cells.iter_mut().enumerate().take(copy_height) {
+            if y < self.cells.len() {
+                for x in 0..copy_width {
+                    if x < self.cells[y].len() {
+                        row[x] = self.cells[y][x].clone();
                     }
                 }
             }
-
-            // Keep cursor in bounds
-            self.cursor_x = self.cursor_x.min(width.saturating_sub(1));
-            self.cursor_y = self.cursor_y.min(height.saturating_sub(1));
         }
+
+        // Keep cursor in bounds
+        self.cursor_x = self.cursor_x.min(width.saturating_sub(1));
+        self.cursor_y = self.cursor_y.min(height.saturating_sub(1));
 
         self.cells = new_cells;
         self.width = width;
