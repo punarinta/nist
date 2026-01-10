@@ -418,19 +418,26 @@ fn handle_copy(tab_bar_gui: &Arc<Mutex<TabBarGui>>, #[cfg(target_os = "linux")] 
 
 /// Handle Ctrl+Shift+V: Paste from clipboard
 fn handle_paste(tab_bar_gui: &Arc<Mutex<TabBarGui>>) {
-    if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
-        match Clipboard::new() {
-            Ok(mut clipboard) => match clipboard.get_text() {
-                Ok(text) => {
-                    terminal.lock().unwrap().send_paste(&text);
-                }
-                Err(e) => {
-                    eprintln!("[CLIPBOARD] Failed to get text: {}", e);
-                }
-            },
+    // Get clipboard text first (before acquiring locks)
+    let text = match Clipboard::new() {
+        Ok(mut clipboard) => match clipboard.get_text() {
+            Ok(text) => text,
             Err(e) => {
-                eprintln!("[CLIPBOARD] Failed to create clipboard: {}", e);
+                eprintln!("[CLIPBOARD] Failed to get text: {}", e);
+                return;
             }
+        },
+        Err(e) => {
+            eprintln!("[CLIPBOARD] Failed to create clipboard: {}", e);
+            return;
+        }
+    };
+
+    // Broadcast paste to all selected panes (or just active pane if none selected)
+    if let Some(pane_layout) = tab_bar_gui.lock().unwrap().get_active_pane_layout() {
+        let terminals = pane_layout.get_group_input_terminals();
+        for terminal in terminals {
+            terminal.lock().unwrap().send_paste(&text);
         }
     }
 }
