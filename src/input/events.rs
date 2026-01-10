@@ -88,10 +88,11 @@ pub fn handle_event(
             ..
         } => EventResult::resize(),
 
-        Event::MouseButtonDown { mouse_btn, x, y, .. } => handle_mouse_button_down_event(
+        Event::MouseButtonDown { mouse_btn, x, y, clicks, .. } => handle_mouse_button_down_event(
             *mouse_btn,
             *x as i32,
             *y as i32,
+            *clicks,
             tab_bar,
             tab_bar_gui,
             mouse_state,
@@ -177,6 +178,7 @@ fn handle_mouse_button_down_event(
     mouse_btn: sdl3::mouse::MouseButton,
     x: i32,
     y: i32,
+    clicks: u8,
     tab_bar: &mut TabBar,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
     mouse_state: &mut MouseState,
@@ -201,6 +203,7 @@ fn handle_mouse_button_down_event(
         mouse_btn,
         mouse_x,
         mouse_y,
+        clicks,
         tab_bar,
         tab_bar_gui,
         tab_bar_height,

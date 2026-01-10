@@ -201,6 +201,7 @@ pub fn handle_mouse_button_down(
     mouse_btn: MouseButton,
     mouse_x: i32,
     mouse_y: i32,
+    clicks: u8,
     tab_bar: &mut TabBar,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
     tab_bar_height: u32,
@@ -305,6 +306,7 @@ pub fn handle_mouse_button_down(
         MouseButton::Left => handle_left_button_down(
             mouse_x,
             mouse_y,
+            clicks,
             tab_bar,
             tab_bar_gui,
             tab_bar_height,
@@ -325,6 +327,7 @@ pub fn handle_mouse_button_down(
 fn handle_left_button_down(
     mouse_x: i32,
     mouse_y: i32,
+    clicks: u8,
     tab_bar: &mut TabBar,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
     tab_bar_height: u32,
@@ -386,6 +389,36 @@ fn handle_left_button_down(
                     }
                 }
                 // Note: handle_click already sets the active pane
+            }
+
+            // Handle double-click word selection
+            if clicks == 2 && mouse_y >= tab_bar_height as i32 {
+                if let Some(terminal) = gui.get_active_terminal() {
+                    if let Ok(mut t) = terminal.try_lock() {
+                        // Convert mouse coordinates to terminal cell coordinates
+                        let pane_padding = crate::ui::render::get_pane_padding();
+
+                        // Get active pane rect
+                        if let Some(pane_layout) = gui.get_active_pane_layout() {
+                            let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_width, pane_area_height);
+
+                            // Find the active pane rect
+                            if let Some((_, rect, _, _, _)) = pane_rects.iter().find(|(pid, _, _, _, _)| *pid == pane_layout.active_pane) {
+                                let col = ((mouse_x - rect.x() - pane_padding as i32) as f32 / char_width) as usize;
+                                let row = ((mouse_y - rect.y() - pane_padding as i32) as f32 / char_height) as usize;
+
+                                // Select the word at this position
+                                t.select_word_at(col, row);
+
+                                // Don't prepare for regular selection
+                                drop(t);
+                                drop(gui);
+
+                                return MouseResult::render();
+                            }
+                        }
+                    }
+                }
             }
         }
     }

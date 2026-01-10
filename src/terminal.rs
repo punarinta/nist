@@ -466,6 +466,75 @@ impl Terminal {
         }
     }
 
+    /// Select a word at the given position (for double-click)
+    pub(crate) fn select_word_at(&mut self, col: usize, row: usize) {
+        let screen_buffer = match self.screen_buffer.try_lock() {
+            Ok(buf) => buf,
+            Err(_) => return,
+        };
+
+        // Check if the clicked position is valid
+        if row >= screen_buffer.height() {
+            return;
+        }
+
+        // Helper function to check if a character is part of a word
+        let is_word_char = |ch: &str| -> bool { ch.chars().next().map_or(false, |c| c.is_alphanumeric() || c == '_') };
+
+        // Get the character at the clicked position
+        let clicked_cell = match screen_buffer.get_cell(col, row) {
+            Some(cell) => cell,
+            None => return,
+        };
+
+        // If clicked on a non-word character, don't select anything
+        if !is_word_char(&clicked_cell.ch) || clicked_cell.ch.trim().is_empty() {
+            return;
+        }
+
+        // Find the start of the word
+        let mut start_col = col;
+        while start_col > 0 {
+            if let Some(cell) = screen_buffer.get_cell(start_col - 1, row) {
+                if is_word_char(&cell.ch) && !cell.ch.trim().is_empty() {
+                    start_col -= 1;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        // Find the end of the word
+        let mut end_col = col;
+        let width = screen_buffer.width();
+        while end_col < width - 1 {
+            if let Some(cell) = screen_buffer.get_cell(end_col + 1, row) {
+                if is_word_char(&cell.ch) && !cell.ch.trim().is_empty() {
+                    end_col += 1;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        // Release the screen buffer lock before acquiring selection lock
+        drop(screen_buffer);
+
+        // Set the selection
+        if let Ok(mut sel) = self.selection.try_lock() {
+            *sel = Some(Selection {
+                start_col,
+                start_row: row,
+                end_col,
+                end_row: row,
+            });
+        }
+    }
+
     /// Get the selected text as a string
     pub(crate) fn get_selected_text(&self) -> Option<String> {
         let selection = self.selection.try_lock().ok()?;
