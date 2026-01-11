@@ -27,6 +27,7 @@ pub enum EventAction {
     StopTextInput,
     OpenSettings,
     ChangeFontSize(f32),
+    TerminalHistorySearch,
     None,
 }
 
@@ -496,10 +497,30 @@ fn handle_key_down_event(
         // Fall through to handle this key normally
     }
 
-    // First check navigation hotkeys from settings
-    if let Some(nav_action) = super::hotkeys::match_navigation_hotkey(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed, &settings.hotkeys.navigation)
-    {
-        use super::hotkeys::NavigationAction;
+    // For TerminalHistorySearch, check if terminals are grouped BEFORE matching hotkey
+    // If grouped, we want to pass Ctrl+R through to terminal, so we skip hotkey matching
+    let is_ctrl_r = keycode == sdl3::keyboard::Keycode::R
+        && is_ctrl_pressed && !is_shift_pressed && !is_alt_pressed;
+    let mut should_skip_hotkey_for_ctrl_r = false;
+
+    if is_ctrl_r {
+        if let Ok(gui) = tab_bar_gui.lock() {
+            let is_not_grouped = gui.tab_states.get(gui.active_tab).map(|t| t.pane_layout.selected_panes.is_empty()).unwrap_or(true);
+            eprintln!("[EVENTS] Ctrl+R pressed, not_grouped: {}", is_not_grouped);
+            if !is_not_grouped {
+                // Terminals are grouped, skip hotkey matching to let key pass to terminal
+                should_skip_hotkey_for_ctrl_r = true;
+            }
+        }
+    }
+
+    // First check navigation hotkeys from settings (skip Ctrl+R if terminals are grouped)
+    if !should_skip_hotkey_for_ctrl_r {
+        eprintln!("[EVENTS] Checking navigation hotkeys for ctrl={}, shift={}, alt={}, keycode={:?}", is_ctrl_pressed, is_shift_pressed, is_alt_pressed, keycode);
+        if let Some(nav_action) = super::hotkeys::match_navigation_hotkey(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed, &settings.hotkeys.navigation) {
+            eprintln!("[EVENTS] Navigation hotkey matched: {:?}", nav_action);
+
+            use super::hotkeys::NavigationAction;
 
         // Map navigation action to keyboard action
         let keyboard_action = match nav_action {
@@ -510,6 +531,7 @@ fn handle_key_down_event(
             NavigationAction::NewTab => super::keyboard::KeyboardAction::NewTab,
             NavigationAction::NextTab | NavigationAction::PreviousTab => super::keyboard::KeyboardAction::None, // Will be handled below
             NavigationAction::GoToPrompt => super::keyboard::KeyboardAction::None,                              // Will be handled below
+            NavigationAction::TerminalHistorySearch => super::keyboard::KeyboardAction::RequestTerminalHistorySearch,
         };
 
         // Handle the action
@@ -525,46 +547,13 @@ fn handle_key_down_event(
             clipboard_tx,
         );
 
-        // Map to event action
-        let event_action = match keyboard_action {
-            KeyboardAction::NewTab => EventAction::NewTab,
-            KeyboardAction::SplitPane(direction) => EventAction::SplitPane(direction),
-            KeyboardAction::RequestQuitConfirmation => EventAction::RequestQuitConfirmation,
-            KeyboardAction::Quit => EventAction::Quit,
-            KeyboardAction::None => EventAction::None,
-        };
-
-        return EventResult {
-            action: event_action,
-            needs_render: result.needs_render,
-            needs_resize: result.needs_resize,
-        };
-    }
-
-    // Handle keyboard shortcuts using hotkeys module (hardcoded fallback)
-    if let Some(action) = super::hotkeys::match_hotkey(keycode, is_ctrl_pressed, is_shift_pressed) {
-        let result = super::keyboard::handle_hotkey_action(
-            action,
-            tab_bar_gui,
-            scale_factor,
-            char_width,
-            char_height,
-            tab_bar_height,
-            canvas_window,
-            #[cfg(target_os = "linux")]
-            clipboard_tx,
-        );
-
-        // Only consume the event if the action was actually handled
-        // (i.e., needs_render is true or action is not None)
-        // This allows Ctrl+C to pass through to the terminal when there's no selection
-        if result.needs_render || !matches!(result.action, KeyboardAction::None) {
-            // Map keyboard action to event action
-            let event_action = match result.action {
+            // Map to event action
+            let event_action = match keyboard_action {
                 KeyboardAction::NewTab => EventAction::NewTab,
                 KeyboardAction::SplitPane(direction) => EventAction::SplitPane(direction),
                 KeyboardAction::RequestQuitConfirmation => EventAction::RequestQuitConfirmation,
                 KeyboardAction::Quit => EventAction::Quit,
+                KeyboardAction::RequestTerminalHistorySearch => EventAction::TerminalHistorySearch,
                 KeyboardAction::None => EventAction::None,
             };
 
@@ -573,9 +562,52 @@ fn handle_key_down_event(
                 needs_render: result.needs_render,
                 needs_resize: result.needs_resize,
             };
+        } else {
+            eprintln!("[EVENTS] No navigation hotkey matched");
         }
-        // If the hotkey was not consumed (e.g., Ctrl+C with no selection),
-        // fall through to send the control character to the terminal
+    } else {
+        eprintln!("[EVENTS] Skipping navigation hotkey check (should_skip_hotkey_for_ctrl_r={})", should_skip_hotkey_for_ctrl_r);
+    }
+
+    // Handle keyboard shortcuts using hotkeys module (hardcoded fallback)
+    // Skip if we're passing Ctrl+R through to terminal (grouped terminals)
+    if !should_skip_hotkey_for_ctrl_r {
+        if let Some(action) = super::hotkeys::match_hotkey(keycode, is_ctrl_pressed, is_shift_pressed) {
+            let result = super::keyboard::handle_hotkey_action(
+                action,
+                tab_bar_gui,
+                scale_factor,
+                char_width,
+                char_height,
+                tab_bar_height,
+                canvas_window,
+                #[cfg(target_os = "linux")]
+                clipboard_tx,
+            );
+
+            // Only consume the event if the action was actually handled
+            // (i.e., needs_render is true or action is not None)
+            // This allows Ctrl+C to pass through to the terminal when there's no selection
+            if result.needs_render || !matches!(result.action, KeyboardAction::None) {
+                // Map keyboard action to event action
+                let event_action = match result.action {
+                    KeyboardAction::NewTab => EventAction::NewTab,
+                    KeyboardAction::SplitPane(direction) => EventAction::SplitPane(direction),
+                    KeyboardAction::RequestQuitConfirmation => EventAction::RequestQuitConfirmation,
+                    KeyboardAction::Quit => EventAction::Quit,
+                    KeyboardAction::RequestTerminalHistorySearch => EventAction::TerminalHistorySearch,
+                    KeyboardAction::None => EventAction::None,
+                };
+
+                return EventResult {
+                    action: event_action,
+                    needs_render: result.needs_render,
+                    needs_resize: result.needs_resize,
+                };
+            }
+            // If the hotkey was not consumed (e.g., Ctrl+C with no selection),
+            // fall through to send the control character to the terminal
+        }
     }
 
     // Other Ctrl+key combinations

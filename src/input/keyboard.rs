@@ -22,6 +22,7 @@ pub enum KeyboardAction {
     SplitPane(SplitDirection),
     RequestQuitConfirmation,
     Quit,
+    RequestTerminalHistorySearch,
     None,
 }
 
@@ -257,6 +258,12 @@ pub fn handle_hotkey_action(
                     }
                 }
                 KeyboardResult::render()
+            }
+
+            NavigationAction::TerminalHistorySearch => {
+                // Request terminal history search dialog
+                // Grouping check will be done in main.rs
+                KeyboardResult::with_action(KeyboardAction::RequestTerminalHistorySearch)
             }
         },
 

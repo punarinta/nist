@@ -300,6 +300,8 @@ pub struct NavigationHotkeys {
     pub previous_tab: Vec<KeyBinding>,
     #[serde(rename = "goToPrompt", default = "default_go_to_prompt")]
     pub go_to_prompt: Vec<KeyBinding>,
+    #[serde(rename = "terminalHistorySearch", default = "default_terminal_history_search")]
+    pub terminal_history_search: Vec<KeyBinding>,
 }
 
 // Default functions for NavigationHotkeys fields
@@ -396,6 +398,16 @@ fn default_go_to_prompt() -> Vec<KeyBinding> {
     }]
 }
 
+fn default_terminal_history_search() -> Vec<KeyBinding> {
+    vec![KeyBinding {
+        ctrl: true,
+        shift: false,
+        alt: false,
+        key: Key::R,
+        key2: None,
+    }]
+}
+
 impl Default for NavigationHotkeys {
     fn default() -> Self {
         Self {
@@ -408,6 +420,7 @@ impl Default for NavigationHotkeys {
             next_tab: default_next_tab(),
             previous_tab: default_previous_tab(),
             go_to_prompt: default_go_to_prompt(),
+            terminal_history_search: default_terminal_history_search(),
         }
     }
 }
