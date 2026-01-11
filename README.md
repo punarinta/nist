@@ -22,10 +22,10 @@ Next steps
 - AI-agent to assist working with OS (not for coding)
 - further expand settings
 - voice input
-- JSON themes
+- UI themes
 - plugins system
 - ligatures support
-- Kitty protocol support
+- [Kitty](https://sw.kovidgoyal.net/kitty/graphics-protocol/) protocol support
 
 State
 ===
@@ -39,9 +39,9 @@ Settings
 ===
 Click on CPU load indicator on the top right corner to open settings in your default text editor. There are only a few settings for now, more will come soon.
 
-Sending input to several terminals simultaneously
+Terminal grouping
 ===
-Holding Ctrl key and mouse clicking on a terminal pane adds it to the list of terminals to send input to. Ctrl-clicking on a selected terminal removes it from the list. When you have several active terminals, everything you type will be sent to all of them simultaneously.
+Holding Ctrl key and clicking left mouse button on a terminal pane adds it to the list of terminals to send input to. Ctrl-clicking on a selected terminal removes it from the list. When you have several active terminals, everything you type will be sent to all of them simultaneously.
 
 Current platform support
 ===
@@ -49,4 +49,4 @@ Current platform support
 - macOS — low bugs probability; GUI is a bit unstable, the rest is okay
 - Windows — average bugs probability due to a non-UNIX-like environment
 
-The builds included in "releases" directory may be slightly outdated. If you want to get the most recent version, please build it from source. I'll add details on that later.
+The builds included in "releases" directory **may be slightly outdated**. If you want to get the most recent version, please build it from source. I'll add details on that later.
