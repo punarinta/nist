@@ -51,11 +51,11 @@ const PREFERRED_UI_FONTS: &[&str] = &[
 /// List of preferred monospace fonts with emoji support, in order of preference
 const PREFERRED_MONOSPACE_FONTS: &[&str] = &[
     // Windows system fonts
+    "CascadiaCode.ttf",
+    "CascadiaMono.ttf",
     "consola.ttf",
     "consolab.ttf",
     "consolai.ttf",
-    "CascadiaCode.ttf",
-    "CascadiaMono.ttf",
     "cour.ttf",
     "courbd.ttf",
     // macOS system fonts

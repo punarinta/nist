@@ -253,23 +253,34 @@ impl TabBar {
         let right_reserved_space = window_controls_width + 80; // Less padding in production
         let add_button_width = button_size + 24;
 
-        // Calculate total tabs width (without scroll offset)
-        let mut total_tabs_width = 0i32;
-        for (idx, tab_name) in self.tabs.iter().enumerate() {
-            let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { tab_name };
-            let (text_width, _, _) = if let Some(surface) = safe_render_text(font, display_text, TEXT_GRAY) {
-                (surface.width(), surface.height(), Some(()))
-            } else {
-                (40, 16, Some(()))
-            };
-            let close_size = self.height - 12;
-            let tab_width = 24 + text_width + close_size + 30;
-            total_tabs_width += tab_width as i32 + 1;
-        }
+        // Calculate uniform tab width to maximize space usage
+        let available_width_for_tabs = window_width as i32 - x - add_button_width - right_reserved_space;
+        let num_tabs = self.tabs.len();
+
+        // Calculate uniform tab width, distributing available space equally among all tabs
+        let min_tab_width = 200i32; // Minimum width to prevent tabs from being too narrow
+        let max_tab_width = 500i32; // Maximum width to prevent tabs from being too wide
+        let tab_spacing = 1i32; // Space between tabs
+
+        let uniform_tab_width = if num_tabs > 0 {
+            let total_spacing = (num_tabs.saturating_sub(1) as i32) * tab_spacing;
+            let available_for_tabs = available_width_for_tabs - total_spacing;
+            let calculated_width = available_for_tabs / num_tabs as i32;
+            // Clamp between min and max
+            calculated_width.max(min_tab_width).min(max_tab_width)
+        } else {
+            min_tab_width
+        };
+
+        // Calculate total tabs width using uniform width
+        let total_tabs_width = if num_tabs > 0 {
+            (uniform_tab_width * num_tabs as i32) + ((num_tabs - 1) as i32 * tab_spacing)
+        } else {
+            0
+        };
 
         // Determine if we need scroll buttons
-        let available_width_for_tabs = window_width as i32 - x - add_button_width - right_reserved_space;
-        let scroll_button_size = 30u32; // Fixed smaller size for scroll buttons
+        let scroll_button_size = 40u32; // Medium size for scroll buttons
         let needs_scrolling = total_tabs_width > available_width_for_tabs;
 
         // Clamp first_visible_tab_index to valid range
@@ -283,34 +294,17 @@ impl TabBar {
             let mut visible_width = 0i32;
             let available_for_visible = available_width_for_tabs - (scroll_button_size as i32 * 2) - 12;
 
-            for idx in self.first_visible_tab_index..self.tabs.len() {
-                let tab_name = &self.tabs[idx];
-                let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { tab_name };
-                let (text_width, _, _) = if let Some(surface) = safe_render_text(font, display_text, TEXT_GRAY) {
-                    (surface.width(), surface.height(), Some(()))
-                } else {
-                    (40, 16, Some(()))
-                };
-                let close_size = self.height - 12;
-                let tab_width = 24 + text_width + close_size + 30;
-                visible_width += tab_width as i32 + 1;
+            for _idx in self.first_visible_tab_index..self.tabs.len() {
+                // Use uniform tab width
+                visible_width += uniform_tab_width + 1;
             }
 
             // If all remaining tabs fit, move first_visible_tab_index back
             while self.first_visible_tab_index > 0 && visible_width <= available_for_visible {
                 // Try including the previous tab
                 self.first_visible_tab_index -= 1;
-                let idx = self.first_visible_tab_index;
-                let tab_name = &self.tabs[idx];
-                let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { tab_name };
-                let (text_width, _, _) = if let Some(surface) = safe_render_text(font, display_text, TEXT_GRAY) {
-                    (surface.width(), surface.height(), Some(()))
-                } else {
-                    (40, 16, Some(()))
-                };
-                let close_size = self.height - 12;
-                let tab_width = 24 + text_width + close_size + 30;
-                visible_width += tab_width as i32 + 1;
+                // Use uniform tab width
+                visible_width += uniform_tab_width + 1;
 
                 // If it doesn't fit, undo
                 if visible_width > available_for_visible {
@@ -338,7 +332,7 @@ impl TabBar {
             canvas.set_draw_color(TEXT_WHITE);
             let center_x = x + (scroll_button_size as i32 / 2);
             let center_y = scroll_btn_y + (scroll_button_size as i32 / 2);
-            let size = scroll_button_size as i32 / 4; // Smaller icon
+            let size = scroll_button_size as i32 * 4 / 10; // Icon size proportional to button
 
             // Draw two lines forming "<"
             for i in 0..2 {
@@ -372,12 +366,8 @@ impl TabBar {
 
             let close_size = self.height - 12;
             let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { tab_name };
-            let (text_width, _, _) = if let Some(surface) = safe_render_text(font, display_text, TEXT_GRAY) {
-                (surface.width(), surface.height(), Some(()))
-            } else {
-                (40, 16, Some(()))
-            };
-            let tab_width = 24 + text_width + close_size + 30;
+            // Use uniform tab width for all tabs
+            let tab_width = uniform_tab_width as u32;
 
             // If this tab is being dragged, save it for later rendering
             if Some(idx) == self.dragging_tab {
@@ -422,16 +412,50 @@ impl TabBar {
                 BG_DARK
             };
 
+            // Calculate available space for text (tab_width - left padding - close button - right padding)
+            let left_padding = 24;
+            let right_padding = 6;
+            let max_text_width = (tab_width as i32 - left_padding - close_size as i32 - right_padding).max(20) as u32;
+
+            // Truncate text if necessary with ellipsis
+            let mut display_text_truncated = display_text.to_string();
+            let mut needs_truncation = false;
+
+            // Check if full text fits
+            if let Some(surface) = safe_render_text(font, display_text, TEXT_GRAY) {
+                if surface.width() > max_text_width {
+                    needs_truncation = true;
+                    // Binary search for the right length
+                    let chars: Vec<char> = display_text.chars().collect();
+                    let mut len = chars.len();
+                    while len > 0 {
+                        let truncated: String = chars.iter().take(len).collect();
+                        let with_ellipsis = format!("{}...", truncated);
+                        if let Some(test_surface) = safe_render_text(font, &with_ellipsis, TEXT_GRAY) {
+                            if test_surface.width() <= max_text_width {
+                                display_text_truncated = with_ellipsis;
+                                break;
+                            }
+                        }
+                        len = len * 3 / 4; // Reduce by 25% each iteration
+                    }
+                    if len == 0 {
+                        display_text_truncated = "...".to_string();
+                    }
+                }
+            }
+
             // Try to render text, with fallback for unsupported characters
-            let (text_width, text_height, text_texture) = if let Some(surface) = safe_render_text(font, display_text, TEXT_GRAY) {
-                let width = surface.width();
+            let final_display = if needs_truncation { &display_text_truncated } else { display_text };
+            let (text_width, text_height, text_texture) = if let Some(surface) = safe_render_text(font, final_display, TEXT_GRAY) {
+                let width = surface.width().min(max_text_width);
                 let height = surface.height();
                 match texture_creator.create_texture_from_surface(&surface) {
                     Ok(tex) => (width, height, Some(tex)),
                     Err(_) => {
                         // Fallback to placeholder if texture creation fails
                         if let Some(fb_surface) = safe_render_text(font, "[Tab]", TEXT_GRAY) {
-                            let w = fb_surface.width();
+                            let w = fb_surface.width().min(max_text_width);
                             let h = fb_surface.height();
                             (w, h, texture_creator.create_texture_from_surface(&fb_surface).ok())
                         } else {
@@ -451,11 +475,12 @@ impl TabBar {
             canvas.set_draw_color(bg_color);
             canvas.fill_rect(tab_rect).map_err(|e| e.to_string())?;
 
-            // Draw text (if available) with increased left padding
+            // Draw text (if available) with increased left padding, clipped to available space
             if let Some(texture) = text_texture {
-                let text_x = x + 24; // Increased left padding
+                let text_x = x + left_padding;
                 let text_y = y + ((self.height - 6 - text_height) / 2) as i32;
-                let text_rect = Rect::new(text_x, text_y, text_width, text_height);
+                let clipped_width = text_width.min(max_text_width);
+                let text_rect = Rect::new(text_x, text_y, clipped_width, text_height);
                 let _ = canvas.copy(&texture, None, text_rect);
             }
 
@@ -535,15 +560,50 @@ impl TabBar {
 
             let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { &tab_name };
 
+            // Calculate available space for text (same as non-dragged tabs)
+            let close_size = self.height - 12;
+            let left_padding = 24;
+            let right_padding = 6;
+            let max_text_width = (tab_width as i32 - left_padding - close_size as i32 - right_padding).max(20) as u32;
+
+            // Truncate text if necessary with ellipsis
+            let mut display_text_truncated = display_text.to_string();
+            let mut needs_truncation = false;
+
+            // Check if full text fits
+            if let Some(surface) = safe_render_text(font, display_text, TEXT_GRAY) {
+                if surface.width() > max_text_width {
+                    needs_truncation = true;
+                    // Binary search for the right length
+                    let chars: Vec<char> = display_text.chars().collect();
+                    let mut len = chars.len();
+                    while len > 0 {
+                        let truncated: String = chars.iter().take(len).collect();
+                        let with_ellipsis = format!("{}...", truncated);
+                        if let Some(test_surface) = safe_render_text(font, &with_ellipsis, TEXT_GRAY) {
+                            if test_surface.width() <= max_text_width {
+                                display_text_truncated = with_ellipsis;
+                                break;
+                            }
+                        }
+                        len = len * 3 / 4; // Reduce by 25% each iteration
+                    }
+                    if len == 0 {
+                        display_text_truncated = "...".to_string();
+                    }
+                }
+            }
+
             // Render text
-            let (text_width, text_height, text_texture) = if let Some(surface) = safe_render_text(font, display_text, TEXT_GRAY) {
-                let width = surface.width();
+            let final_display = if needs_truncation { &display_text_truncated } else { display_text };
+            let (text_width, text_height, text_texture) = if let Some(surface) = safe_render_text(font, final_display, TEXT_GRAY) {
+                let width = surface.width().min(max_text_width);
                 let height = surface.height();
                 match texture_creator.create_texture_from_surface(&surface) {
                     Ok(tex) => (width, height, Some(tex)),
                     Err(_) => {
                         if let Some(fb_surface) = safe_render_text(font, "[Tab]", TEXT_GRAY) {
-                            let w = fb_surface.width();
+                            let w = fb_surface.width().min(max_text_width);
                             let h = fb_surface.height();
                             (w, h, texture_creator.create_texture_from_surface(&fb_surface).ok())
                         } else {
@@ -569,11 +629,12 @@ impl TabBar {
             canvas.set_draw_color(Color::RGB(100, 100, 100));
             let _ = canvas.draw_rect(tab_rect);
 
-            // Draw text
+            // Draw text (clipped to available space)
             if let Some(texture) = text_texture {
-                let text_x = dragged_x + 24;
+                let text_x = dragged_x + left_padding;
                 let text_y = y + ((self.height - 6 - text_height) / 2) as i32;
-                let text_rect = Rect::new(text_x, text_y, text_width, text_height);
+                let clipped_width = text_width.min(max_text_width);
+                let text_rect = Rect::new(text_x, text_y, clipped_width, text_height);
                 let _ = canvas.copy(&texture, None, text_rect);
             }
 
@@ -612,7 +673,7 @@ impl TabBar {
             canvas.set_draw_color(TEXT_WHITE);
             let center_x = x + (scroll_button_size as i32 / 2);
             let center_y = scroll_btn_y + (scroll_button_size as i32 / 2);
-            let size = scroll_button_size as i32 / 4; // Smaller icon
+            let size = scroll_button_size as i32 * 4 / 10; // Icon size proportional to button
 
             // Draw two lines forming ">"
             for i in 0..2 {
