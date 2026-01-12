@@ -8,7 +8,7 @@ use sdl3::event::Event;
 use sdl3::keyboard::Keycode;
 use sdl3::pixels::Color;
 use sdl3::rect::Rect;
-use sdl3::render::{Canvas, TextureCreator, FRect};
+use sdl3::render::{Canvas, FRect, TextureCreator};
 use sdl3::ttf::Font;
 use sdl3::video::Window;
 
@@ -31,10 +31,7 @@ pub struct ListRow {
 impl ListRow {
     /// Create a new list row
     pub fn new(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            data: None,
-        }
+        Self { text: text.into(), data: None }
     }
 
     /// Create a new list row with associated data
@@ -203,10 +200,20 @@ impl FilteredList {
             return;
         }
 
+        // Calculate visible rows (same logic as render)
+        let list_height = self.height.saturating_sub(self.row_height);
+        let visible_rows = ((list_height / self.row_height).min(self.max_items as u32) as usize).min(self.filtered_rows.len());
+
+        if visible_rows == 0 {
+            return;
+        }
+
+        let last_visible_idx = visible_rows - 1;
+
         self.selected_index = Some(match self.selected_index {
             Some(idx) if idx > 0 => idx - 1,
-            Some(_) => self.filtered_rows.len() - 1, // Wrap to bottom
-            None => self.filtered_rows.len() - 1,     // Select last item
+            Some(_) => last_visible_idx, // Wrap to bottom of visible list
+            None => last_visible_idx,    // Select last visible item
         });
     }
 
@@ -216,10 +223,20 @@ impl FilteredList {
             return;
         }
 
+        // Calculate visible rows (same logic as render)
+        let list_height = self.height.saturating_sub(self.row_height);
+        let visible_rows = ((list_height / self.row_height).min(self.max_items as u32) as usize).min(self.filtered_rows.len());
+
+        if visible_rows == 0 {
+            return;
+        }
+
+        let last_visible_idx = visible_rows - 1;
+
         self.selected_index = Some(match self.selected_index {
-            Some(idx) if idx < self.filtered_rows.len() - 1 => idx + 1,
-            Some(_) => 0, // Wrap to top
-            None => 0,     // Select first item
+            Some(idx) if idx < last_visible_idx => idx + 1,
+            Some(_) => 0, // Wrap to top of visible list
+            None => 0,    // Select first item
         });
     }
 
@@ -289,12 +306,7 @@ impl FilteredList {
     }
 
     /// Render the filtered list
-    pub fn render<T>(
-        &self,
-        canvas: &mut Canvas<Window>,
-        font: &Font,
-        texture_creator: &TextureCreator<T>,
-    ) -> Result<(), String> {
+    pub fn render<T>(&self, canvas: &mut Canvas<Window>, font: &Font, texture_creator: &TextureCreator<T>) -> Result<(), String> {
         let rect = Rect::new(self.x, self.y, self.width, self.height);
 
         // Draw background
@@ -324,11 +336,7 @@ impl FilteredList {
             let is_selected = self.selected_index == Some(i);
 
             // Draw row background
-            canvas.set_draw_color(if is_selected {
-                ROW_HIGHLIGHT
-            } else {
-                ROW_BG
-            });
+            canvas.set_draw_color(if is_selected { ROW_HIGHLIGHT } else { ROW_BG });
             canvas.fill_rect(row_rect).map_err(|e| e.to_string())?;
 
             // Draw row border
@@ -381,11 +389,7 @@ mod tests {
 
     #[test]
     fn test_filtered_list_creation() {
-        let rows = vec![
-            ListRow::new("Apple"),
-            ListRow::new("Banana"),
-            ListRow::new("Cherry"),
-        ];
+        let rows = vec![ListRow::new("Apple"), ListRow::new("Banana"), ListRow::new("Cherry")];
         let list = FilteredList::new(rows, 10, 300, 400, 1.0);
 
         assert_eq!(list.all_rows.len(), 3);
@@ -396,11 +400,7 @@ mod tests {
 
     #[test]
     fn test_empty_filter_shows_all() {
-        let rows = vec![
-            ListRow::new("Apple"),
-            ListRow::new("Banana"),
-            ListRow::new("Cherry"),
-        ];
+        let rows = vec![ListRow::new("Apple"), ListRow::new("Banana"), ListRow::new("Cherry")];
         let mut list = FilteredList::new(rows, 10, 300, 400, 1.0);
 
         list.text_input_mut().set_text("".to_string());
@@ -410,12 +410,7 @@ mod tests {
 
     #[test]
     fn test_filter_text_filters_rows() {
-        let rows = vec![
-            ListRow::new("Apple"),
-            ListRow::new("Banana"),
-            ListRow::new("Cherry"),
-            ListRow::new("Apricot"),
-        ];
+        let rows = vec![ListRow::new("Apple"), ListRow::new("Banana"), ListRow::new("Cherry"), ListRow::new("Apricot")];
         let mut list = FilteredList::new(rows, 10, 300, 400, 1.0);
 
         list.text_input_mut().set_text("ap".to_string());
@@ -427,11 +422,7 @@ mod tests {
 
     #[test]
     fn test_filter_case_insensitive() {
-        let rows = vec![
-            ListRow::new("APPLE"),
-            ListRow::new("banana"),
-            ListRow::new("Cherry"),
-        ];
+        let rows = vec![ListRow::new("APPLE"), ListRow::new("banana"), ListRow::new("Cherry")];
         let mut list = FilteredList::new(rows, 10, 300, 400, 1.0);
 
         list.text_input_mut().set_text("app".to_string());
@@ -442,11 +433,7 @@ mod tests {
 
     #[test]
     fn test_selection_navigation() {
-        let rows = vec![
-            ListRow::new("Apple"),
-            ListRow::new("Banana"),
-            ListRow::new("Cherry"),
-        ];
+        let rows = vec![ListRow::new("Apple"), ListRow::new("Banana"), ListRow::new("Cherry")];
         let mut list = FilteredList::new(rows, 10, 300, 400, 1.0);
 
         // Move down - should select first item
@@ -468,12 +455,7 @@ mod tests {
 
     #[test]
     fn test_selection_with_filter() {
-        let rows = vec![
-            ListRow::new("Apple"),
-            ListRow::new("Banana"),
-            ListRow::new("Cherry"),
-            ListRow::new("Apricot"),
-        ];
+        let rows = vec![ListRow::new("Apple"), ListRow::new("Banana"), ListRow::new("Cherry"), ListRow::new("Apricot")];
         let mut list = FilteredList::new(rows, 10, 300, 400, 1.0);
 
         // Select first item
@@ -491,10 +473,7 @@ mod tests {
 
     #[test]
     fn test_get_selected_row() {
-        let rows = vec![
-            ListRow::new("Apple"),
-            ListRow::new("Banana"),
-        ];
+        let rows = vec![ListRow::new("Apple"), ListRow::new("Banana")];
         let mut list = FilteredList::new(rows, 10, 300, 400, 1.0);
 
         assert!(list.get_selected_row().is_none());
@@ -507,9 +486,7 @@ mod tests {
 
     #[test]
     fn test_add_row() {
-        let rows = vec![
-            ListRow::new("Apple"),
-        ];
+        let rows = vec![ListRow::new("Apple")];
         let mut list = FilteredList::new(rows, 10, 300, 400, 1.0);
 
         assert_eq!(list.all_rows.len(), 1);
@@ -521,18 +498,13 @@ mod tests {
 
     #[test]
     fn test_set_rows() {
-        let rows = vec![
-            ListRow::new("Apple"),
-        ];
+        let rows = vec![ListRow::new("Apple")];
         let mut list = FilteredList::new(rows, 10, 300, 400, 1.0);
 
         list.move_selection_down();
         assert_eq!(list.selected_index, Some(0));
 
-        let new_rows = vec![
-            ListRow::new("Cherry"),
-            ListRow::new("Date"),
-        ];
+        let new_rows = vec![ListRow::new("Cherry"), ListRow::new("Date")];
         list.set_rows(new_rows);
 
         assert_eq!(list.all_rows.len(), 2);
@@ -552,6 +524,6 @@ mod tests {
 
         assert_eq!(list.max_items, 3);
         assert_eq!(list.filtered_rows.len(), 5); // All rows are still filtered
-        // But render will only show max_items
+                                                 // But render will only show max_items
     }
 }

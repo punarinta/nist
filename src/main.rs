@@ -117,7 +117,7 @@ fn resize_terminals_after_split(
 }
 
 fn main() -> Result<(), String> {
-    eprintln!("[MAIN] Nisdos Terminal starting (built: {})", BUILD_DATE);
+    // eprintln!("[MAIN] Nisdos Terminal starting (built: {})", BUILD_DATE);
 
     // Print feature flags
     #[cfg(feature = "test-server")]
