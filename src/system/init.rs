@@ -73,7 +73,7 @@ pub struct InitializedApp<'a> {
     pub sys: System,
     pub ctrl_keys: std::collections::HashMap<sdl3::keyboard::Scancode, u8>,
     pub mouse_state: crate::input::mouse::MouseState,
-    pub glyph_cache: HashMap<(String, (u8, u8, u8)), sdl3::render::Texture<'a>>,
+    pub glyph_cache: HashMap<String, sdl3::render::Texture<'a>>,
     #[cfg(target_os = "linux")]
     pub clipboard_tx: Sender<Clipboard>,
     #[cfg(target_os = "linux")]

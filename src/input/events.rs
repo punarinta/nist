@@ -499,13 +499,16 @@ fn handle_key_down_event(
 
     // For TerminalHistorySearch, check if terminals are grouped BEFORE matching hotkey
     // If grouped, we want to pass Ctrl+R through to terminal, so we skip hotkey matching
-    let is_ctrl_r = keycode == sdl3::keyboard::Keycode::R
-        && is_ctrl_pressed && !is_shift_pressed && !is_alt_pressed;
+    let is_ctrl_r = keycode == sdl3::keyboard::Keycode::R && is_ctrl_pressed && !is_shift_pressed && !is_alt_pressed;
     let mut should_skip_hotkey_for_ctrl_r = false;
 
     if is_ctrl_r {
         if let Ok(gui) = tab_bar_gui.lock() {
-            let is_not_grouped = gui.tab_states.get(gui.active_tab).map(|t| t.pane_layout.selected_panes.is_empty()).unwrap_or(true);
+            let is_not_grouped = gui
+                .tab_states
+                .get(gui.active_tab)
+                .map(|t| t.pane_layout.selected_panes.is_empty())
+                .unwrap_or(true);
             eprintln!("[EVENTS] Ctrl+R pressed, not_grouped: {}", is_not_grouped);
             if !is_not_grouped {
                 // Terminals are grouped, skip hotkey matching to let key pass to terminal
@@ -516,36 +519,37 @@ fn handle_key_down_event(
 
     // First check navigation hotkeys from settings (skip Ctrl+R if terminals are grouped)
     if !should_skip_hotkey_for_ctrl_r {
-        eprintln!("[EVENTS] Checking navigation hotkeys for ctrl={}, shift={}, alt={}, keycode={:?}", is_ctrl_pressed, is_shift_pressed, is_alt_pressed, keycode);
-        if let Some(nav_action) = super::hotkeys::match_navigation_hotkey(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed, &settings.hotkeys.navigation) {
+        if let Some(nav_action) =
+            super::hotkeys::match_navigation_hotkey(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed, &settings.hotkeys.navigation)
+        {
             eprintln!("[EVENTS] Navigation hotkey matched: {:?}", nav_action);
 
             use super::hotkeys::NavigationAction;
 
-        // Map navigation action to keyboard action
-        let keyboard_action = match nav_action {
-            NavigationAction::SplitRight => super::keyboard::KeyboardAction::SplitPane(crate::pane_layout::SplitDirection::Vertical),
-            NavigationAction::SplitDown => super::keyboard::KeyboardAction::SplitPane(crate::pane_layout::SplitDirection::Horizontal),
-            NavigationAction::ClosePane => super::keyboard::KeyboardAction::None, // Will be handled below
-            NavigationAction::NextPane | NavigationAction::PreviousPane => super::keyboard::KeyboardAction::None, // Will be handled below
-            NavigationAction::NewTab => super::keyboard::KeyboardAction::NewTab,
-            NavigationAction::NextTab | NavigationAction::PreviousTab => super::keyboard::KeyboardAction::None, // Will be handled below
-            NavigationAction::GoToPrompt => super::keyboard::KeyboardAction::None,                              // Will be handled below
-            NavigationAction::TerminalHistorySearch => super::keyboard::KeyboardAction::RequestTerminalHistorySearch,
-        };
+            // Map navigation action to keyboard action
+            let keyboard_action = match nav_action {
+                NavigationAction::SplitRight => super::keyboard::KeyboardAction::SplitPane(crate::pane_layout::SplitDirection::Vertical),
+                NavigationAction::SplitDown => super::keyboard::KeyboardAction::SplitPane(crate::pane_layout::SplitDirection::Horizontal),
+                NavigationAction::ClosePane => super::keyboard::KeyboardAction::None, // Will be handled below
+                NavigationAction::NextPane | NavigationAction::PreviousPane => super::keyboard::KeyboardAction::None, // Will be handled below
+                NavigationAction::NewTab => super::keyboard::KeyboardAction::NewTab,
+                NavigationAction::NextTab | NavigationAction::PreviousTab => super::keyboard::KeyboardAction::None, // Will be handled below
+                NavigationAction::GoToPrompt => super::keyboard::KeyboardAction::None,                              // Will be handled below
+                NavigationAction::TerminalHistorySearch => super::keyboard::KeyboardAction::RequestTerminalHistorySearch,
+            };
 
-        // Handle the action
-        let result = super::keyboard::handle_hotkey_action(
-            super::hotkeys::HotkeyAction::Navigation(nav_action.clone()),
-            tab_bar_gui,
-            scale_factor,
-            char_width,
-            char_height,
-            tab_bar_height,
-            canvas_window,
-            #[cfg(target_os = "linux")]
-            clipboard_tx,
-        );
+            // Handle the action
+            let result = super::keyboard::handle_hotkey_action(
+                super::hotkeys::HotkeyAction::Navigation(nav_action.clone()),
+                tab_bar_gui,
+                scale_factor,
+                char_width,
+                char_height,
+                tab_bar_height,
+                canvas_window,
+                #[cfg(target_os = "linux")]
+                clipboard_tx,
+            );
 
             // Map to event action
             let event_action = match keyboard_action {
@@ -562,11 +566,12 @@ fn handle_key_down_event(
                 needs_render: result.needs_render,
                 needs_resize: result.needs_resize,
             };
-        } else {
-            eprintln!("[EVENTS] No navigation hotkey matched");
         }
     } else {
-        eprintln!("[EVENTS] Skipping navigation hotkey check (should_skip_hotkey_for_ctrl_r={})", should_skip_hotkey_for_ctrl_r);
+        eprintln!(
+            "[EVENTS] Skipping navigation hotkey check (should_skip_hotkey_for_ctrl_r={})",
+            should_skip_hotkey_for_ctrl_r
+        );
     }
 
     // Handle keyboard shortcuts using hotkeys module (hardcoded fallback)

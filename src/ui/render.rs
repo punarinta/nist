@@ -80,7 +80,7 @@ pub fn render_frame<'a, T>(
     char_height: f32,
     cursor_visible: bool,
     settings: &Settings,
-    glyph_cache: &mut HashMap<(String, (u8, u8, u8)), sdl3::render::Texture<'a>>,
+    glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
 ) -> Result<bool, String> {
     // Clear screen with terminal background color
     canvas.set_draw_color(DEFAULT_BG_COLOR);
@@ -198,7 +198,7 @@ fn render_pane<'a, T>(
     char_height: f32,
     cursor_visible: bool,
     settings: &Settings,
-    glyph_cache: &mut HashMap<(String, (u8, u8, u8)), sdl3::render::Texture<'a>>,
+    glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
     scale_factor: f32,
 ) -> Result<bool, String> {
     let t = terminal.lock().unwrap();
@@ -221,15 +221,15 @@ fn render_pane<'a, T>(
     let cols = rect_cols.min(sb.width());
     let rows = rect_rows.min(sb.height());
 
-    // Get selection for highlighting
-    let selection = *t.selection.lock().unwrap();
+    // Get selection for highlighting (cached once per frame to avoid locking in cell loop)
+    let selection_snapshot = *t.selection.lock().unwrap();
 
     // Render cells that fit in both the rect and the screen buffer
     for row in 0..rows {
         for col in 0..cols {
             if let Some(cell) = sb.get_cell_with_scrollback(col, row) {
                 // Skip continuation cells (used by double-width emojis)
-                if cell.width == 0 || cell.ch.is_empty() {
+                if cell.width == 0 || cell.ch == '\0' {
                     continue;
                 }
 
@@ -240,7 +240,11 @@ fn render_pane<'a, T>(
                 let actual_cell_width = char_width * cell.width as f32;
 
                 // Check if cell is selected
-                let is_selected = if let Some(ref sel) = selection { sel.contains(col, row) } else { false };
+                let is_selected = if let Some(ref sel) = selection_snapshot {
+                    sel.contains(col, row)
+                } else {
+                    false
+                };
 
                 // Render background (selection highlight or cell background)
                 if is_selected {
@@ -254,7 +258,16 @@ fn render_pane<'a, T>(
                 }
 
                 // OPTIMIZATION: Render character if not space (skip spaces with default bg)
-                if cell.ch != " " {
+                if cell.ch != ' ' {
+                    // Use extended grapheme if present, otherwise use single char
+                    let char_str;
+                    let text = if let Some(ref extended) = cell.extended {
+                        extended.as_ref()
+                    } else {
+                        char_str = cell.ch.to_string();
+                        char_str.as_str()
+                    };
+
                     render_glyph(
                         canvas,
                         texture_creator,
@@ -262,7 +275,7 @@ fn render_pane<'a, T>(
                         emoji_font,
                         unicode_fallback_font,
                         glyph_cache,
-                        &cell.ch,
+                        text,
                         x,
                         y,
                         cell.fg_color.r,
@@ -351,7 +364,7 @@ fn render_glyph<'a, T>(
     font: &Font,
     emoji_font: &Font,
     unicode_fallback_font: &Font,
-    glyph_cache: &mut HashMap<(String, (u8, u8, u8)), sdl3::render::Texture<'a>>,
+    glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
     text: &str,
     x: i32,
     y: i32,
@@ -362,11 +375,12 @@ fn render_glyph<'a, T>(
     cell_height: u32,
     _scale_factor: f32,
 ) -> Result<(), String> {
-    let fg_color = Color::RGB(r, g, b);
-    let cache_key = (text.to_string(), (r, g, b));
+    let cache_key = text.to_string();
 
     // Check cache first
-    if let Some(cached_texture) = glyph_cache.get(&cache_key) {
+    if let Some(cached_texture) = glyph_cache.get_mut(&cache_key) {
+        // Apply color modulation to the white texture
+        cached_texture.set_color_mod(r, g, b);
         let query = cached_texture.query();
 
         // Check if this is an emoji - if so, scale it to fit in cell
@@ -402,12 +416,15 @@ fn render_glyph<'a, T>(
         return Ok(());
     }
 
+    // Render all glyphs in white for color modulation
+    let render_color = Color::RGB(255, 255, 255);
+
     // Check if this is an emoji character - if so, try emoji font FIRST
     let is_likely_emoji = is_emoji_grapheme(text);
 
     if is_likely_emoji {
         // Try emoji font first for emoji characters
-        let emoji_result = emoji_font.render(text).blended(Color::RGB(255, 255, 255));
+        let emoji_result = emoji_font.render(text).blended(render_color);
         if let Ok(surface) = emoji_result {
             if surface.width() > 0 && surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
@@ -431,9 +448,10 @@ fn render_glyph<'a, T>(
                     let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
 
                     let char_rect = Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height);
+                    // Note: Emojis already rendered in white, color mod applied to cache lookup above
                     canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
                     // Cache the texture for next frame
-                    glyph_cache.insert(cache_key, texture);
+                    glyph_cache.insert(cache_key.clone(), texture);
                     return Ok(());
                 }
             }
@@ -456,7 +474,7 @@ fn render_glyph<'a, T>(
 
     // For these specific symbols, try unicode fallback font FIRST
     if is_special_missing_symbol && !is_likely_emoji {
-        let unicode_fallback_result = unicode_fallback_font.render(text).blended(fg_color);
+        let unicode_fallback_result = unicode_fallback_font.render(text).blended(render_color);
         if let Ok(unicode_surface) = unicode_fallback_result {
             if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
@@ -472,9 +490,9 @@ fn render_glyph<'a, T>(
     // Not in cache, render and cache it (try main font for non-emoji or if emoji font failed)
     // For single characters use render_char, for grapheme clusters use render
     let render_result = if text.chars().count() == 1 {
-        font.render_char(text.chars().next().unwrap()).blended(fg_color)
+        font.render_char(text.chars().next().unwrap()).blended(render_color)
     } else {
-        font.render(text).blended(fg_color)
+        font.render(text).blended(render_color)
     };
 
     if let Ok(surface) = render_result {
@@ -491,7 +509,7 @@ fn render_glyph<'a, T>(
         // Main font produced empty surface - try fallback fonts
         if !is_likely_emoji {
             // Try emoji font for non-emoji characters (might be symbols with emoji variants)
-            let emoji_fallback_result = emoji_font.render(text).blended(Color::RGB(255, 255, 255));
+            let emoji_fallback_result = emoji_font.render(text).blended(render_color);
             if let Ok(emoji_surface) = emoji_fallback_result {
                 if emoji_surface.width() > 0 && emoji_surface.height() > 0 {
                     if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&emoji_surface) {
@@ -507,7 +525,7 @@ fn render_glyph<'a, T>(
         // Try Unicode fallback font (for all characters that failed emoji/main fonts)
         // Skip if we already tried it above for the 3 special symbols
         if !is_special_missing_symbol {
-            let unicode_fallback_result = unicode_fallback_font.render(text).blended(fg_color);
+            let unicode_fallback_result = unicode_fallback_font.render(text).blended(render_color);
             if let Ok(unicode_surface) = unicode_fallback_result {
                 if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
                     if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
@@ -521,12 +539,13 @@ fn render_glyph<'a, T>(
         }
 
         // Character not supported in any font, try fallback '□'
-        let fallback_key = ("□".to_string(), (r, g, b));
-        if let Some(cached_fallback) = glyph_cache.get(&fallback_key) {
+        let fallback_key = "□".to_string();
+        if let Some(cached_fallback) = glyph_cache.get_mut(&fallback_key) {
+            cached_fallback.set_color_mod(r, g, b);
             let query = cached_fallback.query();
             let char_rect = Rect::new(x, y, query.width, query.height);
             canvas.copy(cached_fallback, None, char_rect).map_err(|e| e.to_string())?;
-        } else if let Ok(fallback_surface) = font.render_char('□').blended(fg_color) {
+        } else if let Ok(fallback_surface) = font.render_char('□').blended(render_color) {
             if fallback_surface.width() > 0 && fallback_surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&fallback_surface) {
                     let char_rect = Rect::new(x, y, fallback_surface.width(), fallback_surface.height());

@@ -165,9 +165,15 @@ impl ScreenBufferSnapshot {
 
             for x in 0..sb.width() {
                 if let Some(cell) = sb.get_cell_with_scrollback(x, y) {
-                    line.push_str(&cell.ch);
+                    // Use extended grapheme if present, otherwise use single char
+                    let cell_text = if let Some(ref extended) = cell.extended {
+                        extended.to_string()
+                    } else {
+                        cell.ch.to_string()
+                    };
+                    line.push_str(&cell_text);
                     row.push(CellSnapshot {
-                        ch: cell.ch.clone(),
+                        ch: cell_text,
                         fg_r: cell.fg_color.r,
                         fg_g: cell.fg_color.g,
                         fg_b: cell.fg_color.b,
@@ -198,8 +204,13 @@ impl ScreenBufferSnapshot {
         for scrollback_row in sb.get_scrollback_buffer() {
             let mut row = Vec::new();
             for cell in scrollback_row {
+                let cell_text = if let Some(ref extended) = cell.extended {
+                    extended.to_string()
+                } else {
+                    cell.ch.to_string()
+                };
                 row.push(CellSnapshot {
-                    ch: cell.ch.clone(),
+                    ch: cell_text,
                     fg_r: cell.fg_color.r,
                     fg_g: cell.fg_color.g,
                     fg_b: cell.fg_color.b,

@@ -495,7 +495,7 @@ impl Terminal {
         }
 
         // Helper function to check if a character is part of a word
-        let is_word_char = |ch: &str| -> bool { ch.chars().next().map_or(false, |c| c.is_alphanumeric() || c == '_') };
+        let is_word_char = |ch: char| -> bool { ch.is_alphanumeric() || ch == '_' };
 
         // Get the character at the clicked position
         let clicked_cell = match screen_buffer.get_cell(col, row) {
@@ -504,7 +504,7 @@ impl Terminal {
         };
 
         // If clicked on a non-word character, don't select anything
-        if !is_word_char(&clicked_cell.ch) || clicked_cell.ch.trim().is_empty() {
+        if !is_word_char(clicked_cell.ch) || clicked_cell.ch == ' ' || clicked_cell.ch == '\0' {
             return;
         }
 
@@ -512,7 +512,7 @@ impl Terminal {
         let mut start_col = col;
         while start_col > 0 {
             if let Some(cell) = screen_buffer.get_cell(start_col - 1, row) {
-                if is_word_char(&cell.ch) && !cell.ch.trim().is_empty() {
+                if is_word_char(cell.ch) && cell.ch != ' ' && cell.ch != '\0' {
                     start_col -= 1;
                 } else {
                     break;
@@ -527,7 +527,7 @@ impl Terminal {
         let width = screen_buffer.width();
         while end_col < width - 1 {
             if let Some(cell) = screen_buffer.get_cell(end_col + 1, row) {
-                if is_word_char(&cell.ch) && !cell.ch.trim().is_empty() {
+                if is_word_char(cell.ch) && cell.ch != ' ' && cell.ch != '\0' {
                     end_col += 1;
                 } else {
                     break;
@@ -576,7 +576,11 @@ impl Terminal {
                 let mut line = String::new();
                 for col in line_start..=line_end {
                     if let Some(cell) = screen_buffer.get_cell_with_scrollback(col, row) {
-                        line.push_str(&cell.ch);
+                        if let Some(ref extended) = cell.extended {
+                            line.push_str(extended);
+                        } else {
+                            line.push(cell.ch);
+                        }
                     }
                 }
 
@@ -1114,7 +1118,7 @@ impl Terminal {
                         if sb.cursor_x == 0 && sb.cursor_y == 0 && (grapheme == "~" || grapheme == "$" || grapheme == "#" || grapheme == ">") {
                             // Check if there's non-empty content on screen (likely TUI garbage)
                             let has_content =
-                                (1..sb.height().min(20)).any(|y| (0..sb.width().min(80)).any(|x| sb.get_cell(x, y).map_or(false, |cell| cell.ch != " ")));
+                                (1..sb.height().min(20)).any(|y| (0..sb.width().min(80)).any(|x| sb.get_cell(x, y).map_or(false, |cell| cell.ch != ' ')));
 
                             if has_content {
                                 // Clear the screen to remove TUI garbage
@@ -1583,7 +1587,16 @@ impl Terminal {
             // Get lines from scrollback buffer
             let scrollback = sb.get_scrollback_buffer();
             for row in scrollback.iter() {
-                let line: String = row.iter().map(|cell| cell.ch.as_str()).collect();
+                let line: String = row
+                    .iter()
+                    .map(|cell| {
+                        if let Some(ref extended) = cell.extended {
+                            extended.to_string()
+                        } else {
+                            cell.ch.to_string()
+                        }
+                    })
+                    .collect();
                 let trimmed = line.trim_end();
                 if !trimmed.is_empty() {
                     lines.push(trimmed.to_string());
@@ -1595,7 +1608,11 @@ impl Terminal {
                 let mut line = String::new();
                 for x in 0..sb.width() {
                     if let Some(cell) = sb.get_cell(x, y) {
-                        line.push_str(&cell.ch);
+                        if let Some(ref extended) = cell.extended {
+                            line.push_str(extended);
+                        } else {
+                            line.push(cell.ch);
+                        }
                     }
                 }
                 let trimmed = line.trim_end();

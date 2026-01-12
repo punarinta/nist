@@ -279,11 +279,27 @@ fn main() -> Result<(), String> {
             last_cpu_update = Instant::now();
         }
 
-        // Collect all events first
+        // Calculate adaptive timeout based on cursor blink and dirty state
+        let timeout_ms = if needs_render || has_dirty_content {
+            // If we need to render or have dirty content, wake up soon for responsive updates
+            16 // ~60 FPS for active rendering
+        } else {
+            // Calculate time until next cursor blink
+            let time_until_blink = cursor_blink_interval.saturating_sub(last_cursor_blink.elapsed());
+            let in_debounce_period = last_keyboard_input.elapsed() < cursor_debounce_duration;
+
+            if in_debounce_period {
+                // During debounce, check more frequently to reset blink
+                100
+            } else {
+                // Use time until blink, capped at 500ms for general responsiveness
+                time_until_blink.as_millis().min(500) as u32
+            }
+        };
+
+        // Collect all events with adaptive timeout
         let mut events = Vec::new();
-        // Use 1ms timeout for responsive PTY output rendering
-        // PTY data can arrive at any time, and we need to wake up quickly to render it
-        let first_event = event_pump.wait_event_timeout(1);
+        let first_event = event_pump.wait_event_timeout(timeout_ms);
         if let Some(event) = first_event {
             events.push(event);
         }
