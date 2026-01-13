@@ -28,6 +28,7 @@ pub enum EventAction {
     OpenSettings,
     ChangeFontSize(f32),
     TerminalHistorySearch,
+    AiCommandGeneration,
     None,
 }
 
@@ -536,6 +537,7 @@ fn handle_key_down_event(
                 NavigationAction::NextTab | NavigationAction::PreviousTab => super::keyboard::KeyboardAction::None, // Will be handled below
                 NavigationAction::GoToPrompt => super::keyboard::KeyboardAction::None,                              // Will be handled below
                 NavigationAction::TerminalHistorySearch => super::keyboard::KeyboardAction::RequestTerminalHistorySearch,
+                NavigationAction::AiCommandGeneration => super::keyboard::KeyboardAction::RequestAiCommandGeneration,
             };
 
             // Handle the action
@@ -558,6 +560,7 @@ fn handle_key_down_event(
                 KeyboardAction::RequestQuitConfirmation => EventAction::RequestQuitConfirmation,
                 KeyboardAction::Quit => EventAction::Quit,
                 KeyboardAction::RequestTerminalHistorySearch => EventAction::TerminalHistorySearch,
+                KeyboardAction::RequestAiCommandGeneration => EventAction::AiCommandGeneration,
                 KeyboardAction::None => EventAction::None,
             };
 
@@ -601,6 +604,7 @@ fn handle_key_down_event(
                     KeyboardAction::RequestQuitConfirmation => EventAction::RequestQuitConfirmation,
                     KeyboardAction::Quit => EventAction::Quit,
                     KeyboardAction::RequestTerminalHistorySearch => EventAction::TerminalHistorySearch,
+                    KeyboardAction::RequestAiCommandGeneration => EventAction::AiCommandGeneration,
                     KeyboardAction::None => EventAction::None,
                 };
 

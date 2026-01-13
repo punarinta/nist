@@ -16,10 +16,11 @@ Features
 - multiterminal typing (send input to several terminals simultaneously)
 - terminal keeps own input and output history in state
 - convenient command history search
+- AI-assistant to help working with OS (not for coding)
+- error detection
 
 Next steps
 ===
-- AI-agent to assist working with OS (not for coding)
 - further expand settings
 - voice input
 - UI themes
@@ -29,7 +30,7 @@ Next steps
 
 State
 ===
-State includes layout structure, relative pane sizes, current working directory, tab names, a few of last commands of each terminal and some amount of previous output of each terminal. State is saved and loaded automatically.
+State includes layout structure, relative pane sizes, current working directory, tab names, a few of last commands of each terminal and some amount of previous output of each terminal. State is saved and loaded automatically. State files are human-readable to make it transparent what we actually store in them.
 
 History search
 ===

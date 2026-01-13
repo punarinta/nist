@@ -1,10 +1,13 @@
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use std::fs;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::history;
 use crate::screen_buffer::ScreenBuffer;
 use crate::terminal_config::ShellConfig;
 
@@ -122,9 +125,41 @@ impl Terminal {
         // Set up the command
         let mut cmd = CommandBuilder::new(&shell_config.command);
 
-        // Add command arguments (e.g., -NoLogo for PowerShell)
-        for arg in &shell_config.args {
-            cmd.arg(arg);
+        // Configure shell to emit OSC sequences for command exit codes
+        // ESC ] 1337 ; command-exit=<code> BEL
+        let temp_init_file = Self::create_shell_init_file(&shell_config.command);
+
+        // Add command arguments based on shell type
+        match shell_config.command.as_str() {
+            "bash" => {
+                // Use --rcfile to load our custom init file
+                if let Some(ref init_file) = temp_init_file {
+                    cmd.arg("--rcfile");
+                    cmd.arg(init_file);
+                } else {
+                    // Fallback to default args
+                    for arg in &shell_config.args {
+                        cmd.arg(arg);
+                    }
+                }
+            }
+            "zsh" => {
+                // Use ZDOTDIR to load our custom .zshrc
+                if let Some(ref init_file) = temp_init_file {
+                    let parent_dir = init_file.parent().unwrap();
+                    cmd.env("ZDOTDIR", parent_dir.to_str().unwrap());
+                }
+                // Add default args
+                for arg in &shell_config.args {
+                    cmd.arg(arg);
+                }
+            }
+            _ => {
+                // For other shells, use default args
+                for arg in &shell_config.args {
+                    cmd.arg(arg);
+                }
+            }
         }
 
         // Set environment variables
@@ -164,6 +199,10 @@ impl Terminal {
         let mouse_sgr_mode_clone = Arc::clone(&mouse_sgr_mode);
         let bracketed_paste_mode_clone = Arc::clone(&bracketed_paste_mode);
 
+        // Create shared state for command exit codes
+        let last_command_exit_code = Arc::new(Mutex::new(None));
+        let last_command_exit_code_clone = Arc::clone(&last_command_exit_code);
+
         // Get a reader from the master side
         let mut reader = pty_pair.master.try_clone_reader().expect("Failed to clone PTY reader");
 
@@ -201,7 +240,13 @@ impl Terminal {
                         );
 
                         // Process the output and get any incomplete sequence (pass writer for DSR responses)
-                        incomplete_sequence = Self::process_output(&text, &screen_buffer_clone, &saved_screen_buffer_clone, &thread_writer);
+                        incomplete_sequence = Self::process_output(
+                            &text,
+                            &screen_buffer_clone,
+                            &saved_screen_buffer_clone,
+                            &thread_writer,
+                            &last_command_exit_code_clone,
+                        );
 
                         if !incomplete_sequence.is_empty() {
                             eprintln!(
@@ -240,6 +285,86 @@ impl Terminal {
             command_history: Arc::new(Mutex::new(Vec::new())),
             output_history: Arc::new(Mutex::new(Vec::new())),
             current_command: Arc::new(Mutex::new(String::new())),
+        }
+    }
+
+    /// Create a temporary shell init file that configures exit code reporting
+    fn create_shell_init_file(shell_name: &str) -> Option<PathBuf> {
+        match shell_name {
+            "bash" => {
+                // Create temporary .bashrc with PROMPT_COMMAND
+                let temp_dir = std::env::temp_dir();
+                let init_file = temp_dir.join(format!("nist_bashrc_{}", std::process::id()));
+
+                let content = r#"
+__nist_report_exit() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        printf '\e[31m❌ Error code: %s\e[0m\n' "$exit_code"
+    fi
+    printf '\e]1337;command-exit=%s\a' "$exit_code"
+    return $exit_code
+}
+
+if [ -f "$HOME/.bashrc" ]; then
+    source "$HOME/.bashrc"
+fi
+
+if [ -z "$PROMPT_COMMAND" ]; then
+    PROMPT_COMMAND="__nist_report_exit"
+else
+    PROMPT_COMMAND="__nist_report_exit; $PROMPT_COMMAND"
+fi
+"#;
+
+                if fs::write(&init_file, content).is_ok() {
+                    eprintln!("[TERMINAL] Created bash init file: {:?}", init_file);
+                    Some(init_file)
+                } else {
+                    eprintln!("[TERMINAL] Failed to create bash init file");
+                    None
+                }
+            }
+            "zsh" => {
+                // Create temporary .zshrc with precmd hook
+                let temp_dir = std::env::temp_dir();
+                let zsh_dir = temp_dir.join(format!("nist_zsh_{}", std::process::id()));
+                let _ = fs::create_dir_all(&zsh_dir);
+                let init_file = zsh_dir.join(".zshrc");
+
+                let content = r#"
+if [ -f "$HOME/.zshrc" ]; then
+    source "$HOME/.zshrc"
+fi
+
+if typeset -f precmd > /dev/null; then
+    functions[__nist_user_precmd]="${functions[precmd]}"
+fi
+
+precmd() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        printf '\e[31m❌ Error code: %s\e[0m\n' "$exit_code"
+    fi
+    printf '\e]1337;command-exit=%s\a' "$exit_code"
+    if typeset -f __nist_user_precmd > /dev/null; then
+        __nist_user_precmd
+    fi
+}
+"#;
+
+                if fs::write(&init_file, content).is_ok() {
+                    eprintln!("[TERMINAL] Created zsh init file: {:?}", init_file);
+                    Some(init_file)
+                } else {
+                    eprintln!("[TERMINAL] Failed to create zsh init file");
+                    None
+                }
+            }
+            _ => {
+                // No init file for other shells
+                None
+            }
         }
     }
 
@@ -291,12 +416,9 @@ impl Terminal {
         let is_enter = keys.len() == 1 && keys[0] == b'\r';
 
         if is_enter {
-            // Save current command to history and clear the buffer
+            // Clear the current command buffer
+            // Note: We don't track commands from keypresses - shell history is the source of truth
             if let Ok(mut current_cmd) = self.current_command.lock() {
-                let cmd = current_cmd.trim().to_string();
-                if !cmd.is_empty() {
-                    self.add_command_to_history(cmd);
-                }
                 current_cmd.clear();
             }
         }
@@ -331,28 +453,11 @@ impl Terminal {
     }
 
     pub(crate) fn send_text(&mut self, text: &str) {
-        // Accumulate text in current command buffer (before converting \n to \r)
-        if let Ok(mut current_cmd) = self.current_command.lock() {
-            // Only accumulate if text doesn't contain newline (Enter)
-            if !text.contains('\n') && !text.contains('\r') {
-                current_cmd.push_str(text);
-            } else {
-                // If text contains Enter, save the command and clear buffer
-                // Split on newlines and process each part
-                let parts: Vec<&str> = text.split(|c| c == '\n' || c == '\r').collect();
-                for (i, part) in parts.iter().enumerate() {
-                    if i > 0 && !current_cmd.is_empty() {
-                        // Save previous command before newline
-                        let cmd = current_cmd.trim().to_string();
-                        if !cmd.is_empty() {
-                            self.add_command_to_history(cmd);
-                        }
-                        current_cmd.clear();
-                    }
-                    if !part.is_empty() {
-                        current_cmd.push_str(part);
-                    }
-                }
+        // Clear current command buffer on newlines
+        // Note: We don't track commands from text input - shell history is the source of truth
+        if text.contains('\n') || text.contains('\r') {
+            if let Ok(mut current_cmd) = self.current_command.lock() {
+                current_cmd.clear();
             }
         }
 
@@ -905,6 +1010,7 @@ impl Terminal {
         screen_buffer: &Arc<Mutex<ScreenBuffer>>,
         saved_screen_buffer: &Arc<Mutex<Vec<ScreenBuffer>>>,
         writer: &Arc<Mutex<Box<dyn std::io::Write + Send>>>,
+        last_command_exit_code: &Arc<Mutex<Option<i32>>>,
     ) -> String {
         let mut incomplete_sequence = String::new();
 
@@ -950,6 +1056,7 @@ impl Terminal {
                                 // OSC (Operating System Command) sequence
                                 // Format: ESC ] <number> ; <text> BEL (or ESC \)
                                 // Example: ESC ] 0 ; title BEL (set window title)
+                                // Example: ESC ] 1337 ; command-exit=<code> BEL (command exit code)
                                 sequence.push(chars.next().unwrap()); // consume ']'
 
                                 let mut found_end = false;
@@ -975,8 +1082,26 @@ impl Terminal {
                                     break;
                                 }
 
+                                // Parse OSC sequences for command exit codes
+                                // Format: ESC ] 1337 ; command-exit=<code> BEL
+                                if sequence.contains("1337;command-exit=") {
+                                    if let Some(exit_code_str) = sequence
+                                        .split("command-exit=")
+                                        .nth(1)
+                                        .and_then(|s| s.split('\x07').next())
+                                        .and_then(|s| s.split('\\').next())
+                                    {
+                                        if let Ok(exit_code) = exit_code_str.trim().parse::<i32>() {
+                                            eprintln!("[TERMINAL] Command exited with code: {}", exit_code);
+                                            if let Ok(mut last_exit) = last_command_exit_code.lock() {
+                                                *last_exit = Some(exit_code);
+                                            }
+                                        }
+                                    }
+                                }
+
                                 // OSC sequences are for terminal control (titles, etc.), not for display
-                                // We ignore them for now - they should not be rendered
+                                // They should not be rendered
                             }
                             '(' | ')' | '*' | '+' => {
                                 // Character set designation sequences
@@ -1113,7 +1238,7 @@ impl Terminal {
                     // Now process the buffer as grapheme clusters
                     for grapheme in text_buffer.graphemes(true) {
                         // TUI garbage cleanup: If we're writing a shell prompt at the TOP of the screen (line 0),
-                        // it likely means a TUI app (like Claude) that doesn't use alternate screen buffer
+                        // it likely means a TUI app that doesn't use alternate screen buffer
                         // just exited, leaving garbage on screen. Clear it.
                         if sb.cursor_x == 0 && sb.cursor_y == 0 && (grapheme == "~" || grapheme == "$" || grapheme == "#" || grapheme == ">") {
                             // Check if there's non-empty content on screen (likely TUI garbage)
@@ -1566,6 +1691,9 @@ impl Terminal {
     }
 
     /// Add a command to the history (keeps last MAX_COMMAND_HISTORY commands)
+    /// NOTE: Currently unused. We read directly from shell history files instead of tracking.
+    /// Kept for potential future use or testing purposes.
+    #[allow(dead_code)]
     pub(crate) fn add_command_to_history(&self, command: String) {
         if let Ok(mut history) = self.command_history.lock() {
             // Don't add empty commands or duplicates of the last command
@@ -1635,9 +1763,18 @@ impl Terminal {
         }
     }
 
-    /// Get command history
+    /// Get command history - reads directly from shell's history file
+    /// Returns commands in newest-first order
+    ///
+    /// Note: Commands are only visible after the shell writes them to the history file.
+    /// For immediate history, users should configure their shell with:
+    ///   Bash: Add `PROMPT_COMMAND='history -a'` to ~/.bashrc
+    ///   Zsh:  Add `setopt INC_APPEND_HISTORY` to ~/.zshrc
+    ///   Fish: Works by default (no config needed)
     pub(crate) fn get_command_history(&self) -> Vec<String> {
-        self.command_history.lock().ok().map(|h| h.clone()).unwrap_or_default()
+        // Read from shell history file (cross-platform)
+        // Returns entries in newest-first order, limited to MAX_COMMAND_HISTORY
+        history::read_shell_history(MAX_COMMAND_HISTORY)
     }
 
     /// Set command history (for loading from state)

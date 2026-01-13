@@ -57,6 +57,7 @@ pub enum NavigationAction {
     PreviousTab,
     GoToPrompt,
     TerminalHistorySearch,
+    AiCommandGeneration,
 }
 
 /// Represents actions that can be triggered by hotkeys
@@ -122,6 +123,9 @@ pub fn match_navigation_hotkey(
     if matches_any(&navigation_hotkeys.terminal_history_search) {
         return Some(NavigationAction::TerminalHistorySearch);
     }
+    if matches_any(&navigation_hotkeys.ai_command_generation) {
+        return Some(NavigationAction::AiCommandGeneration);
+    }
 
     None
 }
@@ -173,6 +177,9 @@ pub fn match_sequential_navigation_hotkey(
     if matches_any_sequential(&navigation_hotkeys.terminal_history_search) {
         return Some(NavigationAction::TerminalHistorySearch);
     }
+    if matches_any_sequential(&navigation_hotkeys.ai_command_generation) {
+        return Some(NavigationAction::AiCommandGeneration);
+    }
 
     None
 }
@@ -197,6 +204,7 @@ pub fn is_sequential_navigation_hotkey_start(keycode: Keycode, is_ctrl: bool, is
         || starts_with(&navigation_hotkeys.previous_tab)
         || starts_with(&navigation_hotkeys.go_to_prompt)
         || starts_with(&navigation_hotkeys.terminal_history_search)
+        || starts_with(&navigation_hotkeys.ai_command_generation)
 }
 
 /// Match a keycode and modifiers to a hotkey action (hardcoded hotkeys)

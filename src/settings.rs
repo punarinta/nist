@@ -302,6 +302,8 @@ pub struct NavigationHotkeys {
     pub go_to_prompt: Vec<KeyBinding>,
     #[serde(rename = "terminalHistorySearch", default = "default_terminal_history_search")]
     pub terminal_history_search: Vec<KeyBinding>,
+    #[serde(rename = "aiCommandGeneration", default = "default_ai_command_generation")]
+    pub ai_command_generation: Vec<KeyBinding>,
 }
 
 // Default functions for NavigationHotkeys fields
@@ -408,6 +410,16 @@ fn default_terminal_history_search() -> Vec<KeyBinding> {
     }]
 }
 
+fn default_ai_command_generation() -> Vec<KeyBinding> {
+    vec![KeyBinding {
+        ctrl: true,
+        shift: true,
+        alt: false,
+        key: Key::A,
+        key2: None,
+    }]
+}
+
 impl Default for NavigationHotkeys {
     fn default() -> Self {
         Self {
@@ -421,6 +433,7 @@ impl Default for NavigationHotkeys {
             previous_tab: default_previous_tab(),
             go_to_prompt: default_go_to_prompt(),
             terminal_history_search: default_terminal_history_search(),
+            ai_command_generation: default_ai_command_generation(),
         }
     }
 }
@@ -452,10 +465,21 @@ impl Default for TerminalSettings {
     }
 }
 
+/// External vendor configuration for AI services
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalVendor {
+    pub name: String,
+    #[serde(rename = "apiKey")]
+    pub api_key: String,
+    #[serde(default)]
+    pub url: String,
+}
+
 /// Settings structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
-    pub external: Vec<String>,
+    #[serde(default)]
+    pub external: Vec<ExternalVendor>,
     pub terminal: TerminalSettings,
     #[serde(default)]
     pub hotkeys: Hotkeys,

@@ -23,6 +23,7 @@ pub enum KeyboardAction {
     RequestQuitConfirmation,
     Quit,
     RequestTerminalHistorySearch,
+    RequestAiCommandGeneration,
     None,
 }
 
@@ -264,6 +265,11 @@ pub fn handle_hotkey_action(
                 // Request terminal history search dialog
                 // Grouping check will be done in main.rs
                 KeyboardResult::with_action(KeyboardAction::RequestTerminalHistorySearch)
+            }
+
+            NavigationAction::AiCommandGeneration => {
+                // Request AI command generation dialog
+                KeyboardResult::with_action(KeyboardAction::RequestAiCommandGeneration)
             }
         },
 

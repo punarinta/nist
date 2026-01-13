@@ -1,3 +1,4 @@
+mod ai;
 mod ansi;
 mod font_discovery;
 mod history;
@@ -638,8 +639,8 @@ fn main() -> Result<(), String> {
                                 // Get terminal history for active terminal
                                 let terminal_history = if let Some(terminal) = pane_layout.get_active_terminal() {
                                     if let Ok(t) = terminal.lock() {
-                                        let hist = t.command_history.lock().unwrap().clone();
-                                        eprintln!("[MAIN] Terminal history: {:?}", hist);
+                                        let hist = t.get_command_history();
+                                        eprintln!("[MAIN] Terminal history (from shell): {:?}", hist);
                                         hist
                                     } else {
                                         eprintln!("[MAIN] Failed to lock terminal");
@@ -665,6 +666,41 @@ fn main() -> Result<(), String> {
                                     eprintln!("[MAIN] History search error: {}", e);
                                 } else {
                                     eprintln!("[MAIN] History search completed successfully");
+                                }
+                                needs_render = true;
+                            }
+                        }
+                    }
+                    input::events::EventAction::AiCommandGeneration => {
+                        eprintln!("[MAIN] AiCommandGeneration action received - showing dialog");
+                        // Show AI command generation dialog
+                        if let Ok(mut gui) = tab_bar_gui.try_lock() {
+                            if let Some(pane_layout) = gui.get_active_pane_layout() {
+                                // Get terminal history for active terminal
+                                let terminal_history = if let Some(terminal) = pane_layout.get_active_terminal() {
+                                    if let Ok(t) = terminal.lock() {
+                                        let hist = t.get_command_history();
+                                        eprintln!("[MAIN] Terminal history for AI (from shell): {:?}", hist);
+                                        hist
+                                    } else {
+                                        eprintln!("[MAIN] Failed to lock terminal");
+                                        Vec::new()
+                                    }
+                                } else {
+                                    eprintln!("[MAIN] No active terminal");
+                                    Vec::new()
+                                };
+
+                                // Get terminal reference for callback
+                                let terminal = pane_layout.get_active_terminal();
+
+                                eprintln!("[MAIN] About to show AI command dialog...");
+                                if let Err(e) =
+                                    ui::dialogs::ai_command_dialog(&mut canvas, &mut event_pump, &tab_font, scale_factor, &settings, terminal_history, terminal)
+                                {
+                                    eprintln!("[MAIN] AI command dialog error: {}", e);
+                                } else {
+                                    eprintln!("[MAIN] AI command dialog completed successfully");
                                 }
                                 needs_render = true;
                             }

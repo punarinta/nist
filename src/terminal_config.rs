@@ -47,7 +47,7 @@ impl TerminalLibrary {
             "bash".to_string(),
             ShellConfig {
                 command: "bash".to_string(),
-                args: vec!["--noprofile".to_string()],
+                args: vec![],
                 keys: KeyMappings {
                     backspace: vec![8, 32, 8],      // BS SPACE BS sequence
                     _delete: vec![27, 91, 51, 126], // ESC [ 3 ~
