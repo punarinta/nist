@@ -386,6 +386,19 @@ fn render_glyph<'a, T>(
         // Check if this is an emoji - if so, scale it to fit in cell
         let is_likely_emoji = is_emoji_grapheme(text);
 
+        // Check if this is a special symbol that needs scaling
+        let is_special_missing_symbol = text.chars().count() == 1
+            && text.chars().next().map_or(false, |ch| {
+                let codepoint = ch as u32;
+                matches!(codepoint,
+                    0x2300..=0x23FF |  // Miscellaneous Technical (includes ⎿)
+                    0x2580..=0x259F |  // Block Elements (includes █)
+                    0x25A0..=0x25FF |  // Geometric Shapes (includes ■)
+                    0x2700..=0x27BF |  // Dingbats (includes ❯, ❌)
+                    0xFF00..=0xFFEF    // Halfwidth and Fullwidth Forms (includes ･)
+                )
+            });
+
         if is_likely_emoji {
             // Scale emoji to fill available space (double-width emojis get 2x cell_width)
             // Use the smaller of width or height to maintain square aspect ratio
@@ -403,6 +416,27 @@ fn render_glyph<'a, T>(
             let scaled_height = (emoji_height as f32 * scale) as u32;
 
             // Center the emoji in the cell (horizontally and vertically)
+            let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
+            let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
+
+            let char_rect = Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height);
+            canvas.copy(cached_texture, None, char_rect).map_err(|e| e.to_string())?;
+        } else if is_special_missing_symbol {
+            // Scale up special symbols to make them more visible (1.4x larger than default)
+            let target_size = (cell_width.min(cell_height) as f32 * 1.4) as u32;
+
+            let symbol_width = query.width;
+            let symbol_height = query.height;
+
+            // Calculate scaling to fit the target size while maintaining aspect ratio
+            let scale_x = target_size as f32 / symbol_width as f32;
+            let scale_y = target_size as f32 / symbol_height as f32;
+            let scale = scale_x.min(scale_y);
+
+            let scaled_width = (symbol_width as f32 * scale) as u32;
+            let scaled_height = (symbol_height as f32 * scale) as u32;
+
+            // Center the symbol in the cell
             let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
             let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
 
@@ -478,7 +512,25 @@ fn render_glyph<'a, T>(
         if let Ok(unicode_surface) = unicode_fallback_result {
             if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
-                    let char_rect = Rect::new(x, y, unicode_surface.width(), unicode_surface.height());
+                    // Scale up special symbols to make them more visible (1.4x larger than default)
+                    let target_size = (cell_width.min(cell_height) as f32 * 1.4) as u32;
+
+                    let symbol_width = unicode_surface.width();
+                    let symbol_height = unicode_surface.height();
+
+                    // Calculate scaling to fit the target size while maintaining aspect ratio
+                    let scale_x = target_size as f32 / symbol_width as f32;
+                    let scale_y = target_size as f32 / symbol_height as f32;
+                    let scale = scale_x.min(scale_y);
+
+                    let scaled_width = (symbol_width as f32 * scale) as u32;
+                    let scaled_height = (symbol_height as f32 * scale) as u32;
+
+                    // Center the symbol in the cell
+                    let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
+                    let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
+
+                    let char_rect = Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height);
                     canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
                     glyph_cache.insert(cache_key, texture);
                     return Ok(());
