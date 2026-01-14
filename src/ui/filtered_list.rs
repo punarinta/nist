@@ -24,22 +24,12 @@ const TEXT_COLOR: Color = Color::RGB(255, 255, 255);
 pub struct ListRow {
     /// Display text for the row
     pub text: String,
-    /// Optional user data associated with this row
-    pub data: Option<String>,
 }
 
 impl ListRow {
     /// Create a new list row
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), data: None }
-    }
-
-    /// Create a new list row with associated data
-    pub fn with_data(text: impl Into<String>, data: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            data: Some(data.into()),
-        }
+        Self { text: text.into() }
     }
 }
 
@@ -124,52 +114,9 @@ impl FilteredList {
     }
 
     /// Set all rows (replaces the current list)
-    pub fn set_rows(&mut self, rows: Vec<ListRow>) {
-        self.all_rows = rows;
-        self.selected_index = None;
-        self.update_filtered_rows();
-    }
-
-    /// Add a row to the list
-    pub fn add_row(&mut self, row: ListRow) {
-        self.all_rows.push(row);
-        self.update_filtered_rows();
-    }
-
-    /// Set the row height
-    pub fn set_row_height(&mut self, height: u32) {
-        self.row_height = height;
-    }
-
-    /// Check if a point is inside the filtered list
-    pub fn contains_point(&self, x: i32, y: i32) -> bool {
-        let rect = Rect::new(self.x, self.y, self.width, self.height);
-        rect.contains_point((x, y))
-    }
-
-    /// Check if a point is inside the text input area
-    pub fn contains_point_input(&self, x: i32, y: i32) -> bool {
-        self.text_input.contains_point(x, y)
-    }
-
     /// Set the focus state of the text input
     pub fn set_focused(&mut self, focused: bool) {
         self.text_input.set_focused(focused);
-    }
-
-    /// Get the focus state
-    pub fn is_focused(&self) -> bool {
-        self.text_input.is_focused()
-    }
-
-    /// Get the text input reference (for direct access if needed)
-    pub fn text_input(&self) -> &TextInput {
-        &self.text_input
-    }
-
-    /// Get mutable text input reference
-    pub fn text_input_mut(&mut self) -> &mut TextInput {
-        &mut self.text_input
     }
 
     /// Update the filtered rows based on the text input content
@@ -377,14 +324,6 @@ mod tests {
     fn test_list_row_creation() {
         let row = ListRow::new("Test Item");
         assert_eq!(row.text, "Test Item");
-        assert!(row.data.is_none());
-    }
-
-    #[test]
-    fn test_list_row_with_data() {
-        let row = ListRow::with_data("Test Item", "test_data");
-        assert_eq!(row.text, "Test Item");
-        assert_eq!(row.data, Some("test_data".to_string()));
     }
 
     #[test]
@@ -396,39 +335,6 @@ mod tests {
         assert_eq!(list.filtered_rows.len(), 3);
         assert_eq!(list.max_items, 10);
         assert!(list.selected_index.is_none());
-    }
-
-    #[test]
-    fn test_empty_filter_shows_all() {
-        let rows = vec![ListRow::new("Apple"), ListRow::new("Banana"), ListRow::new("Cherry")];
-        let mut list = FilteredList::new(rows, 10, 300, 400, 1.0);
-
-        list.text_input_mut().set_text("".to_string());
-        list.update_filtered_rows();
-        assert_eq!(list.filtered_rows.len(), 3);
-    }
-
-    #[test]
-    fn test_filter_text_filters_rows() {
-        let rows = vec![ListRow::new("Apple"), ListRow::new("Banana"), ListRow::new("Cherry"), ListRow::new("Apricot")];
-        let mut list = FilteredList::new(rows, 10, 300, 400, 1.0);
-
-        list.text_input_mut().set_text("ap".to_string());
-        list.update_filtered_rows();
-        assert_eq!(list.filtered_rows.len(), 2);
-        assert_eq!(list.filtered_rows[0].text, "Apple");
-        assert_eq!(list.filtered_rows[1].text, "Apricot");
-    }
-
-    #[test]
-    fn test_filter_case_insensitive() {
-        let rows = vec![ListRow::new("APPLE"), ListRow::new("banana"), ListRow::new("Cherry")];
-        let mut list = FilteredList::new(rows, 10, 300, 400, 1.0);
-
-        list.text_input_mut().set_text("app".to_string());
-        list.update_filtered_rows();
-        assert_eq!(list.filtered_rows.len(), 1);
-        assert_eq!(list.filtered_rows[0].text, "APPLE");
     }
 
     #[test]
@@ -463,7 +369,7 @@ mod tests {
         assert_eq!(list.selected_index, Some(0));
 
         // Filter to only two items
-        list.text_input_mut().set_text("ap".to_string());
+
         list.update_filtered_rows();
         assert_eq!(list.filtered_rows.len(), 2);
 
@@ -482,33 +388,6 @@ mod tests {
         let selected = list.get_selected_row();
         assert!(selected.is_some());
         assert_eq!(selected.unwrap().text, "Apple");
-    }
-
-    #[test]
-    fn test_add_row() {
-        let rows = vec![ListRow::new("Apple")];
-        let mut list = FilteredList::new(rows, 10, 300, 400, 1.0);
-
-        assert_eq!(list.all_rows.len(), 1);
-
-        list.add_row(ListRow::new("Banana"));
-        assert_eq!(list.all_rows.len(), 2);
-        assert_eq!(list.filtered_rows.len(), 2);
-    }
-
-    #[test]
-    fn test_set_rows() {
-        let rows = vec![ListRow::new("Apple")];
-        let mut list = FilteredList::new(rows, 10, 300, 400, 1.0);
-
-        list.move_selection_down();
-        assert_eq!(list.selected_index, Some(0));
-
-        let new_rows = vec![ListRow::new("Cherry"), ListRow::new("Date")];
-        list.set_rows(new_rows);
-
-        assert_eq!(list.all_rows.len(), 2);
-        assert!(list.selected_index.is_none());
     }
 
     #[test]

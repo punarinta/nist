@@ -18,12 +18,8 @@ pub const DEFAULT_AI_URL: &str = "http://localhost:1314/v1";
 pub enum AgentError {
     /// No vendor with the specified name found in settings
     VendorNotFound(String),
-    /// Empty API key (deprecated - empty keys are now sent to the API)
-    EmptyApiKey,
     /// LLM API error
     LlmError(LLMError),
-    /// Failed to get OS information
-    OsInfoError(String),
     /// Failed to get current directory
     CurrentDirError(std::io::Error),
 }
@@ -32,9 +28,7 @@ impl std::fmt::Display for AgentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AgentError::VendorNotFound(name) => write!(f, "Vendor '{}' not found in settings", name),
-            AgentError::EmptyApiKey => write!(f, "API key is empty"),
             AgentError::LlmError(e) => write!(f, "LLM error: {}", e),
-            AgentError::OsInfoError(s) => write!(f, "OS info error: {}", s),
             AgentError::CurrentDirError(e) => write!(f, "Current directory error: {}", e),
         }
     }

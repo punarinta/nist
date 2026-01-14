@@ -7,7 +7,7 @@ use sdl3::event::Event;
 use sdl3::keyboard::Keycode;
 use sdl3::pixels::Color;
 use sdl3::rect::Rect;
-use sdl3::render::{Canvas, TextureCreator, FRect};
+use sdl3::render::{Canvas, FRect, TextureCreator};
 use sdl3::ttf::Font;
 use sdl3::video::Window;
 
@@ -55,38 +55,9 @@ impl TextInput {
         self.y = y;
     }
 
-    /// Set the callback for text changes
-    pub fn set_on_change<F>(&mut self, callback: F)
-    where
-        F: Fn(&str) + 'static,
-    {
-        self.on_change = Some(Box::new(callback));
-    }
-
-    /// Set the callback for Enter key press
-    pub fn set_on_enter<F>(&mut self, callback: F)
-    where
-        F: Fn() + 'static,
-    {
-        self.on_enter = Some(Box::new(callback));
-    }
-
     /// Get the current text
     pub fn get_text(&self) -> &str {
         &self.text
-    }
-
-    /// Set the text
-    pub fn set_text(&mut self, text: String) {
-        self.text = text;
-        self.cursor_pos = self.text.len();
-        self.fire_on_change();
-    }
-
-    /// Check if a point is inside the text input
-    pub fn contains_point(&self, x: i32, y: i32) -> bool {
-        let rect = Rect::new(self.x, self.y, self.width, self.height);
-        rect.contains_point((x, y))
     }
 
     /// Set the focus state
@@ -178,10 +149,7 @@ impl TextInput {
     /// Move cursor left
     pub fn move_cursor_left(&mut self) {
         if self.cursor_pos > 0 {
-            let prev_char_len = self.text[..self.cursor_pos]
-                .chars()
-                .last()
-                .map_or(0, |c| c.len_utf8());
+            let prev_char_len = self.text[..self.cursor_pos].chars().last().map_or(0, |c| c.len_utf8());
             self.cursor_pos -= prev_char_len;
         }
     }
@@ -189,10 +157,7 @@ impl TextInput {
     /// Move cursor right
     pub fn move_cursor_right(&mut self) {
         if self.cursor_pos < self.text.len() {
-            let next_char_len = self.text[self.cursor_pos..]
-                .chars()
-                .next()
-                .map_or(0, |c| c.len_utf8());
+            let next_char_len = self.text[self.cursor_pos..].chars().next().map_or(0, |c| c.len_utf8());
             self.cursor_pos += next_char_len;
         }
     }
@@ -200,10 +165,7 @@ impl TextInput {
     /// Delete character before cursor (backspace)
     pub fn backspace(&mut self) {
         if self.cursor_pos > 0 {
-            let prev_char_len = self.text[..self.cursor_pos]
-                .chars()
-                .last()
-                .map_or(0, |c| c.len_utf8());
+            let prev_char_len = self.text[..self.cursor_pos].chars().last().map_or(0, |c| c.len_utf8());
             let new_cursor_pos = self.cursor_pos - prev_char_len;
             self.text.remove(new_cursor_pos);
             self.cursor_pos = new_cursor_pos;
@@ -236,12 +198,7 @@ impl TextInput {
     }
 
     /// Render the text input
-    pub fn render<T>(
-        &self,
-        canvas: &mut Canvas<Window>,
-        font: &Font,
-        texture_creator: &TextureCreator<T>,
-    ) -> Result<(), String> {
+    pub fn render<T>(&self, canvas: &mut Canvas<Window>, font: &Font, texture_creator: &TextureCreator<T>) -> Result<(), String> {
         let rect = Rect::new(self.x, self.y, self.width, self.height);
 
         // Draw background
@@ -249,11 +206,7 @@ impl TextInput {
         canvas.fill_rect(rect).map_err(|e| e.to_string())?;
 
         // Draw border
-        canvas.set_draw_color(if self.focused {
-            INPUT_BORDER_FOCUSED
-        } else {
-            INPUT_BORDER
-        });
+        canvas.set_draw_color(if self.focused { INPUT_BORDER_FOCUSED } else { INPUT_BORDER });
         canvas.draw_rect(rect).map_err(|e| e.to_string())?;
 
         // Calculate text rendering position with padding
