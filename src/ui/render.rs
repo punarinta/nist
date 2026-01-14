@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::ansi::DEFAULT_BG_COLOR;
+use crate::screen_buffer::{is_block_or_box_drawing, is_emoji_grapheme, is_special_symbol};
 use crate::sdl_renderer;
 use crate::settings::Settings;
 use crate::tab_gui::TabBarGui;
@@ -387,19 +388,17 @@ fn render_glyph<'a, T>(
         let is_likely_emoji = is_emoji_grapheme(text);
 
         // Check if this is a special symbol that needs scaling
-        let is_special_missing_symbol = text.chars().count() == 1
-            && text.chars().next().map_or(false, |ch| {
-                let codepoint = ch as u32;
-                matches!(codepoint,
-                    0x2300..=0x23FF |  // Miscellaneous Technical (includes ⎿)
-                    0x2580..=0x259F |  // Block Elements (includes █)
-                    0x25A0..=0x25FF |  // Geometric Shapes (includes ■)
-                    0x2700..=0x27BF |  // Dingbats (includes ❯, ❌)
-                    0xFF00..=0xFFEF    // Halfwidth and Fullwidth Forms (includes ･)
-                )
-            });
+        let is_special_missing_symbol = text.chars().count() == 1 && text.chars().next().map_or(false, is_special_symbol);
 
-        if is_likely_emoji {
+        // Check if this is a block/box drawing character that needs cell-filling
+        let is_block_box_char = text.chars().count() == 1 && text.chars().next().map_or(false, is_block_or_box_drawing);
+
+        if is_block_box_char {
+            // Stretch block/box drawing characters to fill the entire cell for ASCII art
+            // No aspect ratio preservation - these characters are designed to be stretched
+            let char_rect = Rect::new(x, y, cell_width, cell_height);
+            canvas.copy(cached_texture, None, char_rect).map_err(|e| e.to_string())?;
+        } else if is_likely_emoji {
             // Scale emoji to fill available space (double-width emojis get 2x cell_width)
             // Use the smaller of width or height to maintain square aspect ratio
             let target_size = cell_width.min(cell_height);
@@ -422,8 +421,8 @@ fn render_glyph<'a, T>(
             let char_rect = Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height);
             canvas.copy(cached_texture, None, char_rect).map_err(|e| e.to_string())?;
         } else if is_special_missing_symbol {
-            // Scale up special symbols to make them more visible (1.4x larger than default)
-            let target_size = (cell_width.min(cell_height) as f32 * 1.4) as u32;
+            // Scale up special symbols to make them more visible (2.0x larger than default)
+            let target_size = (cell_width.min(cell_height) as f32 * 2.0) as u32;
 
             let symbol_width = query.width;
             let symbol_height = query.height;
@@ -493,27 +492,34 @@ fn render_glyph<'a, T>(
     }
 
     // Check if this is a symbol from ranges that are often missing from terminal fonts
-    // but present in FreeMono: Miscellaneous Technical, Dingbats, Block Elements, Geometric Shapes, etc.
-    let is_special_missing_symbol = text.chars().count() == 1
-        && text.chars().next().map_or(false, |ch| {
-            let codepoint = ch as u32;
-            matches!(codepoint,
-                0x2300..=0x23FF |  // Miscellaneous Technical (includes ⎿)
-                0x2580..=0x259F |  // Block Elements (includes █)
-                0x25A0..=0x25FF |  // Geometric Shapes (includes ■)
-                0x2700..=0x27BF |  // Dingbats (includes ❯)
-                0xFF00..=0xFFEF    // Halfwidth and Fullwidth Forms (includes ･)
-            )
-        });
+    // but present in FreeMono: Miscellaneous Technical, Dingbats, Geometric Shapes, etc.
+    let is_special_missing_symbol = text.chars().count() == 1 && text.chars().next().map_or(false, is_special_symbol);
 
-    // For these specific symbols, try unicode fallback font FIRST
-    if is_special_missing_symbol && !is_likely_emoji {
+    // Check if this is a block/box drawing character that needs cell-filling
+    let is_block_box_char = text.chars().count() == 1 && text.chars().next().map_or(false, is_block_or_box_drawing);
+
+    // For block/box drawing characters, try unicode fallback font FIRST and scale to fill cell
+    if is_block_box_char && !is_likely_emoji {
         let unicode_fallback_result = unicode_fallback_font.render(text).blended(render_color);
         if let Ok(unicode_surface) = unicode_fallback_result {
             if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
-                    // Scale up special symbols to make them more visible (1.4x larger than default)
-                    let target_size = (cell_width.min(cell_height) as f32 * 1.4) as u32;
+                    // Stretch to fill the entire cell for ASCII art
+                    // No aspect ratio preservation - these characters are designed to be stretched
+                    let char_rect = Rect::new(x, y, cell_width, cell_height);
+                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                    glyph_cache.insert(cache_key, texture);
+                    return Ok(());
+                }
+            }
+        }
+    } else if is_special_missing_symbol && !is_likely_emoji {
+        let unicode_fallback_result = unicode_fallback_font.render(text).blended(render_color);
+        if let Ok(unicode_surface) = unicode_fallback_result {
+            if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
+                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
+                    // Scale up special symbols to make them more visible (2.0x larger than default)
+                    let target_size = (cell_width.min(cell_height) as f32 * 2.0) as u32;
 
                     let symbol_width = unicode_surface.width();
                     let symbol_height = unicode_surface.height();
@@ -550,11 +556,21 @@ fn render_glyph<'a, T>(
     if let Ok(surface) = render_result {
         if surface.width() > 0 && surface.height() > 0 {
             if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                let char_rect = Rect::new(x, y, surface.width(), surface.height());
-                canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
-                // Cache the texture for next frame
-                glyph_cache.insert(cache_key, texture);
-                return Ok(());
+                // If this is a block/box drawing character, stretch to fill entire cell
+                if is_block_box_char {
+                    // Stretch to fill the entire cell for ASCII art
+                    // No aspect ratio preservation - these characters are designed to be stretched
+                    let char_rect = Rect::new(x, y, cell_width, cell_height);
+                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                    glyph_cache.insert(cache_key, texture);
+                    return Ok(());
+                } else {
+                    let char_rect = Rect::new(x, y, surface.width(), surface.height());
+                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                    // Cache the texture for next frame
+                    glyph_cache.insert(cache_key, texture);
+                    return Ok(());
+                }
             }
         }
 
@@ -609,43 +625,6 @@ fn render_glyph<'a, T>(
     }
 
     Ok(())
-}
-
-/// Check if a grapheme cluster is likely an emoji
-#[inline]
-fn is_emoji_grapheme(text: &str) -> bool {
-    text.chars().any(is_emoji_char)
-}
-
-/// Check if a character is likely an emoji based on Unicode ranges
-#[inline]
-fn is_emoji_char(ch: char) -> bool {
-    let codepoint = ch as u32;
-    matches!(codepoint,
-        // Emoticons
-        0x1F600..=0x1F64F |
-        // Miscellaneous Symbols and Pictographs
-        0x1F300..=0x1F5FF |
-        // Transport and Map Symbols
-        0x1F680..=0x1F6FF |
-        // Supplemental Symbols and Pictographs
-        0x1F900..=0x1F9FF |
-        // Symbols and Pictographs Extended-A
-        0x1FA00..=0x1FA6F |
-        0x1FA70..=0x1FAFF |
-        // Miscellaneous Symbols (including weather, zodiac)
-        0x2600..=0x26FF |
-        // Enclosed Alphanumeric Supplement (includes circled numbers and regional indicators for flags)
-        0x1F100..=0x1F1FF |
-        // Enclosed Ideographic Supplement
-        0x1F200..=0x1F2FF |
-        // Variation Selectors (emoji presentation)
-        0xFE00..=0xFE0F |
-        // Mahjong Tiles, Domino Tiles
-        0x1F000..=0x1F02F |
-        // Playing Cards
-        0x1F0A0..=0x1F0FF
-    )
 }
 
 /// Render scrollback position indicator

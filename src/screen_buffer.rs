@@ -22,9 +22,33 @@ impl Default for Cell {
     }
 }
 
+/// Check if a character is a special symbol that needs scaling in rendering
+#[inline]
+pub fn is_special_symbol(ch: char) -> bool {
+    let codepoint = ch as u32;
+    // Exclude Block Elements (0x2580..=0x259F) and Box Drawing (0x2500..=0x257F)
+    // as they need to fill exactly one cell without scaling for ASCII art
+    matches!(codepoint,
+        0x2300..=0x23FF |  // Miscellaneous Technical (includes ⎿)
+        0x25A0..=0x25FF |  // Geometric Shapes (includes ■)
+        0x2700..=0x27BF |  // Dingbats (includes ❯, ❌)
+        0xFF00..=0xFFEF    // Halfwidth and Fullwidth Forms (includes ･)
+    )
+}
+
+/// Check if a character is a block or box drawing character that needs cell-filling
+#[inline]
+pub fn is_block_or_box_drawing(ch: char) -> bool {
+    let codepoint = ch as u32;
+    matches!(codepoint,
+        0x2500..=0x257F |  // Box Drawing (includes ┃, ╹, etc.)
+        0x2580..=0x259F    // Block Elements (includes █, ▀, ▄, etc.)
+    )
+}
+
 /// Check if a character is likely an emoji based on Unicode ranges
 #[inline]
-fn is_emoji_char(ch: char) -> bool {
+pub fn is_emoji_char(ch: char) -> bool {
     let codepoint = ch as u32;
     matches!(codepoint,
         // Emoticons
@@ -40,32 +64,22 @@ fn is_emoji_char(ch: char) -> bool {
         0x1FA70..=0x1FAFF |
         // Miscellaneous Symbols (including weather, zodiac)
         0x2600..=0x26FF |
-        // Dingbats
-        0x2700..=0x27BF |
-        // Enclosed Alphanumeric Supplement
+        // Enclosed Alphanumeric Supplement (includes circled numbers and regional indicators for flags)
         0x1F100..=0x1F1FF |
         // Enclosed Ideographic Supplement
         0x1F200..=0x1F2FF |
-        // Miscellaneous Symbols and Arrows
-        0x2B00..=0x2BFF |
-        // Supplemental Arrows-B
-        0x2900..=0x297F |
         // Variation Selectors (emoji presentation)
         0xFE00..=0xFE0F |
         // Mahjong Tiles, Domino Tiles
         0x1F000..=0x1F02F |
         // Playing Cards
-        0x1F0A0..=0x1F0FF |
-        // Geometric Shapes
-        0x25A0..=0x25FF |
-        // Arrows
-        0x2190..=0x21FF
+        0x1F0A0..=0x1F0FF
     )
 }
 
 /// Check if a string contains an emoji (including combined emojis with modifiers)
 #[inline]
-fn is_emoji_grapheme(s: &str) -> bool {
+pub fn is_emoji_grapheme(s: &str) -> bool {
     // Check if any character in the grapheme cluster is an emoji
     s.chars().any(is_emoji_char)
 }
@@ -911,13 +925,13 @@ mod tests {
 
         // Check that original content is preserved
         if let Some(cell) = buffer.get_cell(0, 0) {
-            assert_eq!(cell.ch, "A");
+            assert_eq!(cell.ch, 'A');
         } else {
             panic!("Cell (0,0) should exist");
         }
 
         if let Some(cell) = buffer.get_cell(4, 4) {
-            assert_eq!(cell.ch, "B");
+            assert_eq!(cell.ch, 'B');
         } else {
             panic!("Cell (4,4) should exist");
         }
@@ -929,7 +943,7 @@ mod tests {
 
         // Original cell should still be there
         if let Some(cell) = buffer.get_cell(0, 0) {
-            assert_eq!(cell.ch, "A");
+            assert_eq!(cell.ch, 'A');
         } else {
             panic!("Cell (0,0) should exist after shrinking");
         }
