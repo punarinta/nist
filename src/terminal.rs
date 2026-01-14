@@ -11,6 +11,10 @@ use crate::history;
 use crate::screen_buffer::ScreenBuffer;
 use crate::terminal_config::ShellConfig;
 
+// Static shell initialization scripts
+const BASH_INIT_SCRIPT: &str = include_str!("../static/scripts/bash_init.sh");
+const ZSH_INIT_SCRIPT: &str = include_str!("../static/scripts/zsh_init.sh");
+
 // History persistence limits
 const MAX_COMMAND_HISTORY: usize = 5; // Maximum number of commands to keep in history
 const MAX_OUTPUT_HISTORY: usize = 100; // Maximum number of output lines to keep in history
@@ -296,28 +300,7 @@ impl Terminal {
                 let temp_dir = std::env::temp_dir();
                 let init_file = temp_dir.join(format!("nist_bashrc_{}", std::process::id()));
 
-                let content = r#"
-__nist_report_exit() {
-    local exit_code=$?
-    if [ $exit_code -ne 0 ]; then
-        printf '\e[31m❌ Error code: %s\e[0m\n' "$exit_code"
-    fi
-    printf '\e]1337;command-exit=%s\a' "$exit_code"
-    return $exit_code
-}
-
-if [ -f "$HOME/.bashrc" ]; then
-    source "$HOME/.bashrc"
-fi
-
-if [ -z "$PROMPT_COMMAND" ]; then
-    PROMPT_COMMAND="__nist_report_exit"
-else
-    PROMPT_COMMAND="__nist_report_exit; $PROMPT_COMMAND"
-fi
-"#;
-
-                if fs::write(&init_file, content).is_ok() {
+                if fs::write(&init_file, BASH_INIT_SCRIPT).is_ok() {
                     eprintln!("[TERMINAL] Created bash init file: {:?}", init_file);
                     Some(init_file)
                 } else {
@@ -332,28 +315,7 @@ fi
                 let _ = fs::create_dir_all(&zsh_dir);
                 let init_file = zsh_dir.join(".zshrc");
 
-                let content = r#"
-if [ -f "$HOME/.zshrc" ]; then
-    source "$HOME/.zshrc"
-fi
-
-if typeset -f precmd > /dev/null; then
-    functions[__nist_user_precmd]="${functions[precmd]}"
-fi
-
-precmd() {
-    local exit_code=$?
-    if [ $exit_code -ne 0 ]; then
-        printf '\e[31m❌ Error code: %s\e[0m\n' "$exit_code"
-    fi
-    printf '\e]1337;command-exit=%s\a' "$exit_code"
-    if typeset -f __nist_user_precmd > /dev/null; then
-        __nist_user_precmd
-    fi
-}
-"#;
-
-                if fs::write(&init_file, content).is_ok() {
+                if fs::write(&init_file, ZSH_INIT_SCRIPT).is_ok() {
                     eprintln!("[TERMINAL] Created zsh init file: {:?}", init_file);
                     Some(init_file)
                 } else {
