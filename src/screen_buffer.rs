@@ -29,9 +29,20 @@ pub fn is_special_symbol(ch: char) -> bool {
     // Exclude Block Elements (0x2580..=0x259F) and Box Drawing (0x2500..=0x257F)
     // as they need to fill exactly one cell without scaling for ASCII art
     matches!(codepoint,
+        0x2190..=0x21FF |  // Arrows (includes →, ←, ↑, ↓)
+        0x2200..=0x22FF |  // Mathematical Operators (includes ∀, ∃, ∈, ∞)
         0x2300..=0x23FF |  // Miscellaneous Technical (includes ⎿)
+        0x2400..=0x243F |  // Control Pictures (includes ␀, ␣)
+        0x2460..=0x24FF |  // Enclosed Alphanumerics (includes ①, ②, ③)
         0x25A0..=0x25FF |  // Geometric Shapes (includes ■)
         0x2700..=0x27BF |  // Dingbats (includes ❯, ❌)
+        0x27C0..=0x27EF |  // Miscellaneous Mathematical Symbols-A
+        0x27F0..=0x27FF |  // Supplemental Arrows-A
+        0x2800..=0x28FF |  // Braille Patterns (includes ⠴)
+        0x2900..=0x297F |  // Supplemental Arrows-B
+        0x2980..=0x29FF |  // Miscellaneous Mathematical Symbols-B
+        0x2A00..=0x2AFF |  // Supplemental Mathematical Operators
+        0x2B00..=0x2BFF |  // Miscellaneous Symbols and Arrows
         0xFF00..=0xFFEF    // Halfwidth and Fullwidth Forms (includes ･)
     )
 }
