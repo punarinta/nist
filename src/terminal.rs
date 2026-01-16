@@ -301,7 +301,6 @@ impl Terminal {
                 let init_file = temp_dir.join(format!("nist_bashrc_{}", std::process::id()));
 
                 if fs::write(&init_file, BASH_INIT_SCRIPT).is_ok() {
-                    eprintln!("[TERMINAL] Created bash init file: {:?}", init_file);
                     Some(init_file)
                 } else {
                     eprintln!("[TERMINAL] Failed to create bash init file");
@@ -316,7 +315,6 @@ impl Terminal {
                 let init_file = zsh_dir.join(".zshrc");
 
                 if fs::write(&init_file, ZSH_INIT_SCRIPT).is_ok() {
-                    eprintln!("[TERMINAL] Created zsh init file: {:?}", init_file);
                     Some(init_file)
                 } else {
                     eprintln!("[TERMINAL] Failed to create zsh init file");
@@ -334,6 +332,19 @@ impl Terminal {
         self.width = new_width;
         self.height = new_height;
 
+        // Update screen buffer size BEFORE PTY resize to preserve rewrapped content
+        // This allows our rewrapping logic to complete before the shell receives SIGWINCH
+        if let Ok(mut sb) = self.screen_buffer.lock() {
+            sb.resize(new_width as usize, new_height as usize);
+
+            // Clear the screen buffer if requested (e.g., after pane split)
+            // This prevents stale content from appearing in the newly resized pane
+            if clear_screen {
+                sb.clear_screen();
+                eprintln!("[TERMINAL] Cleared screen buffer after resize");
+            }
+        }
+
         let new_size = PtySize {
             rows: new_height as u16,
             cols: new_width as u16,
@@ -345,18 +356,6 @@ impl Terminal {
             eprintln!("[TERMINAL] Failed to resize PTY: {}", err);
         } else {
             eprintln!("[TERMINAL] Resized PTY to {}x{}", new_width, new_height);
-        }
-
-        // Update screen buffer size
-        if let Ok(mut sb) = self.screen_buffer.lock() {
-            sb.resize(new_width as usize, new_height as usize);
-
-            // Clear the screen buffer if requested (e.g., after pane split)
-            // This prevents stale content from appearing in the newly resized pane
-            if clear_screen {
-                sb.clear_screen();
-                eprintln!("[TERMINAL] Cleared screen buffer after resize");
-            }
         }
     }
 

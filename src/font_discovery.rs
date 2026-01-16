@@ -135,8 +135,6 @@ const FONT_DIRECTORIES: &[&str] = &[
 ///
 /// The full path to the best available UI font file, or None if no suitable font is found
 pub fn find_best_ui_font() -> Option<String> {
-    eprintln!("[FONT] Searching for emoji-supporting UI fonts...");
-
     // Expand home directory in paths
     let mut search_paths = Vec::new();
     for dir in FONT_DIRECTORIES {
@@ -169,8 +167,6 @@ pub fn find_best_ui_font() -> Option<String> {
 ///
 /// The full path to the best available font file, or None if no suitable font is found
 pub fn find_best_monospace_font() -> Option<String> {
-    eprintln!("[FONT] Searching for emoji-supporting monospace fonts...");
-
     // Expand home directory in paths
     let mut search_paths = Vec::new();
     for dir in FONT_DIRECTORIES {
@@ -231,8 +227,6 @@ pub fn find_specific_font(font_name: &str) -> Option<String> {
 ///
 /// The full path to the best available emoji font file, or None if no suitable font is found
 pub fn find_emoji_font() -> Option<String> {
-    eprintln!("[FONT] Searching for color emoji fonts...");
-
     // Expand home directory in paths
     let mut search_paths = Vec::new();
     for dir in FONT_DIRECTORIES {

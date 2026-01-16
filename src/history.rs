@@ -37,7 +37,6 @@ fn read_bash_history(max_entries: usize) -> Vec<String> {
         }
     };
     let path = PathBuf::from(home).join(".bash_history");
-    eprintln!("[HISTORY] Reading bash history from: {:?}", path);
     read_history_file(&path, max_entries)
 }
 
@@ -135,9 +134,6 @@ fn read_history_file(path: &Path, max_entries: usize) -> Vec<String> {
         }
     };
 
-    let total_lines = content.lines().count();
-    eprintln!("[HISTORY] History file has {} total lines", total_lines);
-
     let mut entries = Vec::new();
 
     // Read from end to get most recent entries
@@ -154,14 +150,6 @@ fn read_history_file(path: &Path, max_entries: usize) -> Vec<String> {
             if entries.len() >= max_entries {
                 break;
             }
-        }
-    }
-
-    eprintln!("[HISTORY] Read {} history entries (newest first)", entries.len());
-    if !entries.is_empty() {
-        eprintln!("[HISTORY] Most recent entry: {:?}", entries[0]);
-        if entries.len() > 1 {
-            eprintln!("[HISTORY] Second entry: {:?}", entries[1]);
         }
     }
 

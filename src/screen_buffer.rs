@@ -162,28 +162,272 @@ impl ScreenBuffer {
         // Create new buffer
         let mut new_cells = vec![vec![Cell::default(); width]; height];
 
-        // Simple copy of content from old buffer to new buffer
-        // This handles both width increase and decrease
-        let copy_height = old_height.min(height);
-        let copy_width = old_width.min(width);
-        for (y, row) in new_cells.iter_mut().enumerate().take(copy_height) {
-            if y < self.cells.len() {
-                for x in 0..copy_width {
-                    if x < self.cells[y].len() {
-                        row[x] = self.cells[y][x].clone();
+        // Check if we need to rewrap content due to width change
+        let needs_rewrap = old_width != width && width < old_width;
+
+        // If width decreased, rewrap all content before handling height changes
+        let (working_cells, rewrap_cursor_x, rewrap_cursor_y) = if needs_rewrap {
+            self.rewrap_content(width, old_height)
+        } else {
+            (self.cells.clone(), old_cursor_x, old_cursor_y)
+        };
+
+        // Update old_height and cursor position if rewrapping changed them
+        let old_height = working_cells.len();
+
+        // Decide whether to use rewrapped cursor position or simple clamping
+        // If buffer has minimal content, use clamping to avoid cursor jumping to (0,0)
+        let has_meaningful_content = if needs_rewrap {
+            // Count non-space characters in working cells
+            let mut non_space_count = 0;
+            let mut total_cells = 0;
+            for row in &working_cells {
+                for cell in row {
+                    total_cells += 1;
+                    if cell.ch != ' ' {
+                        non_space_count += 1;
                     }
                 }
             }
+            // Consider it meaningful if >5% of cells have content
+            non_space_count > (total_cells / 20)
+        } else {
+            true
+        };
+
+        let old_cursor_x = if has_meaningful_content {
+            rewrap_cursor_x
+        } else {
+            old_cursor_x.min(width.saturating_sub(1))
+        };
+        let old_cursor_y = if has_meaningful_content {
+            rewrap_cursor_y
+        } else {
+            old_cursor_y.min(height.saturating_sub(1))
+        };
+
+        // Handle height changes (or if rewrapping created more lines than fit)
+        if old_height > height {
+            // Terminal is getting shorter - need to decide which content to keep visible
+            let lines_to_remove = old_height - height;
+
+            // Strategy: Keep cursor visible and preserve content around it
+            // After rewrapping, cursor position tells us what to keep visible
+            // If cursor is in the bottom part, keep bottom content (recent output)
+            // If cursor is in the top part, keep top content
+            let cursor_in_bottom_half = old_cursor_y >= old_height / 2;
+
+            let lines_to_scrollback = if cursor_in_bottom_half || needs_rewrap {
+                // If rewrapping created more lines, OR cursor in bottom half -
+                // keep bottom content, move top to scrollback
+                lines_to_remove
+            } else {
+                // Cursor in top half and no rewrap - keep top content
+                // Don't move anything to scrollback in this case
+                0
+            };
+
+            // Save lines to scrollback if we're keeping bottom content
+            if lines_to_scrollback > 0 && self.scrollback_limit > 0 {
+                for i in 0..lines_to_scrollback {
+                    if i < working_cells.len() {
+                        self.scrollback_buffer.push(working_cells[i].clone());
+                    }
+                }
+
+                // Trim scrollback buffer if it exceeds the limit
+                if self.scrollback_buffer.len() > self.scrollback_limit {
+                    let excess = self.scrollback_buffer.len() - self.scrollback_limit;
+                    self.scrollback_buffer.drain(0..excess);
+                }
+
+                eprintln!("[SCREEN_BUFFER] Moved {} lines to scrollback (cursor in bottom half)", lines_to_scrollback);
+            }
+
+            // Copy content to new buffer
+            if lines_to_scrollback > 0 {
+                // Keep bottom content - copy from (lines_to_scrollback) onwards
+                for (new_y, old_y) in (lines_to_scrollback..old_height).enumerate() {
+                    if old_y < working_cells.len() && new_y < height {
+                        for x in 0..width {
+                            if x < working_cells[old_y].len() {
+                                new_cells[new_y][x] = working_cells[old_y][x].clone();
+                            }
+                        }
+                    }
+                }
+
+                // Adjust cursor position
+                if old_cursor_y >= lines_to_scrollback {
+                    self.cursor_y = old_cursor_y - lines_to_scrollback;
+                } else {
+                    self.cursor_y = 0;
+                }
+            } else {
+                // Keep top content - copy what fits
+                for y in 0..height.min(old_height) {
+                    if y < working_cells.len() {
+                        for x in 0..width {
+                            if x < working_cells[y].len() {
+                                new_cells[y][x] = working_cells[y][x].clone();
+                            }
+                        }
+                    }
+                }
+
+                // Keep cursor at same position
+                self.cursor_y = old_cursor_y;
+            }
+        } else {
+            // Terminal is same size or growing - simple copy from working_cells
+            let copy_height = old_height.min(height);
+            for (y, row) in new_cells.iter_mut().enumerate().take(copy_height) {
+                if y < working_cells.len() {
+                    for x in 0..width {
+                        if x < working_cells[y].len() {
+                            row[x] = working_cells[y][x].clone();
+                        }
+                    }
+                }
+            }
+
+            self.cursor_y = old_cursor_y;
         }
 
-        // Keep cursor in bounds
-        self.cursor_x = self.cursor_x.min(width.saturating_sub(1));
+        // Keep cursor in bounds (use updated position from rewrap if it happened)
+        self.cursor_x = old_cursor_x.min(width.saturating_sub(1));
         self.cursor_y = self.cursor_y.min(height.saturating_sub(1));
 
         self.cells = new_cells;
         self.width = width;
         self.height = height;
         self.dirty = true;
+    }
+
+    /// Rewrap content to fit a new width, preserving all text
+    /// Returns (rewrapped_lines, new_cursor_x, new_cursor_y)
+    fn rewrap_content(&self, new_width: usize, _old_height: usize) -> (Vec<Vec<Cell>>, usize, usize) {
+        eprintln!("[SCREEN_BUFFER] Rewrapping content to width {}", new_width);
+
+        // Collect all text content from all lines, trimming trailing spaces
+        // Also track the cursor position in the flattened text
+        let mut all_text: Vec<(char, Color, Color)> = Vec::new();
+        let mut cursor_char_index: Option<usize> = None;
+        let mut current_char_index = 0;
+
+        for (row_idx, row) in self.cells.iter().enumerate() {
+            // Find the last non-space character in this row
+            let mut last_content_idx = 0;
+            for (i, cell) in row.iter().enumerate() {
+                if cell.ch != ' ' || cell.extended.is_some() {
+                    last_content_idx = i + 1;
+                }
+            }
+
+            // Collect content up to last non-space character
+            for i in 0..last_content_idx {
+                if i < row.len() {
+                    let cell = &row[i];
+
+                    // Track cursor position in flattened text
+                    if row_idx == self.cursor_y && i == self.cursor_x {
+                        cursor_char_index = Some(current_char_index);
+                    }
+
+                    all_text.push((cell.ch, cell.fg_color, cell.bg_color));
+                    current_char_index += 1;
+
+                    // Handle extended graphemes
+                    if let Some(ref ext) = cell.extended {
+                        for ch in ext.chars() {
+                            all_text.push((ch, cell.fg_color, cell.bg_color));
+                            current_char_index += 1;
+                        }
+                    }
+                }
+            }
+
+            // If cursor is on this line but past the content (in trailing spaces),
+            // mark it at the end of the line's content
+            if row_idx == self.cursor_y && self.cursor_x >= last_content_idx && cursor_char_index.is_none() {
+                cursor_char_index = Some(current_char_index);
+            }
+
+            // Add a newline marker to preserve line breaks
+            // (represented as space with special flag - we'll handle this during rewrap)
+            if last_content_idx > 0 {
+                all_text.push(('\n', Color::default(), Color::default()));
+                current_char_index += 1;
+            }
+        }
+
+        // If cursor wasn't found (e.g., on empty line), set it to end
+        let cursor_char_index = cursor_char_index.unwrap_or(current_char_index);
+
+        // Now rewrap the text to fit new_width, tracking cursor position
+        let mut new_rows: Vec<Vec<Cell>> = Vec::new();
+        let mut current_row = vec![Cell::default(); new_width];
+        let mut x = 0;
+        let mut char_index = 0;
+        let mut new_cursor_x = 0;
+        let mut new_cursor_y = 0;
+        let mut cursor_found = false;
+
+        for (ch, fg, bg) in all_text {
+            // Check if this is where the cursor should be
+            if !cursor_found && char_index == cursor_char_index {
+                new_cursor_x = x;
+                new_cursor_y = new_rows.len();
+                cursor_found = true;
+            }
+
+            char_index += 1;
+            if ch == '\n' {
+                // Line break - finish current row and start new one
+                if x > 0 || new_rows.is_empty() {
+                    new_rows.push(current_row);
+                    current_row = vec![Cell::default(); new_width];
+                    x = 0;
+                }
+                continue;
+            }
+
+            // Check if we need to wrap to next line
+            if x >= new_width {
+                new_rows.push(current_row);
+                current_row = vec![Cell::default(); new_width];
+                x = 0;
+            }
+
+            // Add character to current row
+            current_row[x] = Cell {
+                ch,
+                fg_color: fg,
+                bg_color: bg,
+                extended: None,
+                width: 1, // Default to 1 for normal characters
+            };
+            x += 1;
+        }
+
+        // Add the last row if it has content
+        if x > 0 || new_rows.is_empty() {
+            new_rows.push(current_row);
+        }
+
+        // If cursor wasn't placed yet (was at or after end), place it at the end
+        if !cursor_found {
+            new_cursor_x = x;
+            new_cursor_y = new_rows.len().saturating_sub(1);
+        }
+
+        eprintln!("[SCREEN_BUFFER] Rewrapped {} old lines into {} new lines", self.cells.len(), new_rows.len());
+        eprintln!(
+            "[SCREEN_BUFFER] Cursor position: ({}, {}) -> ({}, {})",
+            self.cursor_x, self.cursor_y, new_cursor_x, new_cursor_y
+        );
+
+        (new_rows, new_cursor_x, new_cursor_y)
     }
 
     /// Put a grapheme cluster (potentially multi-character emoji with modifiers)
@@ -961,6 +1205,216 @@ mod tests {
     }
 
     #[test]
+    fn test_resize_height_decrease_preserves_recent_content() {
+        // Test that when terminal gets shorter, recent content stays visible
+        // and older content moves to scrollback
+        let mut buffer = ScreenBuffer::new_with_scrollback(80, 20, 1000);
+
+        // Fill the buffer with identifiable content (20 lines)
+        for y in 0..20 {
+            buffer.move_cursor_to(0, y);
+            // Put line number as content
+            let line_str = format!("LINE_{:02}", y);
+            for ch in line_str.chars() {
+                buffer.put_grapheme(&ch.to_string());
+            }
+        }
+
+        // Verify all lines are present before resize
+        for y in 0..20 {
+            if let Some(cell) = buffer.get_cell(0, y) {
+                assert_eq!(cell.ch, 'L', "Line {} should start with 'L'", y);
+            }
+        }
+
+        // Resize to half the height (20 -> 10)
+        buffer.resize(80, 10);
+
+        // Check that scrollback has the top 10 lines
+        let scrollback = buffer.get_scrollback_buffer();
+        assert_eq!(scrollback.len(), 10, "Should have 10 lines in scrollback");
+
+        // Verify scrollback contains the old top lines (LINE_00 through LINE_09)
+        for (i, row) in scrollback.iter().enumerate().take(10) {
+            if row.len() > 0 {
+                assert_eq!(row[0].ch, 'L', "Scrollback line {} should start with 'L'", i);
+            }
+        }
+
+        // Check that visible buffer has the bottom 10 lines (LINE_10 through LINE_19)
+        assert_eq!(buffer.height(), 10, "New height should be 10");
+        for y in 0..10 {
+            if let Some(cell) = buffer.get_cell(0, y) {
+                assert_eq!(cell.ch, 'L', "Visible line {} should start with 'L'", y);
+                // Line 0 in new buffer should be LINE_10 from old buffer
+                // The key point is that bottom lines are preserved
+            }
+        }
+
+        // Verify cursor was adjusted correctly
+        assert!(buffer.cursor_y < 10, "Cursor Y should be within new height");
+    }
+
+    #[test]
+    fn test_resize_width_decrease_rewraps_content() {
+        // Test that when width decreases, content is rewrapped to preserve text
+        let mut buffer = ScreenBuffer::new_with_scrollback(80, 10, 1000);
+
+        // Fill first line with a long string of identifiable characters
+        buffer.move_cursor_to(0, 0);
+        let long_line = "AAAA BBBB CCCC DDDD EEEE FFFF GGGG HHHH IIII JJJJ KKKK LLLL MMMM NNNN OOOO PPPP";
+        for ch in long_line.chars() {
+            buffer.put_grapheme(&ch.to_string());
+        }
+
+        // Add a second line
+        buffer.move_cursor_to(0, 1);
+        let line2 = "LINE2_START 1111 2222 3333 4444 5555 6666 7777 8888 9999 AAAA BBBB CCCC DDDD";
+        for ch in line2.chars() {
+            buffer.put_grapheme(&ch.to_string());
+        }
+
+        // Verify content is there
+        let cell_a = buffer.get_cell(0, 0).unwrap();
+        assert_eq!(cell_a.ch, 'A');
+        let cell_l = buffer.get_cell(0, 1).unwrap();
+        assert_eq!(cell_l.ch, 'L');
+
+        // Resize to half width (80 -> 40) - should trigger rewrapping
+        buffer.resize(40, 10);
+
+        // Check that buffer was resized
+        assert_eq!(buffer.width(), 40);
+        assert_eq!(buffer.height(), 10);
+
+        // After rewrap, we should have more lines with the content spread across them
+        // The long line should now be wrapped into multiple lines
+        // Verify that key characters are still present somewhere in the buffer
+        let mut found_a = false;
+        let mut found_o = false;
+        let mut found_line2_start = false;
+
+        for y in 0..buffer.height() {
+            for x in 0..buffer.width() {
+                if let Some(cell) = buffer.get_cell(x, y) {
+                    if cell.ch == 'A' && x == 0 {
+                        found_a = true;
+                    }
+                    if cell.ch == 'O' {
+                        found_o = true;
+                    }
+                    if cell.ch == 'L' && x == 0 {
+                        found_line2_start = true;
+                    }
+                }
+            }
+        }
+
+        assert!(found_a, "First character 'A' should still be present");
+        assert!(found_o, "Character 'O' from later in line should be present after rewrap");
+        assert!(found_line2_start, "Second line should still be present after rewrap");
+    }
+
+    #[test]
+    fn test_resize_width_decrease_with_scrollback_and_cursor() {
+        // Test that when rewrapping creates more lines than fit, excess goes to scrollback
+        // and cursor position is correctly tracked
+        let mut buffer = ScreenBuffer::new_with_scrollback(80, 5, 1000);
+
+        // Fill buffer with multiple long lines (more than will fit after rewrap)
+        for i in 0..5 {
+            buffer.move_cursor_to(0, i);
+            // Each line is ~80 characters, will become ~4 lines at width 20
+            let line = format!("LINE{}_AAAA_BBBB_CCCC_DDDD_EEEE_FFFF_GGGG_HHHH_IIII_JJJJ_KKKK_LLLL_MMMM_NNNN", i);
+            for ch in line.chars() {
+                buffer.put_grapheme(&ch.to_string());
+            }
+        }
+
+        // Put cursor at end of last line (bottom of buffer)
+        let initial_cursor_y = buffer.cursor_y;
+        assert_eq!(initial_cursor_y, 4, "Cursor should be at last line before resize");
+
+        // Resize to much smaller width (80 -> 20)
+        // 5 lines of ~80 chars each = ~20 lines at width 20
+        // But we only have height 5, so 15 lines should go to scrollback
+        buffer.resize(20, 5);
+
+        // Verify dimensions
+        assert_eq!(buffer.width(), 20);
+        assert_eq!(buffer.height(), 5);
+
+        // Verify that scrollback has content
+        let scrollback = buffer.get_scrollback_buffer();
+        assert!(scrollback.len() > 0, "Scrollback should contain excess lines from rewrapping");
+        eprintln!("Scrollback has {} lines", scrollback.len());
+
+        // Verify cursor is still in bounds
+        assert!(
+            buffer.cursor_x < buffer.width(),
+            "Cursor X should be in bounds: {} < {}",
+            buffer.cursor_x,
+            buffer.width()
+        );
+        assert!(
+            buffer.cursor_y < buffer.height(),
+            "Cursor Y should be in bounds: {} < {}",
+            buffer.cursor_y,
+            buffer.height()
+        );
+
+        // Verify that recent content (where cursor was) is still visible
+        // Look for LINE4 in visible buffer
+        let mut found_line4 = false;
+        for y in 0..buffer.height() {
+            if let Some(cell) = buffer.get_cell(0, y) {
+                if cell.ch == 'L' {
+                    // Check if this starts with "LINE4"
+                    let mut matches = true;
+                    for (i, expected_ch) in "LINE4".chars().enumerate() {
+                        if let Some(c) = buffer.get_cell(i, y) {
+                            if c.ch != expected_ch {
+                                matches = false;
+                                break;
+                            }
+                        } else {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if matches {
+                        found_line4 = true;
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(found_line4, "Most recent content (LINE4) should still be visible after rewrap");
+
+        // Verify that older content is in scrollback
+        let mut found_line0_in_scrollback = false;
+        for row in scrollback.iter() {
+            if row.len() > 0 && row[0].ch == 'L' {
+                // Check if this starts with "LINE0"
+                let mut matches = true;
+                for (i, expected_ch) in "LINE0".chars().enumerate() {
+                    if i < row.len() && row[i].ch == expected_ch {
+                        continue;
+                    } else {
+                        matches = false;
+                        break;
+                    }
+                }
+                if matches {
+                    found_line0_in_scrollback = true;
+                    break;
+                }
+            }
+        }
+        assert!(found_line0_in_scrollback, "Older content (LINE0) should be in scrollback");
+    }
+
+    #[test]
     fn test_resize_with_very_small_font() {
         // Simulate what happens when font is too large for window
         // This would result in cols=0 or rows=0 without minimum enforcement
@@ -974,10 +1428,8 @@ mod tests {
             }
         }
 
-        // Resize to minimum (simulating large font / small window)
-        buffer.resize(2, 2);
-
-        // Should not panic and should have minimum size
+        // Try to resize to very small - should be clamped to 2x2
+        buffer.resize(0, 0);
         assert_eq!(buffer.width(), 2);
         assert_eq!(buffer.height(), 2);
 

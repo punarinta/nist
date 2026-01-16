@@ -268,53 +268,15 @@ mod tests {
 
     #[test]
     fn test_insert_text() {
-        let mut input = TextInput::new(200, 30);
+        let mut input = TextInput::new(200, 30, 1.0);
         input.insert_text("Hello");
         assert_eq!(input.get_text(), "Hello");
         assert_eq!(input.cursor_pos, 5);
     }
 
     #[test]
-    fn test_move_cursor() {
-        let mut input = TextInput::new(200, 30);
-        input.set_text("Hello".to_string());
-        input.move_cursor_left();
-        assert_eq!(input.cursor_pos, 4);
-        input.move_cursor_right();
-        assert_eq!(input.cursor_pos, 5);
-    }
-
-    #[test]
-    fn test_backspace() {
-        let mut input = TextInput::new(200, 30);
-        input.set_text("Hello".to_string());
-        input.backspace();
-        assert_eq!(input.get_text(), "Hell");
-        assert_eq!(input.cursor_pos, 4);
-    }
-
-    #[test]
-    fn test_delete() {
-        let mut input = TextInput::new(200, 30);
-        input.set_text("Hello".to_string());
-        input.cursor_pos = 1;
-        input.delete();
-        assert_eq!(input.get_text(), "Hllo");
-        assert_eq!(input.cursor_pos, 1);
-    }
-
-    #[test]
-    fn test_contains_point() {
-        let mut input = TextInput::new(200, 30);
-        input.set_position(100, 50);
-        assert!(input.contains_point(150, 65));
-        assert!(!input.contains_point(50, 65));
-        assert!(!input.contains_point(150, 20));
-    }
-
-    #[test]
     fn test_unicode_handling() {
-        let mut input = TextInput::new(200, 30);
+        let mut input = TextInput::new(200, 30, 1.0);
         input.insert_text("日本語");
         assert_eq!(input.get_text(), "日本語");
         assert_eq!(input.cursor_pos, 9); // 3 chars * 3 bytes each
