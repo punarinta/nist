@@ -2,6 +2,38 @@ use crate::ansi::{DEFAULT_BG_COLOR, DEFAULT_FG_COLOR};
 use sdl3::pixels::Color;
 use unicode_width::UnicodeWidthChar;
 
+/// Cursor style as set by DECSCUSR escape sequences
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CursorStyle {
+    BlinkingBlock,
+    SteadyBlock,
+    BlinkingUnderline,
+    SteadyUnderline,
+    BlinkingBar,
+    SteadyBar,
+}
+
+impl Default for CursorStyle {
+    fn default() -> Self {
+        CursorStyle::BlinkingBlock
+    }
+}
+
+impl CursorStyle {
+    /// Convert from settings string ("pipe", "block", etc.) to CursorStyle
+    pub fn from_settings_string(s: &str) -> Self {
+        match s {
+            "pipe" | "bar" => CursorStyle::SteadyBar,
+            "underline" => CursorStyle::SteadyUnderline,
+            "block" => CursorStyle::SteadyBlock,
+            "blinking_block" => CursorStyle::BlinkingBlock,
+            "blinking_bar" | "blinking_pipe" => CursorStyle::BlinkingBar,
+            "blinking_underline" => CursorStyle::BlinkingUnderline,
+            _ => CursorStyle::SteadyBar, // Default to pipe/bar for backwards compatibility
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Cell {
     pub ch: char,                   // Primary character (4 bytes)
@@ -172,10 +204,12 @@ pub struct ScreenBuffer {
     origin_mode: bool,
     // Pending wrap state - cursor is past last column, wrap on next character
     pub(crate) pending_wrap: bool,
+    // Cursor style (DECSCUSR)
+    pub cursor_style: CursorStyle,
 }
 
 impl ScreenBuffer {
-    pub fn new_with_scrollback(width: usize, height: usize, scrollback_limit: usize) -> Self {
+    pub fn new_with_scrollback(width: usize, height: usize, scrollback_limit: usize, cursor_style: CursorStyle) -> Self {
         Self {
             cells: vec![vec![Cell::default(); width]; height],
             width,
@@ -193,6 +227,7 @@ impl ScreenBuffer {
             scroll_offset: 0,
             origin_mode: false,
             pending_wrap: false,
+            cursor_style,
         }
     }
 
@@ -1205,7 +1240,7 @@ mod tests {
     #[test]
     fn test_resize_minimum_size_enforcement() {
         // Test that resize enforces minimum size of 2x2
-        let mut buffer = ScreenBuffer::new_with_scrollback(10, 10, 1000);
+        let mut buffer = ScreenBuffer::new_with_scrollback(10, 10, 1000, CursorStyle::default());
 
         // Try to resize to 0x0 - should be clamped to 2x2
         buffer.resize(0, 0);
@@ -1221,7 +1256,7 @@ mod tests {
     #[test]
     fn test_resize_preserves_content() {
         // Test that resize preserves content when growing/shrinking
-        let mut buffer = ScreenBuffer::new_with_scrollback(5, 5, 1000);
+        let mut buffer = ScreenBuffer::new_with_scrollback(10, 10, 1000, CursorStyle::default());
 
         // Put some content in the buffer
         buffer.move_cursor_to(0, 0);
@@ -1264,7 +1299,7 @@ mod tests {
     fn test_resize_height_decrease_preserves_recent_content() {
         // Test that when terminal gets shorter, recent content stays visible
         // and older content moves to scrollback
-        let mut buffer = ScreenBuffer::new_with_scrollback(80, 20, 1000);
+        let mut buffer = ScreenBuffer::new_with_scrollback(80, 20, 1000, CursorStyle::default());
 
         // Fill the buffer with identifiable content (20 lines)
         for y in 0..20 {
@@ -1314,7 +1349,7 @@ mod tests {
     #[test]
     fn test_resize_width_decrease_rewraps_content() {
         // Test that when width decreases, content is rewrapped to preserve text
-        let mut buffer = ScreenBuffer::new_with_scrollback(80, 10, 1000);
+        let mut buffer = ScreenBuffer::new_with_scrollback(80, 24, 100, CursorStyle::default());
 
         // Fill first line with a long string of identifiable characters
         buffer.move_cursor_to(0, 0);
@@ -1375,7 +1410,7 @@ mod tests {
     fn test_resize_width_decrease_with_scrollback_and_cursor() {
         // Test that when rewrapping creates more lines than fit, excess goes to scrollback
         // and cursor position is correctly tracked
-        let mut buffer = ScreenBuffer::new_with_scrollback(80, 5, 1000);
+        let mut buffer = ScreenBuffer::new_with_scrollback(80, 24, 5, CursorStyle::default());
 
         // Fill buffer with multiple long lines (more than will fit after rewrap)
         for i in 0..5 {
@@ -1474,7 +1509,7 @@ mod tests {
     fn test_resize_with_very_small_font() {
         // Simulate what happens when font is too large for window
         // This would result in cols=0 or rows=0 without minimum enforcement
-        let mut buffer = ScreenBuffer::new_with_scrollback(80, 24, 1000);
+        let mut buffer = ScreenBuffer::new_with_scrollback(80, 24, 1000, CursorStyle::default());
 
         // Fill with some content
         for y in 0..24 {
@@ -1499,7 +1534,7 @@ mod tests {
 
     #[test]
     fn test_cursor_stays_in_bounds_after_resize() {
-        let mut buffer = ScreenBuffer::new_with_scrollback(80, 24, 1000);
+        let mut buffer = ScreenBuffer::new_with_scrollback(80, 24, 100, CursorStyle::default());
 
         // Move cursor to bottom right
         buffer.move_cursor_to(79, 23);

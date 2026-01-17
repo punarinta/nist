@@ -101,6 +101,7 @@ pub struct ScreenBufferSnapshot {
     pub cells: Vec<Vec<CellSnapshot>>,
     pub scroll_offset: usize,
     pub scrollback: Vec<Vec<CellSnapshot>>,
+    pub cursor_style: String,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -239,6 +240,7 @@ impl ScreenBufferSnapshot {
             cells,
             scroll_offset: sb.scroll_offset,
             scrollback,
+            cursor_style: format!("{:?}", sb.cursor_style),
         }
     }
 }
@@ -473,6 +475,7 @@ impl TestServer {
                     shell_config,
                     DEFAULT_SCROLLBACK_LINES,
                     start_dir,
+                    crate::screen_buffer::CursorStyle::default(),
                 )));
 
                 // Determine tab name
@@ -827,6 +830,7 @@ impl TestServer {
                             shell_config,
                             DEFAULT_SCROLLBACK_LINES,
                             start_dir,
+                            crate::screen_buffer::CursorStyle::default(),
                         )));
 
                         pane_layout.split_active_pane(split_dir, new_terminal.clone());

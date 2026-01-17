@@ -163,7 +163,8 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
     let terminal_width = (drawable_width as f32 / char_dims.width).floor() as u32;
 
     // Initialize tab bar GUI with state loading
-    let tab_bar_gui = initialize_tab_bar_gui(terminal_width, terminal_height, shell_config, default_scrollback_lines);
+    let cursor_style = crate::screen_buffer::CursorStyle::from_settings_string(&settings.terminal.cursor);
+    let tab_bar_gui = initialize_tab_bar_gui(terminal_width, terminal_height, shell_config, default_scrollback_lines, cursor_style);
 
     // Set context menu images
     load_and_set_context_menu_images(&tab_bar_gui);
@@ -506,6 +507,7 @@ fn initialize_tab_bar_gui(
     terminal_height: u32,
     shell_config: crate::terminal_config::ShellConfig,
     default_scrollback_lines: usize,
+    cursor_style: crate::screen_buffer::CursorStyle,
 ) -> Arc<Mutex<TabBarGui>> {
     let shell_config_clone = shell_config.clone();
     let terminal_factory = move |start_dir: Option<std::path::PathBuf>| {
@@ -515,6 +517,7 @@ fn initialize_tab_bar_gui(
             shell_config_clone.clone(),
             default_scrollback_lines,
             start_dir,
+            cursor_style,
         )))
     };
 
@@ -532,6 +535,7 @@ fn initialize_tab_bar_gui(
                 shell_config,
                 default_scrollback_lines,
                 std::env::current_dir().ok(),
+                cursor_style,
             )));
             tab_bar_new.add_tab(first_terminal, "Tab 1".to_string());
             Arc::new(Mutex::new(tab_bar_new))

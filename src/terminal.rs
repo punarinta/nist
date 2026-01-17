@@ -32,6 +32,8 @@ pub(crate) struct Terminal {
     pub(crate) mouse_sgr_mode: Arc<Mutex<bool>>,
     pub(crate) selection: Arc<Mutex<Option<Selection>>>,
     pub(crate) bracketed_paste_mode: Arc<Mutex<bool>>,
+    pub(crate) cursor_visible: Arc<Mutex<bool>>,
+    pub(crate) default_cursor_style: Arc<Mutex<crate::screen_buffer::CursorStyle>>, // User's configured cursor style
     // History tracking for state persistence
     pub(crate) command_history: Arc<Mutex<Vec<String>>>, // Last MAX_COMMAND_HISTORY commands
     pub(crate) output_history: Arc<Mutex<Vec<String>>>,  // Last MAX_OUTPUT_HISTORY output lines
@@ -111,6 +113,7 @@ impl Terminal {
         shell_config: ShellConfig,
         scrollback_limit: usize,
         start_directory: Option<std::path::PathBuf>,
+        cursor_style: crate::screen_buffer::CursorStyle,
     ) -> Self {
         let pty_system = native_pty_system();
 
@@ -186,6 +189,7 @@ impl Terminal {
             initial_width as usize,
             initial_height as usize,
             scrollback_limit,
+            cursor_style,
         )));
 
         let screen_buffer_clone = Arc::clone(&screen_buffer);
@@ -197,11 +201,13 @@ impl Terminal {
         let mouse_tracking_mode = Arc::new(Mutex::new(MouseTrackingMode::Disabled));
         let mouse_sgr_mode = Arc::new(Mutex::new(false));
         let bracketed_paste_mode = Arc::new(Mutex::new(false));
+        let cursor_visible = Arc::new(Mutex::new(true));
 
         let application_cursor_keys_clone = Arc::clone(&application_cursor_keys);
         let mouse_tracking_mode_clone = Arc::clone(&mouse_tracking_mode);
         let mouse_sgr_mode_clone = Arc::clone(&mouse_sgr_mode);
         let bracketed_paste_mode_clone = Arc::clone(&bracketed_paste_mode);
+        let cursor_visible_clone = Arc::clone(&cursor_visible);
 
         // Create shared state for command exit codes
         let last_command_exit_code = Arc::new(Mutex::new(None));
@@ -214,6 +220,10 @@ impl Terminal {
         let writer = pty_pair.master.take_writer().expect("Failed to get PTY writer");
         let writer = Arc::new(Mutex::new(writer));
         let thread_writer = Arc::clone(&writer);
+
+        // Clone default cursor style for the output processing thread
+        let default_cursor_style = Arc::new(Mutex::new(cursor_style));
+        let default_cursor_style_clone = Arc::clone(&default_cursor_style);
 
         // Store the master separately
         let master = pty_pair.master;
@@ -241,6 +251,7 @@ impl Terminal {
                             &mouse_tracking_mode_clone,
                             &mouse_sgr_mode_clone,
                             &bracketed_paste_mode_clone,
+                            &cursor_visible_clone,
                         );
 
                         // Process the output and get any incomplete sequence (pass writer for DSR responses)
@@ -250,6 +261,7 @@ impl Terminal {
                             &saved_screen_buffer_clone,
                             &thread_writer,
                             &last_command_exit_code_clone,
+                            &default_cursor_style_clone,
                         );
 
                         if !incomplete_sequence.is_empty() {
@@ -286,6 +298,8 @@ impl Terminal {
             mouse_sgr_mode,
             selection: Arc::new(Mutex::new(None)),
             bracketed_paste_mode,
+            cursor_visible,
+            default_cursor_style,
             command_history: Arc::new(Mutex::new(Vec::new())),
             output_history: Arc::new(Mutex::new(Vec::new())),
             current_command: Arc::new(Mutex::new(String::new())),
@@ -736,6 +750,7 @@ impl Terminal {
         mouse_tracking_mode: &Arc<Mutex<MouseTrackingMode>>,
         mouse_sgr_mode: &Arc<Mutex<bool>>,
         bracketed_paste_mode: &Arc<Mutex<bool>>,
+        cursor_visible: &Arc<Mutex<bool>>,
     ) {
         let bytes = text.as_bytes();
         let mut i = 0;
@@ -891,6 +906,22 @@ impl Terminal {
                                     _ => {}
                                 }
                             }
+                            "25" => {
+                                // DECTCEM (cursor visibility)
+                                match command {
+                                    'h' => {
+                                        if let Ok(mut visible) = cursor_visible.try_lock() {
+                                            *visible = true;
+                                        }
+                                    }
+                                    'l' => {
+                                        if let Ok(mut visible) = cursor_visible.try_lock() {
+                                            *visible = false;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
                             "2004" => {
                                 // Bracketed paste mode
                                 match command {
@@ -978,6 +1009,7 @@ impl Terminal {
         saved_screen_buffer: &Arc<Mutex<Vec<ScreenBuffer>>>,
         writer: &Arc<Mutex<Box<dyn std::io::Write + Send>>>,
         last_command_exit_code: &Arc<Mutex<Option<i32>>>,
+        default_cursor_style: &Arc<Mutex<crate::screen_buffer::CursorStyle>>,
     ) -> String {
         let mut incomplete_sequence = String::new();
 
@@ -1062,6 +1094,11 @@ impl Terminal {
                                             eprintln!("[TERMINAL] Command exited with code: {}", exit_code);
                                             if let Ok(mut last_exit) = last_command_exit_code.lock() {
                                                 *last_exit = Some(exit_code);
+                                            }
+                                            // Reset cursor to default style when command exits
+                                            if let Ok(default_style) = default_cursor_style.lock() {
+                                                sb.cursor_style = *default_style;
+                                                eprintln!("[TERMINAL] Reset cursor to default style: {:?}", *default_style);
                                             }
                                         }
                                     }
@@ -1201,23 +1238,8 @@ impl Terminal {
                         text_buffer.push(chars.next().unwrap());
                     }
 
-                    // a bit risky heuristics
                     // Now process the buffer as grapheme clusters
                     for grapheme in text_buffer.graphemes(true) {
-                        // TUI garbage cleanup: If we're writing a shell prompt at the TOP of the screen (line 0),
-                        // it likely means a TUI app that doesn't use alternate screen buffer
-                        // just exited, leaving garbage on screen. Clear it.
-                        if sb.cursor_x == 0 && sb.cursor_y == 0 && (grapheme == "~" || grapheme == "$" || grapheme == "#" || grapheme == ">") {
-                            // Check if there's non-empty content on screen (likely TUI garbage)
-                            let has_content =
-                                (1..sb.height().min(20)).any(|y| (0..sb.width().min(80)).any(|x| sb.get_cell(x, y).map_or(false, |cell| cell.ch != ' ')));
-
-                            if has_content {
-                                // Clear the screen to remove TUI garbage
-                                sb.clear_screen();
-                            }
-                        }
-
                         sb.put_grapheme(grapheme);
                     }
                 }
@@ -1428,7 +1450,7 @@ impl Terminal {
                                 // Create a BRAND NEW empty buffer for alternate screen
                                 // This prevents any content from the main screen bleeding through
                                 let scrollback_limit = sb.scrollback_limit();
-                                *sb = ScreenBuffer::new_with_scrollback(sb.width(), sb.height(), scrollback_limit);
+                                *sb = ScreenBuffer::new_with_scrollback(sb.width(), sb.height(), scrollback_limit, sb.cursor_style);
                             } else {
                                 eprintln!("[ALTSCREEN] Switching FROM alternate screen buffer (restoring main)");
                                 // Per xterm spec, clear the alternate screen before switching back
@@ -1648,6 +1670,27 @@ impl Terminal {
             'u' => {
                 // Restore cursor position (ANSI.SYS style)
                 sb.restore_cursor();
+            }
+            'q' => {
+                // DECSCUSR (Set Cursor Style) - CSI Ps SP q
+                // The parameter Ps determines the cursor style
+                let param = if args.is_empty() || args[0].is_empty() {
+                    0
+                } else {
+                    // DECSCUSR uses a space before 'q', so trim it
+                    args[0].trim().parse::<u32>().unwrap_or(0)
+                };
+
+                use crate::screen_buffer::CursorStyle;
+                sb.cursor_style = match param {
+                    1 => CursorStyle::BlinkingBlock,
+                    2 => CursorStyle::SteadyBlock,
+                    3 => CursorStyle::BlinkingUnderline,
+                    4 => CursorStyle::SteadyUnderline,
+                    5 => CursorStyle::BlinkingBar,
+                    6 => CursorStyle::SteadyBar,
+                    _ => CursorStyle::BlinkingBlock, // 0 or unknown defaults to blinking block
+                };
             }
             _ => {
                 if debug {

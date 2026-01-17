@@ -775,12 +775,14 @@ fn main() -> Result<(), String> {
                         let term_height = ((h - tab_bar_height) as f32 / char_height).floor() as u32;
                         let term_width = (w as f32 / char_width).floor() as u32;
 
+                        let cursor_style = crate::screen_buffer::CursorStyle::from_settings_string(&settings.terminal.cursor);
                         let new_terminal = Arc::new(Mutex::new(Terminal::new_with_scrollback(
                             term_width,
                             term_height,
                             shell_config.clone(),
                             DEFAULT_SCROLLBACK_LINES,
                             std::env::current_dir().ok(),
+                            cursor_style,
                         )));
 
                         let mut gui = tab_bar_gui.lock().unwrap();
@@ -866,12 +868,14 @@ fn main() -> Result<(), String> {
                     gui.get_active_terminal().and_then(|t| t.lock().unwrap().get_cwd())
                 };
 
+                let cursor_style = crate::screen_buffer::CursorStyle::from_settings_string(&settings.terminal.cursor);
                 let new_terminal = Arc::new(Mutex::new(Terminal::new_with_scrollback(
                     term_width,
                     term_height,
                     shell_config.clone(),
                     DEFAULT_SCROLLBACK_LINES,
                     start_dir,
+                    cursor_style,
                 )));
 
                 let mut gui = tab_bar_gui.lock().unwrap();
@@ -941,12 +945,14 @@ fn main() -> Result<(), String> {
                         gui.get_active_terminal().and_then(|t| t.lock().unwrap().get_cwd())
                     };
 
+                    let cursor_style = crate::screen_buffer::CursorStyle::from_settings_string(&settings.terminal.cursor);
                     let new_terminal = Arc::new(Mutex::new(Terminal::new_with_scrollback(
                         term_width,
                         term_height,
                         shell_config.clone(),
                         DEFAULT_SCROLLBACK_LINES,
                         start_dir,
+                        cursor_style,
                     )));
 
                     let mut gui = tab_bar_gui.lock().unwrap();

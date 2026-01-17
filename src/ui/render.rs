@@ -228,9 +228,28 @@ fn render_pane<'a, T>(
     // Get selection for highlighting (cached once per frame to avoid locking in cell loop)
     let selection_snapshot = *t.selection.lock().unwrap();
 
+    // Check if we should show cursor (for skipping cursor cell in main loop)
+    let terminal_cursor_visible_check = t.cursor_visible.lock().unwrap();
+    let terminal_cursor_vis = *terminal_cursor_visible_check;
+    let is_at_bottom = sb.is_at_bottom();
+    let should_show_cursor_check = terminal_cursor_vis && cursor_visible && is_active && is_at_bottom;
+    drop(terminal_cursor_visible_check);
+
+    eprintln!(
+        "[CURSOR_CHECK] terminal_vis={}, cursor_vis={}, is_active={}, at_bottom={}, should_show={}, cursor_pos=({},{}), cursor_style={:?}",
+        terminal_cursor_vis, cursor_visible, is_active, is_at_bottom, should_show_cursor_check, sb.cursor_x, sb.cursor_y, sb.cursor_style
+    );
+
     // Render cells that fit in both the rect and the screen buffer
     for row in 0..rows {
         for col in 0..cols {
+            // Skip rendering cursor position if we'll render it as a block cursor later
+            use crate::screen_buffer::CursorStyle;
+            let is_bar_cursor = matches!(sb.cursor_style, CursorStyle::BlinkingBar | CursorStyle::SteadyBar);
+            if should_show_cursor_check && !is_bar_cursor && col == sb.cursor_x && row == sb.cursor_y {
+                continue;
+            }
+
             if let Some(cell) = sb.get_cell_with_scrollback(col, row) {
                 // Skip continuation cells (used by double-width emojis)
                 if cell.width == 0 || cell.ch == '\0' {
@@ -295,16 +314,95 @@ fn render_pane<'a, T>(
         }
     }
 
-    // Render cursor if active pane and visible
-    if is_active && cursor_visible && sb.is_at_bottom() {
+    // Render cursor if active pane, visible (blink state), and enabled by terminal (ANSI code)
+    eprintln!("[CURSOR_RENDER] About to check should_show_cursor_check={}", should_show_cursor_check);
+    if should_show_cursor_check {
+        eprintln!("[CURSOR_RENDER] Inside cursor rendering block");
         let cursor_x = rect.x() + pane_padding as i32 + (sb.cursor_x as f32 * char_width) as i32;
         let cursor_y = rect.y() + pane_padding as i32 + (sb.cursor_y as f32 * char_height) as i32;
-        canvas.set_draw_color(Color::RGB(200, 200, 200));
 
-        // Cursor style from settings
-        let cursor_width = if settings.terminal.cursor == "pipe" { 2 } else { char_width as u32 };
-        let cursor_rect = Rect::new(cursor_x, cursor_y, cursor_width, char_height as u32);
-        canvas.fill_rect(cursor_rect).map_err(|e| e.to_string())?;
+        // Cursor style from DECSCUSR control codes
+        use crate::screen_buffer::CursorStyle;
+        match sb.cursor_style {
+            CursorStyle::BlinkingBar | CursorStyle::SteadyBar => {
+                // Bar cursor: thin vertical line
+                canvas.set_draw_color(Color::RGB(200, 200, 200));
+                let cursor_rect = Rect::new(cursor_x, cursor_y, 2, char_height as u32);
+                canvas.fill_rect(cursor_rect).map_err(|e| e.to_string())?;
+            }
+            CursorStyle::BlinkingUnderline | CursorStyle::SteadyUnderline => {
+                // Underline cursor: horizontal line at bottom
+                canvas.set_draw_color(Color::RGB(200, 200, 200));
+                let underline_height = (char_height * 0.15).max(2.0) as u32; // 15% of char height, minimum 2px
+                let cursor_rect = Rect::new(
+                    cursor_x,
+                    cursor_y + char_height as i32 - underline_height as i32,
+                    char_width as u32,
+                    underline_height,
+                );
+                canvas.fill_rect(cursor_rect).map_err(|e| e.to_string())?;
+            }
+            CursorStyle::BlinkingBlock | CursorStyle::SteadyBlock => {
+                // Block cursor: use reverse video (invert fg/bg colors)
+                if let Some(cell) = sb.get_cell_with_scrollback(sb.cursor_x, sb.cursor_y) {
+                    // Draw background with inverted color (use foreground color, or white if fg is default)
+                    let cursor_bg = if cell.fg_color.r == 255 && cell.fg_color.g == 255 && cell.fg_color.b == 255 {
+                        Color::RGB(255, 255, 255) // Use white for cursor background
+                    } else {
+                        cell.fg_color
+                    };
+                    canvas.set_draw_color(cursor_bg);
+                    let cursor_rect = Rect::new(cursor_x, cursor_y, char_width as u32, char_height as u32);
+                    canvas.fill_rect(cursor_rect).map_err(|e| e.to_string())?;
+
+                    // Always render the character with inverted color (use background color)
+                    // If background is black/dark, render text in black so it shows on white cursor
+                    let char_str;
+                    let text = if let Some(ref extended) = cell.extended {
+                        extended.as_ref()
+                    } else {
+                        char_str = cell.ch.to_string();
+                        char_str.as_str()
+                    };
+
+                    // Use background color for text, or dark gray if bg is default black
+                    let text_color = if cell.bg_color.r == 0 && cell.bg_color.g == 0 && cell.bg_color.b == 0 {
+                        Color::RGB(50, 50, 50) // Dark gray text on white cursor background
+                    } else {
+                        cell.bg_color
+                    };
+
+                    eprintln!(
+                        "[CURSOR] Rendering cursor at ({}, {}) with char '{}' (code: {}), cursor_bg=({},{},{}), text_color=({},{},{})",
+                        sb.cursor_x, sb.cursor_y, cell.ch, cell.ch as u32, cursor_bg.r, cursor_bg.g, cursor_bg.b, text_color.r, text_color.g, text_color.b
+                    );
+
+                    render_glyph(
+                        canvas,
+                        texture_creator,
+                        font,
+                        emoji_font,
+                        unicode_fallback_font,
+                        cjk_font,
+                        glyph_cache,
+                        text,
+                        cursor_x,
+                        cursor_y,
+                        text_color.r,
+                        text_color.g,
+                        text_color.b,
+                        char_width as u32,
+                        char_height as u32,
+                        scale_factor,
+                    )?;
+                } else {
+                    // Fallback if cell doesn't exist
+                    canvas.set_draw_color(Color::RGB(200, 200, 200));
+                    let cursor_rect = Rect::new(cursor_x, cursor_y, char_width as u32, char_height as u32);
+                    canvas.fill_rect(cursor_rect).map_err(|e| e.to_string())?;
+                }
+            }
+        }
     }
 
     // Show scroll position indicator when viewing scrollback

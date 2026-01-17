@@ -46,8 +46,8 @@ Holding Ctrl key and clicking left mouse button on a terminal pane adds it to th
 
 Current platform support
 ===
-- Linux — low bugs probability
-- macOS — low bugs probability; GUI is a bit unstable, the rest is okay
-- Windows — average bugs probability due to a non-UNIX-like environment
+- Linux — no known bugs
+- macOS — bugs: mouse clicking, zsh environment
+- Windows — bugs: some fonts, multiple screen support
 
 The builds included in "releases" directory **may be slightly outdated**. If you want to get the most recent version, please build it from source. I'll add details on that later.
