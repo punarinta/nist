@@ -642,6 +642,12 @@ impl Terminal {
                 let mut line = String::new();
                 for col in line_start..=line_end {
                     if let Some(cell) = screen_buffer.get_cell_with_scrollback(col, row) {
+                        // Skip continuation cells (used for double-width characters like CJK/emoji)
+                        // These cells have width=0 and ch='\0' and should not be copied
+                        if cell.width == 0 || cell.ch == '\0' {
+                            continue;
+                        }
+
                         if let Some(ref extended) = cell.extended {
                             line.push_str(extended);
                         } else {

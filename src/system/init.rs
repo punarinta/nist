@@ -42,6 +42,8 @@ pub struct Fonts<'a> {
     pub emoji_font: sdl3::ttf::Font<'a>,
     /// Unicode fallback font for symbols
     pub unicode_fallback_font: sdl3::ttf::Font<'a>,
+    /// CJK font for Chinese, Japanese, Korean characters
+    pub cjk_font: sdl3::ttf::Font<'a>,
 }
 
 /// Character dimensions in pixels
@@ -447,6 +449,16 @@ fn load_fonts<'a>(ttf_context: &'a Sdl3TtfContext, settings: &settings::Settings
         .map_err(|e| format!("Unicode fallback font loading failed: {}", e))?;
     eprintln!("[INIT] Loaded Unicode fallback font: {} (for special symbols)", unicode_fallback_font_path);
 
+    // Load CJK font for Chinese, Japanese, Korean characters
+    let cjk_font_path = font_discovery::find_cjk_font().unwrap_or_else(|| {
+        eprintln!("[INIT] WARNING: No CJK font found, using terminal font (CJK characters may not render)");
+        font_path.clone()
+    });
+    let cjk_font = ttf_context
+        .load_font(&cjk_font_path, font_size)
+        .map_err(|e| format!("CJK font loading failed: {}", e))?;
+    eprintln!("[INIT] Loaded CJK font: {}", cjk_font_path);
+
     Ok(Fonts {
         font,
         tab_font,
@@ -455,6 +467,7 @@ fn load_fonts<'a>(ttf_context: &'a Sdl3TtfContext, settings: &settings::Settings
         context_menu_font,
         emoji_font,
         unicode_fallback_font,
+        cjk_font,
     })
 }
 

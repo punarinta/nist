@@ -106,6 +106,7 @@ pub struct ScreenBufferSnapshot {
 #[derive(Serialize, Debug, Clone)]
 pub struct CellSnapshot {
     pub ch: String,
+    pub width: u8,
     pub fg_r: u8,
     pub fg_g: u8,
     pub fg_b: u8,
@@ -171,9 +172,14 @@ impl ScreenBufferSnapshot {
                     } else {
                         cell.ch.to_string()
                     };
-                    line.push_str(&cell_text);
+                    // Skip continuation cells (width=0) when building the line string
+                    // These are the second cell of double-width characters (CJK, emojis, etc.)
+                    if cell.width > 0 {
+                        line.push_str(&cell_text);
+                    }
                     row.push(CellSnapshot {
                         ch: cell_text,
+                        width: cell.width,
                         fg_r: cell.fg_color.r,
                         fg_g: cell.fg_color.g,
                         fg_b: cell.fg_color.b,
@@ -185,6 +191,7 @@ impl ScreenBufferSnapshot {
                     line.push_str(" ");
                     row.push(CellSnapshot {
                         ch: " ".to_string(),
+                        width: 1,
                         fg_r: 255,
                         fg_g: 255,
                         fg_b: 255,
@@ -211,6 +218,7 @@ impl ScreenBufferSnapshot {
                 };
                 row.push(CellSnapshot {
                     ch: cell_text,
+                    width: cell.width,
                     fg_r: cell.fg_color.r,
                     fg_g: cell.fg_color.g,
                     fg_b: cell.fg_color.b,

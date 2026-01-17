@@ -108,6 +108,56 @@ const PREFERRED_EMOJI_FONTS: &[&str] = &[
     "Twemoji.ttf",
 ];
 
+/// List of preferred CJK (Chinese, Japanese, Korean) fonts with full Unicode coverage
+const PREFERRED_CJK_FONTS: &[&str] = &[
+    // Noto CJK fonts - excellent Unicode coverage
+    "NotoSansCJK-Regular.ttc",
+    "NotoSansCJKsc-Regular.otf",
+    "NotoSansCJKtc-Regular.otf",
+    "NotoSansCJKjp-Regular.otf",
+    "NotoSansCJKkr-Regular.otf",
+    "NotoSerifCJK-Regular.ttc",
+    "NotoSerifCJKsc-Regular.otf",
+    "NotoSerifCJKtc-Regular.otf",
+    "NotoSerifCJKjp-Regular.otf",
+    "NotoSerifCJKkr-Regular.otf",
+    // Source Han Sans/Serif - Adobe's CJK fonts
+    "SourceHanSansCN-Regular.otf",
+    "SourceHanSansSC-Regular.otf",
+    "SourceHanSansTC-Regular.otf",
+    "SourceHanSansJP-Regular.otf",
+    "SourceHanSansKR-Regular.otf",
+    "SourceHanSerifCN-Regular.otf",
+    "SourceHanSerifSC-Regular.otf",
+    "SourceHanSerifTC-Regular.otf",
+    "SourceHanSerifJP-Regular.otf",
+    "SourceHanSerifKR-Regular.otf",
+    // Microsoft YaHei - Windows Chinese font
+    "msyh.ttc",
+    "msyh.ttf",
+    "msyhbd.ttf",
+    // SimSun, SimHei - older Windows Chinese fonts
+    "simsun.ttc",
+    "simhei.ttf",
+    // Hiragino - macOS Japanese font
+    "HiraginoSans-W3.otf",
+    "HiraginoSansGB-W3.otf",
+    "HiraginoSansCNS-W3.otf",
+    // PingFang - modern macOS Chinese font
+    "PingFang.ttc",
+    "PingFangSC-Regular.otf",
+    "PingFangTC-Regular.otf",
+    // WenQuanYi - popular Linux CJK fonts
+    "wqy-microhei.ttc",
+    "wqy-zenhei.ttc",
+    // Droid Sans Fallback - Android fallback with CJK
+    "DroidSansFallback.ttf",
+    "DroidSansFallbackFull.ttf",
+    // AR PL UMing/UKai - open source CJK fonts
+    "uming.ttc",
+    "ukai.ttc",
+];
+
 /// Common font directories on Windows, Linux, and macOS systems
 const FONT_DIRECTORIES: &[&str] = &[
     // Windows paths
@@ -246,6 +296,38 @@ pub fn find_emoji_font() -> Option<String> {
     }
 
     eprintln!("[FONT] WARNING: No color emoji fonts found in system directories");
+    None
+}
+
+/// Searches for the best available CJK (Chinese, Japanese, Korean) font.
+///
+/// Searches through system font directories for fonts that support
+/// CJK characters. Returns the first match found, or None if no suitable
+/// font is available.
+///
+/// # Returns
+///
+/// The full path to the best available CJK font file, or None if no suitable font is found
+pub fn find_cjk_font() -> Option<String> {
+    // Expand home directory in paths
+    let mut search_paths = Vec::new();
+    for dir in FONT_DIRECTORIES {
+        if let Some(expanded) = expand_home_dir(dir) {
+            search_paths.push(expanded);
+        }
+    }
+
+    // Search for each preferred CJK font in each directory
+    for font_name in PREFERRED_CJK_FONTS {
+        for base_path in &search_paths {
+            if let Some(font_path) = search_font_recursive(base_path, font_name) {
+                eprintln!("[FONT] Found CJK font: {}", font_path.display());
+                return Some(font_path.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    eprintln!("[FONT] WARNING: No CJK fonts found in system directories");
     None
 }
 

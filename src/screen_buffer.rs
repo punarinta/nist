@@ -1,5 +1,6 @@
 use crate::ansi::{DEFAULT_BG_COLOR, DEFAULT_FG_COLOR};
 use sdl3::pixels::Color;
+use unicode_width::UnicodeWidthChar;
 
 #[derive(Clone, Debug)]
 pub struct Cell {
@@ -93,6 +94,55 @@ pub fn is_emoji_char(ch: char) -> bool {
 pub fn is_emoji_grapheme(s: &str) -> bool {
     // Check if any character in the grapheme cluster is an emoji
     s.chars().any(is_emoji_char)
+}
+
+/// Check if a character is a CJK (Chinese, Japanese, Korean) character
+#[inline]
+pub fn is_cjk_char(ch: char) -> bool {
+    let codepoint = ch as u32;
+    matches!(codepoint,
+        // CJK Unified Ideographs (most common Chinese characters)
+        0x4E00..=0x9FFF |
+        // CJK Extension A
+        0x3400..=0x4DBF |
+        // CJK Extension B
+        0x20000..=0x2A6DF |
+        // CJK Extension C
+        0x2A700..=0x2B73F |
+        // CJK Extension D
+        0x2B740..=0x2B81F |
+        // CJK Extension E
+        0x2B820..=0x2CEAF |
+        // CJK Extension F
+        0x2CEB0..=0x2EBEF |
+        // CJK Extension G
+        0x30000..=0x3134F |
+        // CJK Compatibility Ideographs
+        0xF900..=0xFAFF |
+        // CJK Compatibility Ideographs Supplement
+        0x2F800..=0x2FA1F |
+        // Hiragana (Japanese)
+        0x3040..=0x309F |
+        // Katakana (Japanese)
+        0x30A0..=0x30FF |
+        // Katakana Phonetic Extensions
+        0x31F0..=0x31FF |
+        // Hangul Syllables (Korean)
+        0xAC00..=0xD7AF |
+        // Hangul Jamo (Korean)
+        0x1100..=0x11FF |
+        // Hangul Jamo Extended-A
+        0xA960..=0xA97F |
+        // Hangul Jamo Extended-B
+        0xD7B0..=0xD7FF
+    )
+}
+
+/// Check if a string contains CJK characters
+#[inline]
+pub fn is_cjk_grapheme(s: &str) -> bool {
+    // Check if any character in the grapheme cluster is CJK
+    s.chars().any(is_cjk_char)
 }
 
 #[derive(Clone)]
@@ -446,14 +496,20 @@ impl ScreenBuffer {
         }
 
         if self.cursor_y < self.height && self.cursor_x < self.width {
-            // Check if this grapheme contains an emoji (including combined emojis)
+            // Determine character width
+            // First check if this grapheme contains an emoji (including combined emojis)
             let is_emoji = is_emoji_grapheme(grapheme);
-            let char_width = if is_emoji { 2 } else { 1 };
+
+            // For non-emoji characters, use Unicode East Asian Width property
+            let first_char = grapheme.chars().next().unwrap_or(' ');
+            let unicode_width = first_char.width().unwrap_or(1);
+
+            // Use the larger of emoji detection or Unicode width
+            let char_width = if is_emoji { 2 } else { unicode_width };
 
             // Write the grapheme cluster
             // For simple single-char graphemes, use just the char field
             // For complex graphemes (emojis with modifiers), store in extended field
-            let first_char = grapheme.chars().next().unwrap_or(' ');
             let extended_data = if grapheme.chars().count() > 1 { Some(grapheme.into()) } else { None };
 
             self.cells[self.cursor_y][self.cursor_x] = Cell {
@@ -461,11 +517,11 @@ impl ScreenBuffer {
                 extended: extended_data,
                 fg_color: self.fg_color,
                 bg_color: self.bg_color,
-                width: char_width,
+                width: char_width as u8,
             };
 
-            // For double-width emojis, mark the next cell as a continuation
-            if is_emoji && self.cursor_x + 1 < self.width {
+            // For double-width characters, mark the next cell as a continuation
+            if char_width == 2 && self.cursor_x + 1 < self.width {
                 self.cells[self.cursor_y][self.cursor_x + 1] = Cell {
                     ch: '\0', // Null char indicates continuation of previous cell
                     extended: None,
@@ -475,7 +531,7 @@ impl ScreenBuffer {
                 };
             }
 
-            self.cursor_x += char_width as usize;
+            self.cursor_x += char_width;
             self.dirty = true;
 
             // Set pending wrap if we're past the last column

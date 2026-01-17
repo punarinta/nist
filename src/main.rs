@@ -144,6 +144,7 @@ fn main() -> Result<(), String> {
     let context_menu_font = app.fonts.context_menu_font;
     let emoji_font = app.fonts.emoji_font;
     let unicode_fallback_font = app.fonts.unicode_fallback_font;
+    let cjk_font = app.fonts.cjk_font;
     let mut char_width = app.char_dims.width;
     let mut char_height = app.char_dims.height;
     let scale_factor = app.scale_info.scale_factor;
@@ -982,6 +983,7 @@ fn main() -> Result<(), String> {
                 &font,
                 &emoji_font,
                 &unicode_fallback_font,
+                &cjk_font,
                 &context_menu_font,
                 cpu_usage,
                 tab_bar_height,

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::ansi::DEFAULT_BG_COLOR;
-use crate::screen_buffer::{is_block_or_box_drawing, is_emoji_grapheme, is_special_symbol};
+use crate::screen_buffer::{is_block_or_box_drawing, is_cjk_grapheme, is_emoji_grapheme, is_special_symbol};
 use crate::sdl_renderer;
 use crate::settings::Settings;
 use crate::tab_gui::TabBarGui;
@@ -73,6 +73,7 @@ pub fn render_frame<'a, T>(
     terminal_font: &Font,
     emoji_font: &Font,
     unicode_fallback_font: &Font,
+    cjk_font: &Font,
     context_menu_font: &Font,
     cpu_usage: f32,
     tab_bar_height: u32,
@@ -141,6 +142,7 @@ pub fn render_frame<'a, T>(
             terminal_font,
             emoji_font,
             unicode_fallback_font,
+            cjk_font,
             tab_font,
             rect,
             terminal.clone(),
@@ -189,6 +191,7 @@ fn render_pane<'a, T>(
     font: &Font,
     emoji_font: &Font,
     unicode_fallback_font: &Font,
+    cjk_font: &Font,
     _ui_font: &Font,
     rect: Rect,
     terminal: Arc<Mutex<crate::terminal::Terminal>>,
@@ -275,6 +278,7 @@ fn render_pane<'a, T>(
                         font,
                         emoji_font,
                         unicode_fallback_font,
+                        cjk_font,
                         glyph_cache,
                         text,
                         x,
@@ -365,6 +369,7 @@ fn render_glyph<'a, T>(
     font: &Font,
     emoji_font: &Font,
     unicode_fallback_font: &Font,
+    cjk_font: &Font,
     glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
     text: &str,
     x: i32,
@@ -455,6 +460,9 @@ fn render_glyph<'a, T>(
     // Check if this is an emoji character - if so, try emoji font FIRST
     let is_likely_emoji = is_emoji_grapheme(text);
 
+    // Check if this is a CJK character - if so, try CJK font FIRST
+    let is_likely_cjk = is_cjk_grapheme(text);
+
     if is_likely_emoji {
         // Try emoji font first for emoji characters
         let emoji_result = emoji_font.render(text).blended(render_color);
@@ -484,6 +492,21 @@ fn render_glyph<'a, T>(
                     // Note: Emojis already rendered in white, color mod applied to cache lookup above
                     canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
                     // Cache the texture for next frame
+                    glyph_cache.insert(cache_key.clone(), texture);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Try CJK font first for CJK characters (Chinese, Japanese, Korean)
+    if is_likely_cjk {
+        let cjk_result = cjk_font.render(text).blended(render_color);
+        if let Ok(surface) = cjk_result {
+            if surface.width() > 0 && surface.height() > 0 {
+                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
+                    let char_rect = Rect::new(x, y, surface.width(), surface.height());
+                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
                     glyph_cache.insert(cache_key.clone(), texture);
                     return Ok(());
                 }
@@ -590,7 +613,20 @@ fn render_glyph<'a, T>(
             }
         }
 
-        // Try Unicode fallback font (for all characters that failed emoji/main fonts)
+        // Try CJK font for CJK characters (Chinese, Japanese, Korean)
+        let cjk_fallback_result = cjk_font.render(text).blended(render_color);
+        if let Ok(cjk_surface) = cjk_fallback_result {
+            if cjk_surface.width() > 0 && cjk_surface.height() > 0 {
+                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&cjk_surface) {
+                    let char_rect = Rect::new(x, y, cjk_surface.width(), cjk_surface.height());
+                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                    glyph_cache.insert(cache_key, texture);
+                    return Ok(());
+                }
+            }
+        }
+
+        // Try Unicode fallback font (for all characters that failed emoji/main/CJK fonts)
         // Skip if we already tried it above for the 3 special symbols
         if !is_special_missing_symbol {
             let unicode_fallback_result = unicode_fallback_font.render(text).blended(render_color);
