@@ -930,8 +930,16 @@ impl ScreenBuffer {
             for cell in row {
                 cell.ch = ' ';
                 cell.extended = None;
-                cell.fg_color = self.fg_color;
-                cell.bg_color = self.bg_color;
+                cell.fg_color = crate::ansi::DEFAULT_FG_COLOR;
+                cell.bg_color = crate::ansi::DEFAULT_BG_COLOR;
+                cell.width = 1;
+                cell.bold = false;
+                cell.italic = false;
+                cell.underline = false;
+                cell.strikethrough = false;
+                cell.blink = false;
+                cell.reverse = false;
+                cell.invisible = false;
             }
         }
 
@@ -951,8 +959,16 @@ impl ScreenBuffer {
                 let cell = &mut self.cells[self.cursor_y][x];
                 cell.ch = ' ';
                 cell.extended = None;
-                cell.fg_color = self.fg_color;
-                cell.bg_color = self.bg_color;
+                cell.fg_color = crate::ansi::DEFAULT_FG_COLOR;
+                cell.bg_color = crate::ansi::DEFAULT_BG_COLOR;
+                cell.width = 1;
+                cell.bold = false;
+                cell.italic = false;
+                cell.underline = false;
+                cell.strikethrough = false;
+                cell.blink = false;
+                cell.reverse = false;
+                cell.invisible = false;
             }
 
             // Clear all lines below
@@ -961,8 +977,16 @@ impl ScreenBuffer {
                     let cell = &mut self.cells[y][x];
                     cell.ch = ' ';
                     cell.extended = None;
-                    cell.fg_color = self.fg_color;
-                    cell.bg_color = self.bg_color;
+                    cell.fg_color = crate::ansi::DEFAULT_FG_COLOR;
+                    cell.bg_color = crate::ansi::DEFAULT_BG_COLOR;
+                    cell.width = 1;
+                    cell.bold = false;
+                    cell.italic = false;
+                    cell.underline = false;
+                    cell.strikethrough = false;
+                    cell.blink = false;
+                    cell.reverse = false;
+                    cell.invisible = false;
                 }
             }
         }
@@ -976,8 +1000,16 @@ impl ScreenBuffer {
                 let cell = &mut self.cells[y][x];
                 cell.ch = ' ';
                 cell.extended = None;
-                cell.fg_color = self.fg_color;
-                cell.bg_color = self.bg_color;
+                cell.fg_color = crate::ansi::DEFAULT_FG_COLOR;
+                cell.bg_color = crate::ansi::DEFAULT_BG_COLOR;
+                cell.width = 1;
+                cell.bold = false;
+                cell.italic = false;
+                cell.underline = false;
+                cell.strikethrough = false;
+                cell.blink = false;
+                cell.reverse = false;
+                cell.invisible = false;
             }
         }
 
@@ -987,8 +1019,16 @@ impl ScreenBuffer {
                 let cell = &mut self.cells[self.cursor_y][x];
                 cell.ch = ' ';
                 cell.extended = None;
-                cell.fg_color = self.fg_color;
-                cell.bg_color = self.bg_color;
+                cell.fg_color = crate::ansi::DEFAULT_FG_COLOR;
+                cell.bg_color = crate::ansi::DEFAULT_BG_COLOR;
+                cell.width = 1;
+                cell.bold = false;
+                cell.italic = false;
+                cell.underline = false;
+                cell.strikethrough = false;
+                cell.blink = false;
+                cell.reverse = false;
+                cell.invisible = false;
             }
         }
         self.dirty = true;
@@ -1000,8 +1040,16 @@ impl ScreenBuffer {
                 let cell = &mut self.cells[self.cursor_y][x];
                 cell.ch = ' ';
                 cell.extended = None;
-                cell.fg_color = self.fg_color;
-                cell.bg_color = self.bg_color;
+                cell.fg_color = crate::ansi::DEFAULT_FG_COLOR;
+                cell.bg_color = crate::ansi::DEFAULT_BG_COLOR;
+                cell.width = 1;
+                cell.bold = false;
+                cell.italic = false;
+                cell.underline = false;
+                cell.strikethrough = false;
+                cell.blink = false;
+                cell.reverse = false;
+                cell.invisible = false;
             }
         }
         self.dirty = true;
@@ -1015,6 +1063,14 @@ impl ScreenBuffer {
                 cell.extended = None;
                 cell.fg_color = self.fg_color;
                 cell.bg_color = self.bg_color;
+                cell.width = 1;
+                cell.bold = false;
+                cell.italic = false;
+                cell.underline = false;
+                cell.strikethrough = false;
+                cell.blink = false;
+                cell.reverse = false;
+                cell.invisible = false;
             }
         }
         self.dirty = true;
@@ -1026,8 +1082,16 @@ impl ScreenBuffer {
                 let cell = &mut self.cells[self.cursor_y][x];
                 cell.ch = ' ';
                 cell.extended = None;
-                cell.fg_color = self.fg_color;
-                cell.bg_color = self.bg_color;
+                cell.fg_color = crate::ansi::DEFAULT_FG_COLOR;
+                cell.bg_color = crate::ansi::DEFAULT_BG_COLOR;
+                cell.width = 1;
+                cell.bold = false;
+                cell.italic = false;
+                cell.underline = false;
+                cell.strikethrough = false;
+                cell.blink = false;
+                cell.reverse = false;
+                cell.invisible = false;
             }
         }
         self.dirty = true;
@@ -1042,8 +1106,16 @@ impl ScreenBuffer {
                 let cell = &mut self.cells[self.cursor_y][x];
                 cell.ch = ' ';
                 cell.extended = None;
-                cell.fg_color = self.fg_color;
-                cell.bg_color = self.bg_color;
+                cell.fg_color = crate::ansi::DEFAULT_FG_COLOR;
+                cell.bg_color = crate::ansi::DEFAULT_BG_COLOR;
+                cell.width = 1;
+                cell.bold = false;
+                cell.italic = false;
+                cell.underline = false;
+                cell.strikethrough = false;
+                cell.blink = false;
+                cell.reverse = false;
+                cell.invisible = false;
             }
         }
         self.dirty = true;
@@ -1056,16 +1128,16 @@ impl ScreenBuffer {
                 self.cells[y][x] = Cell {
                     ch: ' ',
                     extended: None,
-                    fg_color: self.fg_color,
-                    bg_color: self.bg_color,
+                    fg_color: crate::ansi::DEFAULT_FG_COLOR,
+                    bg_color: crate::ansi::DEFAULT_BG_COLOR,
                     width: 1,
-                    bold: self.bold,
-                    italic: self.italic,
-                    underline: self.underline,
-                    strikethrough: self.strikethrough,
-                    blink: self.blink,
-                    reverse: self.reverse,
-                    invisible: self.invisible,
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    strikethrough: false,
+                    blink: false,
+                    reverse: false,
+                    invisible: false,
                 };
             }
         }
@@ -1107,16 +1179,16 @@ impl ScreenBuffer {
             *cell = Cell {
                 ch: ' ',
                 extended: None,
-                fg_color: self.fg_color,
-                bg_color: self.bg_color,
+                fg_color: crate::ansi::DEFAULT_FG_COLOR,
+                bg_color: crate::ansi::DEFAULT_BG_COLOR,
                 width: 1,
-                bold: self.bold,
-                italic: self.italic,
-                underline: self.underline,
-                strikethrough: self.strikethrough,
-                blink: self.blink,
-                reverse: self.reverse,
-                invisible: self.invisible,
+                bold: false,
+                italic: false,
+                underline: false,
+                strikethrough: false,
+                blink: false,
+                reverse: false,
+                invisible: false,
             };
         }
 
@@ -1152,16 +1224,16 @@ impl ScreenBuffer {
                 row[x] = Cell {
                     ch: ' ',
                     extended: None,
-                    fg_color: self.fg_color,
-                    bg_color: self.bg_color,
+                    fg_color: crate::ansi::DEFAULT_FG_COLOR,
+                    bg_color: crate::ansi::DEFAULT_BG_COLOR,
                     width: 1,
-                    bold: self.bold,
-                    italic: self.italic,
-                    underline: self.underline,
-                    strikethrough: self.strikethrough,
-                    blink: self.blink,
-                    reverse: self.reverse,
-                    invisible: self.invisible,
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    strikethrough: false,
+                    blink: false,
+                    reverse: false,
+                    invisible: false,
                 };
             }
         }
@@ -1206,8 +1278,16 @@ impl ScreenBuffer {
                 let cell = &mut self.cells[y][x];
                 cell.ch = ' ';
                 cell.extended = None;
-                cell.fg_color = self.fg_color;
-                cell.bg_color = self.bg_color;
+                cell.fg_color = crate::ansi::DEFAULT_FG_COLOR;
+                cell.bg_color = crate::ansi::DEFAULT_BG_COLOR;
+                cell.width = 1;
+                cell.bold = false;
+                cell.italic = false;
+                cell.underline = false;
+                cell.strikethrough = false;
+                cell.blink = false;
+                cell.reverse = false;
+                cell.invisible = false;
             }
         }
 
@@ -1237,8 +1317,16 @@ impl ScreenBuffer {
                 let cell = &mut self.cells[y][x];
                 cell.ch = ' ';
                 cell.extended = None;
-                cell.fg_color = self.fg_color;
-                cell.bg_color = self.bg_color;
+                cell.fg_color = crate::ansi::DEFAULT_FG_COLOR;
+                cell.bg_color = crate::ansi::DEFAULT_BG_COLOR;
+                cell.width = 1;
+                cell.bold = false;
+                cell.italic = false;
+                cell.underline = false;
+                cell.strikethrough = false;
+                cell.blink = false;
+                cell.reverse = false;
+                cell.invisible = false;
             }
         }
         self.dirty = true;
@@ -1247,6 +1335,7 @@ impl ScreenBuffer {
     pub fn insert_lines(&mut self, n: usize) {
         // Insert n blank lines at the cursor position
         // Lines below cursor are pushed down, lines pushed off bottom of scrolling region are lost
+        eprintln!("[DEBUG] insert_lines(n={}) called at cursor position ({}, {})", n, self.cursor_x, self.cursor_y);
         if self.cursor_y >= self.height {
             return;
         }
@@ -1272,16 +1361,16 @@ impl ScreenBuffer {
                 self.cells[y][x] = Cell {
                     ch: ' ',
                     extended: None,
-                    fg_color: self.fg_color,
-                    bg_color: self.bg_color,
+                    fg_color: crate::ansi::DEFAULT_FG_COLOR,
+                    bg_color: crate::ansi::DEFAULT_BG_COLOR,
                     width: 1,
-                    bold: self.bold,
-                    italic: self.italic,
-                    underline: self.underline,
-                    strikethrough: self.strikethrough,
-                    blink: self.blink,
-                    reverse: self.reverse,
-                    invisible: self.invisible,
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    strikethrough: false,
+                    blink: false,
+                    reverse: false,
+                    invisible: false,
                 };
             }
         }
@@ -1291,6 +1380,7 @@ impl ScreenBuffer {
     pub fn delete_lines(&mut self, n: usize) {
         // Delete n lines starting at the cursor position
         // Lines below are pulled up, blank lines are added at bottom of scrolling region
+        eprintln!("[DEBUG] delete_lines(n={}) called at cursor position ({}, {})", n, self.cursor_x, self.cursor_y);
         if self.cursor_y >= self.height {
             return;
         }
@@ -1316,16 +1406,16 @@ impl ScreenBuffer {
                 self.cells[y][x] = Cell {
                     ch: ' ',
                     extended: None,
-                    fg_color: self.fg_color,
-                    bg_color: self.bg_color,
+                    fg_color: crate::ansi::DEFAULT_FG_COLOR,
+                    bg_color: crate::ansi::DEFAULT_BG_COLOR,
                     width: 1,
-                    bold: self.bold,
-                    italic: self.italic,
-                    underline: self.underline,
-                    strikethrough: self.strikethrough,
-                    blink: self.blink,
-                    reverse: self.reverse,
-                    invisible: self.invisible,
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    strikethrough: false,
+                    blink: false,
+                    reverse: false,
+                    invisible: false,
                 };
             }
         }

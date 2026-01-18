@@ -994,7 +994,6 @@ fn main() -> Result<(), String> {
                 char_width,
                 char_height,
                 cursor_visible,
-                &settings,
                 &mut glyph_cache,
             )?;
 

@@ -679,10 +679,8 @@ pub(crate) fn process_csi_sequence(
                         // CSI ? 1048 h - Save cursor position
                         // CSI ? 1048 l - Restore cursor position
                         if final_char == 'h' {
-                            eprintln!("[CURSOR] Saving cursor position (mode 1048)");
                             sb.save_cursor();
                         } else {
-                            eprintln!("[CURSOR] Restoring cursor position (mode 1048)");
                             sb.restore_cursor();
                         }
                     }

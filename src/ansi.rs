@@ -58,7 +58,7 @@ pub fn parse_m(ansi_code: &str) -> ([Option<Color>; 2], Option<TextAttributes>) 
         fg_color = Some(DEFAULT_FG_COLOR);
         bg_color = Some(DEFAULT_BG_COLOR);
         attrs = TextAttributes::default();
-        attrs_modified = true;
+        // attrs_modified = true;
         return ([fg_color, bg_color], Some(attrs));
     }
 

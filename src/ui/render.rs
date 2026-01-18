@@ -17,7 +17,6 @@ use std::sync::{Arc, Mutex};
 use crate::ansi::DEFAULT_BG_COLOR;
 use crate::screen_buffer::{is_block_or_box_drawing, is_cjk_grapheme, is_emoji_grapheme, is_special_symbol};
 use crate::sdl_renderer;
-use crate::settings::Settings;
 use crate::tab_gui::TabBarGui;
 use crate::ui::context_menu::ContextMenu;
 
@@ -81,7 +80,6 @@ pub fn render_frame<'a, T>(
     char_width: f32,
     char_height: f32,
     cursor_visible: bool,
-    settings: &Settings,
     glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
 ) -> Result<bool, String> {
     // Clear screen with terminal background color
@@ -152,7 +150,6 @@ pub fn render_frame<'a, T>(
             char_width,
             char_height,
             cursor_visible,
-            settings,
             glyph_cache,
             scale_factor,
         )?;
@@ -201,7 +198,6 @@ fn render_pane<'a, T>(
     char_width: f32,
     char_height: f32,
     cursor_visible: bool,
-    settings: &Settings,
     glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
     scale_factor: f32,
 ) -> Result<bool, String> {
@@ -234,11 +230,6 @@ fn render_pane<'a, T>(
     let is_at_bottom = sb.is_at_bottom();
     let should_show_cursor_check = terminal_cursor_vis && cursor_visible && is_active && is_at_bottom;
     drop(terminal_cursor_visible_check);
-
-    eprintln!(
-        "[CURSOR_CHECK] terminal_vis={}, cursor_vis={}, is_active={}, at_bottom={}, should_show={}, cursor_pos=({},{}), cursor_style={:?}",
-        terminal_cursor_vis, cursor_visible, is_active, is_at_bottom, should_show_cursor_check, sb.cursor_x, sb.cursor_y, sb.cursor_style
-    );
 
     // Render cells that fit in both the rect and the screen buffer
     for row in 0..rows {
@@ -289,8 +280,13 @@ fn render_pane<'a, T>(
                     canvas.set_draw_color(Color::RGB(70, 130, 180));
                     let cell_rect = Rect::new(x, y, actual_cell_width as u32, char_height as u32);
                     canvas.fill_rect(cell_rect).map_err(|e| e.to_string())?;
-                } else if actual_bg.r != 0 || actual_bg.g != 0 || actual_bg.b != 0 || cell.reverse {
-                    // Draw background if it's non-black OR if reverse is set (to handle reverse with default colors)
+                } else if actual_bg.r != crate::ansi::DEFAULT_BG_COLOR.r
+                    || actual_bg.g != crate::ansi::DEFAULT_BG_COLOR.g
+                    || actual_bg.b != crate::ansi::DEFAULT_BG_COLOR.b
+                // || cell.reverse
+                {
+                    // Draw background only if it differs from the default that we already filled
+                    // This optimizes rendering and prevents artifacts from stale reverse video attributes
                     canvas.set_draw_color(Color::RGB(actual_bg.r, actual_bg.g, actual_bg.b));
                     let cell_rect = Rect::new(x, y, actual_cell_width as u32, char_height as u32);
                     canvas.fill_rect(cell_rect).map_err(|e| e.to_string())?;
@@ -342,9 +338,7 @@ fn render_pane<'a, T>(
     }
 
     // Render cursor if active pane, visible (blink state), and enabled by terminal (ANSI code)
-    eprintln!("[CURSOR_RENDER] About to check should_show_cursor_check={}", should_show_cursor_check);
     if should_show_cursor_check {
-        eprintln!("[CURSOR_RENDER] Inside cursor rendering block");
         let cursor_x = rect.x() + pane_padding as i32 + (sb.cursor_x as f32 * char_width) as i32;
         let cursor_y = rect.y() + pane_padding as i32 + (sb.cursor_y as f32 * char_height) as i32;
 
@@ -398,11 +392,6 @@ fn render_pane<'a, T>(
                     } else {
                         cell.bg_color
                     };
-
-                    eprintln!(
-                        "[CURSOR] Rendering cursor at ({}, {}) with char '{}' (code: {}), cursor_bg=({},{},{}), text_color=({},{},{})",
-                        sb.cursor_x, sb.cursor_y, cell.ch, cell.ch as u32, cursor_bg.r, cursor_bg.g, cursor_bg.b, text_color.r, text_color.g, text_color.b
-                    );
 
                     render_glyph(
                         canvas,
