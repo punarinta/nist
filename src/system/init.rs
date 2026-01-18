@@ -10,8 +10,7 @@ use crate::font_discovery;
 use crate::settings;
 use crate::state;
 use crate::tab_gui::TabBarGui;
-use crate::terminal::Terminal;
-use crate::terminal_config::TerminalLibrary;
+use crate::terminal::{Terminal, TerminalLibrary};
 use arboard::Clipboard;
 use sdl3::render::{Canvas, TextureCreator};
 use sdl3::ttf::Sdl3TtfContext;
@@ -505,7 +504,7 @@ fn measure_char_dimensions(font: &sdl3::ttf::Font) -> Result<CharDimensions, Str
 fn initialize_tab_bar_gui(
     terminal_width: u32,
     terminal_height: u32,
-    shell_config: crate::terminal_config::ShellConfig,
+    shell_config: crate::terminal::ShellConfig,
     default_scrollback_lines: usize,
     cursor_style: crate::screen_buffer::CursorStyle,
 ) -> Arc<Mutex<TabBarGui>> {

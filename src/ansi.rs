@@ -5,6 +5,17 @@ use std::collections::HashMap;
 pub const DEFAULT_FG_COLOR: Color = Color::RGB(255, 255, 255);
 pub const DEFAULT_BG_COLOR: Color = Color::RGB(20, 20, 20);
 
+#[derive(Default, Clone, Copy, Debug)]
+pub struct TextAttributes {
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub blink: bool,
+    pub reverse: bool,
+    pub invisible: bool,
+}
+
 // Standard 16-color palette (indexed 0-7)
 pub const COLOR_MAP_16: [(u32, Color); 8] = [
     (0, DEFAULT_BG_COLOR),         // Black
@@ -29,7 +40,7 @@ pub const COLOR_MAP_BRIGHT: [(u32, Color); 8] = [
     (7, Color::RGB(255, 255, 255)), // Bright White
 ];
 
-pub fn parse_m(ansi_code: &str) -> [Option<Color>; 2] {
+pub fn parse_m(ansi_code: &str) -> ([Option<Color>; 2], Option<TextAttributes>) {
     // TODO: can we make it a constant?
     let color_map_16: HashMap<u32, Color> = COLOR_MAP_16.iter().map(|&(code, color)| (code, color)).collect();
 
@@ -37,6 +48,8 @@ pub fn parse_m(ansi_code: &str) -> [Option<Color>; 2] {
 
     let mut fg_color = None;
     let mut bg_color = None;
+    let mut attrs = TextAttributes::default();
+    let mut attrs_modified = false;
 
     let ansi_code_parts: Vec<&str> = ansi_code.trim_start_matches("\x1b[").trim_end_matches("m").split(';').collect();
 
@@ -44,7 +57,9 @@ pub fn parse_m(ansi_code: &str) -> [Option<Color>; 2] {
     if ansi_code_parts.len() == 1 && ansi_code_parts[0].is_empty() {
         fg_color = Some(DEFAULT_FG_COLOR);
         bg_color = Some(DEFAULT_BG_COLOR);
-        return [fg_color, bg_color];
+        attrs = TextAttributes::default();
+        attrs_modified = true;
+        return ([fg_color, bg_color], Some(attrs));
     }
 
     let mut i = 0;
@@ -61,30 +76,57 @@ pub fn parse_m(ansi_code: &str) -> [Option<Color>; 2] {
             0 => {
                 fg_color = Some(DEFAULT_FG_COLOR);
                 bg_color = Some(DEFAULT_BG_COLOR);
+                attrs = TextAttributes::default();
+                attrs_modified = true;
                 i += 1;
             }
             1 => {
                 /* Bold or increased intensity */
+                attrs.bold = true;
+                attrs_modified = true;
                 i += 1;
             }
             2 => {
                 /* Faint, decreased intensity */
+                // We treat faint as non-bold for simplicity
+                attrs.bold = false;
+                attrs_modified = true;
                 i += 1;
             }
             3 => {
                 /* Italic */
+                attrs.italic = true;
+                attrs_modified = true;
                 i += 1;
             }
             4 => {
                 /* Underline */
+                attrs.underline = true;
+                attrs_modified = true;
                 i += 1;
             }
             5 => {
                 /* Slow blink */
+                attrs.blink = true;
+                attrs_modified = true;
                 i += 1;
             }
             7 => {
-                std::mem::swap(&mut fg_color, &mut bg_color);
+                /* Reverse video */
+                attrs.reverse = true;
+                attrs_modified = true;
+                i += 1;
+            }
+            8 => {
+                /* Invisible/hidden */
+                attrs.invisible = true;
+                attrs_modified = true;
+                i += 1;
+            }
+            9 => {
+                /* Strikethrough */
+                attrs.strikethrough = true;
+                attrs_modified = true;
                 i += 1;
             }
             10 => {
@@ -93,22 +135,44 @@ pub fn parse_m(ansi_code: &str) -> [Option<Color>; 2] {
             }
             22 => {
                 /* Normal intensity (neither bold nor faint) */
+                attrs.bold = false;
+                attrs_modified = true;
                 i += 1;
             }
             23 => {
                 /* Not italic */
+                attrs.italic = false;
+                attrs_modified = true;
                 i += 1;
             }
             24 => {
                 /* Not underlined */
+                attrs.underline = false;
+                attrs_modified = true;
                 i += 1;
             }
             25 => {
                 /* Blink off */
+                attrs.blink = false;
+                attrs_modified = true;
                 i += 1;
             }
             27 => {
                 /* Not reversed (turn off reverse video) */
+                attrs.reverse = false;
+                attrs_modified = true;
+                i += 1;
+            }
+            28 => {
+                /* Revealed (not invisible) */
+                attrs.invisible = false;
+                attrs_modified = true;
+                i += 1;
+            }
+            29 => {
+                /* Not strikethrough */
+                attrs.strikethrough = false;
+                attrs_modified = true;
                 i += 1;
             }
             30..=37 => {
@@ -213,7 +277,8 @@ pub fn parse_m(ansi_code: &str) -> [Option<Color>; 2] {
         }
     }
 
-    [fg_color, bg_color]
+    let attrs_result = if attrs_modified { Some(attrs) } else { None };
+    ([fg_color, bg_color], attrs_result)
 }
 
 // Convert 256-color palette index to RGB

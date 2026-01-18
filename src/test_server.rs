@@ -1,8 +1,7 @@
 use crate::pane_layout::SplitDirection;
 use crate::screen_buffer::ScreenBuffer;
 use crate::tab_gui::TabBarGui;
-use crate::terminal::Terminal;
-use crate::terminal_config::TerminalLibrary;
+use crate::terminal::{Terminal, TerminalLibrary};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -114,6 +113,13 @@ pub struct CellSnapshot {
     pub bg_r: u8,
     pub bg_g: u8,
     pub bg_b: u8,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub blink: bool,
+    pub reverse: bool,
+    pub invisible: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -187,6 +193,13 @@ impl ScreenBufferSnapshot {
                         bg_r: cell.bg_color.r,
                         bg_g: cell.bg_color.g,
                         bg_b: cell.bg_color.b,
+                        bold: cell.bold,
+                        italic: cell.italic,
+                        underline: cell.underline,
+                        strikethrough: cell.strikethrough,
+                        blink: cell.blink,
+                        reverse: cell.reverse,
+                        invisible: cell.invisible,
                     });
                 } else {
                     line.push_str(" ");
@@ -199,6 +212,13 @@ impl ScreenBufferSnapshot {
                         bg_r: 0,
                         bg_g: 0,
                         bg_b: 0,
+                        bold: false,
+                        italic: false,
+                        underline: false,
+                        strikethrough: false,
+                        blink: false,
+                        reverse: false,
+                        invisible: false,
                     });
                 }
             }
@@ -226,6 +246,13 @@ impl ScreenBufferSnapshot {
                     bg_r: cell.bg_color.r,
                     bg_g: cell.bg_color.g,
                     bg_b: cell.bg_color.b,
+                    bold: cell.bold,
+                    italic: cell.italic,
+                    underline: cell.underline,
+                    strikethrough: cell.strikethrough,
+                    blink: cell.blink,
+                    reverse: cell.reverse,
+                    invisible: cell.invisible,
                 });
             }
             scrollback.push(row);

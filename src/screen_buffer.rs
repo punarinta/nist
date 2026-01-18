@@ -2,6 +2,61 @@ use crate::ansi::{DEFAULT_BG_COLOR, DEFAULT_FG_COLOR};
 use sdl3::pixels::Color;
 use unicode_width::UnicodeWidthChar;
 
+/// Translate a character through DEC Special Graphics character set
+/// This is used for box drawing and special symbols
+/// Based on VT220 DEC Special Graphics table
+fn translate_dec_special_graphics(ch: char) -> char {
+    match ch {
+        '_' => ' ',        // Blank (space)
+        '`' => '◆',        // Diamond
+        'a' => '▒',        // Checkerboard (medium shade)
+        'b' => '\u{2409}', // HT symbol
+        'c' => '\u{240C}', // FF symbol
+        'd' => '\u{240D}', // CR symbol
+        'e' => '\u{240A}', // LF symbol
+        'f' => '°',        // Degree symbol
+        'g' => '±',        // Plus/minus
+        'h' => '\u{2424}', // NL symbol
+        'i' => '\u{240B}', // VT symbol
+        'j' => '┘',        // Lower right corner
+        'k' => '┐',        // Upper right corner
+        'l' => '┌',        // Upper left corner
+        'm' => '└',        // Lower left corner
+        'n' => '┼',        // Crossing lines
+        'o' => '⎺',        // Scan line 1
+        'p' => '⎻',        // Scan line 3
+        'q' => '─',        // Horizontal line (scan 5)
+        'r' => '⎼',        // Scan line 7
+        's' => '⎽',        // Scan line 9
+        't' => '├',        // Left tee
+        'u' => '┤',        // Right tee
+        'v' => '┴',        // Bottom tee
+        'w' => '┬',        // Top tee
+        'x' => '│',        // Vertical bar
+        'y' => '≤',        // Less than or equal
+        'z' => '≥',        // Greater than or equal
+        '{' => 'π',        // Pi
+        '|' => '≠',        // Not equal
+        '}' => '£',        // UK pound sign
+        '~' => '·',        // Centered dot (bullet)
+        _ => ch,           // Pass through all other characters unchanged
+    }
+}
+
+/// Character set designation
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CharSet {
+    Ascii, // 'B' - US ASCII (default)
+    DecSpecialGraphics, // '0' - DEC Special Graphics (box drawing)
+           // Other charsets can be added as needed
+}
+
+impl Default for CharSet {
+    fn default() -> Self {
+        CharSet::Ascii
+    }
+}
+
 /// Cursor style as set by DECSCUSR escape sequences
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CursorStyle {
@@ -41,6 +96,13 @@ pub struct Cell {
     pub fg_color: Color,
     pub bg_color: Color,
     pub width: u8, // 1 for normal chars, 2 for wide/emoji chars
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub blink: bool,
+    pub reverse: bool,
+    pub invisible: bool,
 }
 
 impl Default for Cell {
@@ -51,6 +113,13 @@ impl Default for Cell {
             fg_color: DEFAULT_FG_COLOR,
             bg_color: DEFAULT_BG_COLOR,
             width: 1,
+            bold: false,
+            italic: false,
+            underline: false,
+            strikethrough: false,
+            blink: false,
+            reverse: false,
+            invisible: false,
         }
     }
 }
@@ -186,6 +255,20 @@ pub struct ScreenBuffer {
     pub cursor_y: usize,
     pub fg_color: Color,
     pub bg_color: Color,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub blink: bool,
+    pub reverse: bool,
+    pub invisible: bool,
+    // Last character printed (for REP - Repeat command)
+    last_char: Option<char>,
+    // Tab stops (by default every 8 columns, but can be customized)
+    // None means use default tab stops, Some(set) means custom tab stops
+    tab_stops: Option<std::collections::HashSet<usize>>,
+    // Reverse video mode (DECSCNM) - swap all foreground/background colors globally
+    pub reverse_video_mode: bool,
     // Scrolling region (top and bottom margins, 0-based, inclusive)
     // None means the entire screen is the scrolling region
     scroll_region: Option<(usize, usize)>,
@@ -193,7 +276,7 @@ pub struct ScreenBuffer {
     saved_cursor_x: usize,
     saved_cursor_y: usize,
     // Dirty flag to track if content has changed since last render
-    dirty: bool,
+    pub(crate) dirty: bool,
     // Scrollback buffer - stores historical lines that scrolled off the screen
     scrollback_buffer: Vec<Vec<Cell>>,
     // Maximum number of lines to keep in scrollback (0 means disabled)
@@ -202,10 +285,25 @@ pub struct ScreenBuffer {
     pub scroll_offset: usize,
     // Origin mode (DECOM) - when enabled, cursor positioning is relative to scroll region
     origin_mode: bool,
+    // Auto-wrap mode (DECAWM) - when enabled, cursor wraps at right margin
+    auto_wrap_mode: bool,
     // Pending wrap state - cursor is past last column, wrap on next character
     pub(crate) pending_wrap: bool,
     // Cursor style (DECSCUSR)
     pub cursor_style: CursorStyle,
+    // Character set designation - G0, G1, G2, G3
+    g0_charset: CharSet,
+    g1_charset: CharSet,
+    g2_charset: CharSet,
+    g3_charset: CharSet,
+    // Current active character set (GL - typically G0 or G1)
+    active_charset: usize, // 0 = G0, 1 = G1, 2 = G2, 3 = G3
+    // Single shift state (for SS2/SS3 - affects next character only)
+    single_shift: Option<usize>, // Some(2) = SS2 (G2), Some(3) = SS3 (G3)
+    // Insert mode (IRM) - when enabled, inserting characters pushes existing ones to the right
+    insert_mode: bool,
+    // Automatic newline mode (LNM) - when enabled, CR (Ctrl-M) acts as CR+LF
+    automatic_newline: bool,
 }
 
 impl ScreenBuffer {
@@ -218,6 +316,22 @@ impl ScreenBuffer {
             cursor_y: 0,
             fg_color: DEFAULT_FG_COLOR,
             bg_color: DEFAULT_BG_COLOR,
+            bold: false,
+            italic: false,
+            underline: false,
+            strikethrough: false,
+            blink: false,
+            reverse: false,
+            invisible: false,
+            last_char: None,
+            tab_stops: None,
+            reverse_video_mode: false,
+            g0_charset: CharSet::Ascii,
+            g1_charset: CharSet::Ascii,
+            g2_charset: CharSet::Ascii,
+            g3_charset: CharSet::Ascii,
+            active_charset: 0, // G0 is active by default
+            single_shift: None,
             scroll_region: None,
             saved_cursor_x: 0,
             saved_cursor_y: 0,
@@ -226,8 +340,11 @@ impl ScreenBuffer {
             scrollback_limit,
             scroll_offset: 0,
             origin_mode: false,
+            auto_wrap_mode: true,
             pending_wrap: false,
             cursor_style,
+            insert_mode: false,
+            automatic_newline: false,
         }
     }
 
@@ -491,6 +608,13 @@ impl ScreenBuffer {
                 bg_color: bg,
                 extended: None,
                 width: 1, // Default to 1 for normal characters
+                bold: false,
+                italic: false,
+                underline: false,
+                strikethrough: false,
+                blink: false,
+                reverse: false,
+                invisible: false,
             };
             x += 1;
         }
@@ -518,7 +642,7 @@ impl ScreenBuffer {
     /// Put a grapheme cluster (potentially multi-character emoji with modifiers)
     pub fn put_grapheme(&mut self, grapheme: &str) {
         // Handle pending wrap from previous character
-        if self.pending_wrap {
+        if self.pending_wrap && self.auto_wrap_mode {
             self.cursor_x = 0;
             self.cursor_y += 1;
             self.pending_wrap = false;
@@ -531,6 +655,30 @@ impl ScreenBuffer {
         }
 
         if self.cursor_y < self.height && self.cursor_x < self.width {
+            // If insert mode is enabled, shift characters to the right before writing
+            if self.insert_mode {
+                // Shift all characters from cursor position to the right by char_width
+                // First, determine the width of the character we're about to insert
+                let is_emoji = is_emoji_grapheme(grapheme);
+                let first_char = grapheme.chars().next().unwrap_or(' ');
+                let unicode_width = first_char.width().unwrap_or(1);
+                let char_width = if is_emoji { 2 } else { unicode_width };
+
+                // Shift characters to the right
+                if self.cursor_x + char_width < self.width {
+                    // Shift characters within the line
+                    let y = self.cursor_y;
+                    for x in (self.cursor_x..self.width - char_width).rev() {
+                        self.cells[y][x + char_width] = self.cells[y][x].clone();
+                    }
+                    // Clear the vacated cells
+                    for i in 0..char_width {
+                        if self.cursor_x + i < self.width {
+                            self.cells[y][self.cursor_x + i] = Cell::default();
+                        }
+                    }
+                }
+            }
             // Determine character width
             // First check if this grapheme contains an emoji (including combined emojis)
             let is_emoji = is_emoji_grapheme(grapheme);
@@ -547,12 +695,26 @@ impl ScreenBuffer {
             // For complex graphemes (emojis with modifiers), store in extended field
             let extended_data = if grapheme.chars().count() > 1 { Some(grapheme.into()) } else { None };
 
+            // Translate character through active charset if it's a simple single character
+            let translated_char = if grapheme.chars().count() == 1 {
+                self.translate_charset(first_char)
+            } else {
+                first_char
+            };
+
             self.cells[self.cursor_y][self.cursor_x] = Cell {
-                ch: first_char,
+                ch: translated_char,
                 extended: extended_data,
                 fg_color: self.fg_color,
                 bg_color: self.bg_color,
                 width: char_width as u8,
+                bold: self.bold,
+                italic: self.italic,
+                underline: self.underline,
+                strikethrough: self.strikethrough,
+                blink: self.blink,
+                reverse: self.reverse,
+                invisible: self.invisible,
             };
 
             // For double-width characters, mark the next cell as a continuation
@@ -563,8 +725,18 @@ impl ScreenBuffer {
                     fg_color: self.fg_color,
                     bg_color: self.bg_color,
                     width: 0, // Width 0 means this is a continuation cell
+                    bold: self.bold,
+                    italic: self.italic,
+                    underline: self.underline,
+                    strikethrough: self.strikethrough,
+                    blink: self.blink,
+                    reverse: self.reverse,
+                    invisible: self.invisible,
                 };
             }
+
+            // Track the last character for REP command
+            self.last_char = Some(first_char);
 
             self.cursor_x += char_width;
             self.dirty = true;
@@ -572,7 +744,10 @@ impl ScreenBuffer {
             // Set pending wrap if we're past the last column
             if self.cursor_x >= self.width {
                 self.cursor_x = self.width - 1;
-                self.pending_wrap = true;
+                // Only set pending wrap if auto-wrap mode is enabled
+                if self.auto_wrap_mode {
+                    self.pending_wrap = true;
+                }
             }
         }
     }
@@ -597,9 +772,22 @@ impl ScreenBuffer {
 
     pub fn tab(&mut self) {
         self.pending_wrap = false;
-        // Tab to next multiple of 8
-        let next_tab = ((self.cursor_x / 8) + 1) * 8;
-        self.cursor_x = next_tab.min(self.width - 1);
+
+        // Use custom tab stops if defined, otherwise use default (every 8 columns)
+        if let Some(ref stops) = self.tab_stops {
+            // Find next tab stop after current position
+            let mut next_tab = self.width - 1; // Default to end of line
+            for &stop in stops.iter() {
+                if stop > self.cursor_x && stop < next_tab {
+                    next_tab = stop;
+                }
+            }
+            self.cursor_x = next_tab;
+        } else {
+            // Default tab stops every 8 columns
+            let next_tab = ((self.cursor_x / 8) + 1) * 8;
+            self.cursor_x = next_tab.min(self.width - 1);
+        }
         self.dirty = true;
     }
 
@@ -659,6 +847,42 @@ impl ScreenBuffer {
     pub fn move_cursor_left(&mut self, n: usize) {
         self.pending_wrap = false;
         self.cursor_x = self.cursor_x.saturating_sub(n);
+        self.dirty = true;
+    }
+
+    /// CHT - Cursor Horizontal Forward Tabulation
+    /// Move cursor forward n tab stops (default tab stops at multiples of 8)
+    pub fn forward_tab(&mut self, n: usize) {
+        self.pending_wrap = false;
+        for _ in 0..n {
+            // Move to next tab stop (multiple of 8)
+            let next_tab = ((self.cursor_x / 8) + 1) * 8;
+            self.cursor_x = next_tab.min(self.width - 1);
+            // If we hit the right edge, stop
+            if self.cursor_x == self.width - 1 {
+                break;
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// CBT - Cursor Backward Tabulation
+    /// Move cursor backward n tab stops (default tab stops at multiples of 8)
+    pub fn back_tab(&mut self, n: usize) {
+        self.pending_wrap = false;
+        for _ in 0..n {
+            if self.cursor_x == 0 {
+                break;
+            }
+            // Move to previous tab stop (multiple of 8)
+            // If already at a tab stop, move to the previous one
+            let prev_tab = if self.cursor_x % 8 == 0 {
+                self.cursor_x.saturating_sub(8)
+            } else {
+                (self.cursor_x / 8) * 8
+            };
+            self.cursor_x = prev_tab;
+        }
         self.dirty = true;
     }
 
@@ -835,6 +1059,13 @@ impl ScreenBuffer {
                     fg_color: self.fg_color,
                     bg_color: self.bg_color,
                     width: 1,
+                    bold: self.bold,
+                    italic: self.italic,
+                    underline: self.underline,
+                    strikethrough: self.strikethrough,
+                    blink: self.blink,
+                    reverse: self.reverse,
+                    invisible: self.invisible,
                 };
             }
         }
@@ -879,6 +1110,13 @@ impl ScreenBuffer {
                 fg_color: self.fg_color,
                 bg_color: self.bg_color,
                 width: 1,
+                bold: self.bold,
+                italic: self.italic,
+                underline: self.underline,
+                strikethrough: self.strikethrough,
+                blink: self.blink,
+                reverse: self.reverse,
+                invisible: self.invisible,
             };
         }
 
@@ -917,6 +1155,13 @@ impl ScreenBuffer {
                     fg_color: self.fg_color,
                     bg_color: self.bg_color,
                     width: 1,
+                    bold: self.bold,
+                    italic: self.italic,
+                    underline: self.underline,
+                    strikethrough: self.strikethrough,
+                    blink: self.blink,
+                    reverse: self.reverse,
+                    invisible: self.invisible,
                 };
             }
         }
@@ -1030,6 +1275,13 @@ impl ScreenBuffer {
                     fg_color: self.fg_color,
                     bg_color: self.bg_color,
                     width: 1,
+                    bold: self.bold,
+                    italic: self.italic,
+                    underline: self.underline,
+                    strikethrough: self.strikethrough,
+                    blink: self.blink,
+                    reverse: self.reverse,
+                    invisible: self.invisible,
                 };
             }
         }
@@ -1067,6 +1319,13 @@ impl ScreenBuffer {
                     fg_color: self.fg_color,
                     bg_color: self.bg_color,
                     width: 1,
+                    bold: self.bold,
+                    italic: self.italic,
+                    underline: self.underline,
+                    strikethrough: self.strikethrough,
+                    blink: self.blink,
+                    reverse: self.reverse,
+                    invisible: self.invisible,
                 };
             }
         }
@@ -1093,6 +1352,22 @@ impl ScreenBuffer {
 
     pub fn set_origin_mode(&mut self, enabled: bool) {
         self.origin_mode = enabled;
+    }
+
+    pub fn set_auto_wrap_mode(&mut self, enabled: bool) {
+        self.auto_wrap_mode = enabled;
+    }
+
+    pub fn set_insert_mode(&mut self, enabled: bool) {
+        self.insert_mode = enabled;
+    }
+
+    pub fn set_automatic_newline(&mut self, enabled: bool) {
+        self.automatic_newline = enabled;
+    }
+
+    pub fn get_automatic_newline(&self) -> bool {
+        self.automatic_newline
     }
 
     pub fn get_cell(&self, x: usize, y: usize) -> Option<&Cell> {
@@ -1136,6 +1411,13 @@ impl ScreenBuffer {
                     fg_color: DEFAULT_FG_COLOR,
                     bg_color: DEFAULT_BG_COLOR,
                     width: 1,
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    strikethrough: false,
+                    blink: false,
+                    reverse: false,
+                    invisible: false,
                 };
                 row.push(cell);
             }
@@ -1198,6 +1480,156 @@ impl ScreenBuffer {
         self.dirty = true;
     }
 
+    /// Repeat the last printed character n times (REP - CSI Ps b)
+    pub fn repeat_last_char(&mut self, count: usize) {
+        if let Some(ch) = self.last_char {
+            let grapheme = ch.to_string();
+            for _ in 0..count {
+                self.put_grapheme(&grapheme);
+            }
+        }
+    }
+
+    /// Clear tab stops (TBC - CSI Ps g)
+    pub fn clear_tab_stop(&mut self, mode: usize) {
+        match mode {
+            0 => {
+                // Clear tab stop at current column
+                if self.tab_stops.is_none() {
+                    // Initialize with default tab stops (every 8 columns)
+                    let mut stops = std::collections::HashSet::new();
+                    for i in (8..self.width).step_by(8) {
+                        stops.insert(i);
+                    }
+                    self.tab_stops = Some(stops);
+                }
+                if let Some(ref mut stops) = self.tab_stops {
+                    stops.remove(&self.cursor_x);
+                }
+            }
+            3 => {
+                // Clear all tab stops
+                self.tab_stops = Some(std::collections::HashSet::new());
+            }
+            _ => {
+                // Unknown mode, ignore
+            }
+        }
+    }
+
+    /// Set a tab stop at the current column (HTS - ESC H)
+    pub fn set_tab_stop(&mut self) {
+        if self.tab_stops.is_none() {
+            // Initialize with default tab stops (every 8 columns)
+            let mut stops = std::collections::HashSet::new();
+            for i in (8..self.width).step_by(8) {
+                stops.insert(i);
+            }
+            self.tab_stops = Some(stops);
+        }
+        if let Some(ref mut stops) = self.tab_stops {
+            stops.insert(self.cursor_x);
+        }
+    }
+
+    /// Perform a soft terminal reset (DECSTR)
+    pub fn soft_reset(&mut self) {
+        // Reset text attributes
+        self.bold = false;
+        self.italic = false;
+        self.underline = false;
+        self.strikethrough = false;
+        self.blink = false;
+        self.reverse = false;
+        self.invisible = false;
+
+        // Reset colors
+        self.fg_color = DEFAULT_FG_COLOR;
+        self.bg_color = DEFAULT_BG_COLOR;
+
+        // Reset modes
+        self.origin_mode = false;
+        self.auto_wrap_mode = true;
+        self.reverse_video_mode = false;
+        self.insert_mode = false;
+        self.automatic_newline = false;
+
+        // Reset scroll region
+        self.scroll_region = None;
+
+        // Reset character sets
+        self.g0_charset = CharSet::Ascii;
+        self.g1_charset = CharSet::Ascii;
+        self.g2_charset = CharSet::Ascii;
+        self.g3_charset = CharSet::Ascii;
+        self.active_charset = 0;
+        self.single_shift = None;
+
+        // Move cursor to home
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+
+        // Clear pending wrap
+        self.pending_wrap = false;
+
+        self.dirty = true;
+    }
+
+    /// Designate a character set to one of G0-G3
+    pub fn designate_charset(&mut self, g_set: usize, charset: CharSet) {
+        match g_set {
+            0 => self.g0_charset = charset,
+            1 => self.g1_charset = charset,
+            2 => self.g2_charset = charset,
+            3 => self.g3_charset = charset,
+            _ => {}
+        }
+    }
+
+    /// Shift Out (SO) - Switch to G1 character set
+    pub fn shift_out(&mut self) {
+        self.active_charset = 1;
+    }
+
+    /// Shift In (SI) - Switch to G0 character set
+    pub fn shift_in(&mut self) {
+        self.active_charset = 0;
+    }
+
+    /// Locking Shift - invoke Gn as GL
+    pub fn locking_shift(&mut self, g_set: usize) {
+        if g_set <= 3 {
+            self.active_charset = g_set;
+        }
+    }
+
+    /// Single Shift - invoke Gn for next character only
+    pub fn single_shift(&mut self, g_set: usize) {
+        if g_set == 2 || g_set == 3 {
+            self.single_shift = Some(g_set);
+        }
+    }
+
+    /// Translate a character through the active character set
+    /// This handles DEC Special Graphics charset for box drawing
+    pub fn translate_charset(&mut self, ch: char) -> char {
+        // Check if we have a single shift active
+        let charset_index = if let Some(ss) = self.single_shift.take() { ss } else { self.active_charset };
+
+        let charset = match charset_index {
+            0 => self.g0_charset,
+            1 => self.g1_charset,
+            2 => self.g2_charset,
+            3 => self.g3_charset,
+            _ => CharSet::Ascii,
+        };
+
+        match charset {
+            CharSet::Ascii => ch,
+            CharSet::DecSpecialGraphics => translate_dec_special_graphics(ch),
+        }
+    }
+
     /// Get a cell from the scrollback buffer or current screen
     /// y is relative to the current view (accounting for scroll offset)
     pub fn get_cell_with_scrollback(&self, x: usize, y: usize) -> Option<&Cell> {
@@ -1251,6 +1683,89 @@ mod tests {
         buffer.resize(1, 1);
         assert_eq!(buffer.width(), 2, "Width should be clamped to minimum of 2");
         assert_eq!(buffer.height(), 2, "Height should be clamped to minimum of 2");
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_forward_tab() {
+            let mut sb = ScreenBuffer::new_with_scrollback(80, 24, 1000, CursorStyle::default());
+
+            // Test moving forward 1 tab stop from column 0
+            sb.cursor_x = 0;
+            sb.forward_tab(1);
+            assert_eq!(sb.cursor_x, 8, "Should move to column 8");
+
+            // Test moving forward 1 tab stop from column 5
+            sb.cursor_x = 5;
+            sb.forward_tab(1);
+            assert_eq!(sb.cursor_x, 8, "Should move to column 8 from column 5");
+
+            // Test moving forward 2 tab stops
+            sb.cursor_x = 0;
+            sb.forward_tab(2);
+            assert_eq!(sb.cursor_x, 16, "Should move to column 16");
+
+            // Test moving forward from a tab stop
+            sb.cursor_x = 16;
+            sb.forward_tab(1);
+            assert_eq!(sb.cursor_x, 24, "Should move to column 24 from column 16");
+
+            // Test that cursor stops at right edge
+            sb.cursor_x = 72;
+            sb.forward_tab(10);
+            assert_eq!(sb.cursor_x, 79, "Should stop at right edge (column 79)");
+        }
+
+        #[test]
+        fn test_back_tab() {
+            let mut sb = ScreenBuffer::new_with_scrollback(80, 24, 1000, CursorStyle::default());
+
+            // Test moving back 1 tab stop from column 16
+            sb.cursor_x = 16;
+            sb.back_tab(1);
+            assert_eq!(sb.cursor_x, 8, "Should move to column 8");
+
+            // Test moving back from middle of tab stop
+            sb.cursor_x = 13;
+            sb.back_tab(1);
+            assert_eq!(sb.cursor_x, 8, "Should move to column 8 from column 13");
+
+            // Test moving back 2 tab stops
+            sb.cursor_x = 24;
+            sb.back_tab(2);
+            assert_eq!(sb.cursor_x, 8, "Should move to column 8");
+
+            // Test moving back from tab stop boundary
+            sb.cursor_x = 8;
+            sb.back_tab(1);
+            assert_eq!(sb.cursor_x, 0, "Should move to column 0 from column 8");
+
+            // Test that cursor stops at left edge
+            sb.cursor_x = 5;
+            sb.back_tab(10);
+            assert_eq!(sb.cursor_x, 0, "Should stop at left edge (column 0)");
+        }
+
+        #[test]
+        fn test_forward_back_tab_combination() {
+            let mut sb = ScreenBuffer::new_with_scrollback(80, 24, 1000, CursorStyle::default());
+
+            // Start at 0, go forward 3 tabs, then back 1 tab
+            sb.cursor_x = 0;
+            sb.forward_tab(3);
+            assert_eq!(sb.cursor_x, 24);
+            sb.back_tab(1);
+            assert_eq!(sb.cursor_x, 16);
+
+            // Go forward 1, back 2
+            sb.forward_tab(1);
+            assert_eq!(sb.cursor_x, 24);
+            sb.back_tab(2);
+            assert_eq!(sb.cursor_x, 8);
+        }
     }
 
     #[test]
@@ -1410,7 +1925,7 @@ mod tests {
     fn test_resize_width_decrease_with_scrollback_and_cursor() {
         // Test that when rewrapping creates more lines than fit, excess goes to scrollback
         // and cursor position is correctly tracked
-        let mut buffer = ScreenBuffer::new_with_scrollback(80, 24, 5, CursorStyle::default());
+        let mut buffer = ScreenBuffer::new_with_scrollback(80, 24, 20, CursorStyle::default());
 
         // Fill buffer with multiple long lines (more than will fit after rewrap)
         for i in 0..5 {

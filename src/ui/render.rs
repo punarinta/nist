@@ -269,19 +269,35 @@ fn render_pane<'a, T>(
                     false
                 };
 
+                // Apply reverse video mode if enabled (swap fg/bg globally)
+                let (cell_fg, cell_bg) = if sb.reverse_video_mode {
+                    (cell.bg_color, cell.fg_color)
+                } else {
+                    (cell.fg_color, cell.bg_color)
+                };
+
                 // Render background (selection highlight or cell background)
+                // Need to consider reverse attribute when determining the actual background color
+                let actual_bg = if cell.reverse {
+                    // When reverse is true, foreground becomes background
+                    cell_fg
+                } else {
+                    cell_bg
+                };
+
                 if is_selected {
                     canvas.set_draw_color(Color::RGB(70, 130, 180));
                     let cell_rect = Rect::new(x, y, actual_cell_width as u32, char_height as u32);
                     canvas.fill_rect(cell_rect).map_err(|e| e.to_string())?;
-                } else if cell.bg_color.r != 0 || cell.bg_color.g != 0 || cell.bg_color.b != 0 {
-                    canvas.set_draw_color(Color::RGB(cell.bg_color.r, cell.bg_color.g, cell.bg_color.b));
+                } else if actual_bg.r != 0 || actual_bg.g != 0 || actual_bg.b != 0 || cell.reverse {
+                    // Draw background if it's non-black OR if reverse is set (to handle reverse with default colors)
+                    canvas.set_draw_color(Color::RGB(actual_bg.r, actual_bg.g, actual_bg.b));
                     let cell_rect = Rect::new(x, y, actual_cell_width as u32, char_height as u32);
                     canvas.fill_rect(cell_rect).map_err(|e| e.to_string())?;
                 }
 
-                // OPTIMIZATION: Render character if not space (skip spaces with default bg)
-                if cell.ch != ' ' {
+                // OPTIMIZATION: Render character if not space (skip spaces with default bg) and not invisible
+                if cell.ch != ' ' && !cell.invisible {
                     // Use extended grapheme if present, otherwise use single char
                     let char_str;
                     let text = if let Some(ref extended) = cell.extended {
@@ -289,6 +305,14 @@ fn render_pane<'a, T>(
                     } else {
                         char_str = cell.ch.to_string();
                         char_str.as_str()
+                    };
+
+                    // Handle reverse video attribute (per-cell reverse, applied after global reverse)
+                    // Note: background was already drawn above (lines 280-298) using actual_bg
+                    let (fg_r, fg_g, fg_b) = if cell.reverse {
+                        (cell_bg.r, cell_bg.g, cell_bg.b)
+                    } else {
+                        (cell_fg.r, cell_fg.g, cell_fg.b)
                     };
 
                     render_glyph(
@@ -302,12 +326,15 @@ fn render_pane<'a, T>(
                         text,
                         x,
                         y,
-                        cell.fg_color.r,
-                        cell.fg_color.g,
-                        cell.fg_color.b,
+                        fg_r,
+                        fg_g,
+                        fg_b,
                         actual_cell_width as u32,
                         char_height as u32,
                         scale_factor,
+                        cell.bold,
+                        cell.underline,
+                        cell.strikethrough,
                     )?;
                 }
             }
@@ -394,6 +421,9 @@ fn render_pane<'a, T>(
                         char_width as u32,
                         char_height as u32,
                         scale_factor,
+                        cell.bold,
+                        cell.underline,
+                        cell.strikethrough,
                     )?;
                 } else {
                     // Fallback if cell doesn't exist
@@ -478,6 +508,9 @@ fn render_glyph<'a, T>(
     cell_width: u32,
     cell_height: u32,
     _scale_factor: f32,
+    bold: bool,
+    underline: bool,
+    strikethrough: bool,
 ) -> Result<(), String> {
     let cache_key = text.to_string();
 
@@ -549,6 +582,10 @@ fn render_glyph<'a, T>(
             let char_rect = Rect::new(x, y, query.width, query.height);
             canvas.copy(cached_texture, None, char_rect).map_err(|e| e.to_string())?;
         }
+
+        // Draw decorations (underline, strikethrough) for cached glyphs
+        draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, bold, underline, strikethrough)?;
+
         return Ok(());
     }
 
@@ -757,6 +794,61 @@ fn render_glyph<'a, T>(
             }
         }
     }
+
+    // Draw decorations for non-cached glyphs
+    draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, bold, underline, strikethrough)?;
+
+    Ok(())
+}
+
+/// Draw text decorations (underline, strikethrough, bold effect)
+fn draw_text_decorations(
+    canvas: &mut Canvas<Window>,
+    x: i32,
+    y: i32,
+    cell_width: u32,
+    cell_height: u32,
+    r: u8,
+    g: u8,
+    b: u8,
+    _bold: bool,
+    underline: bool,
+    strikethrough: bool,
+) -> Result<(), String> {
+    canvas.set_draw_color(Color::RGB(r, g, b));
+
+    // Draw underline
+    if underline {
+        let underline_y = y + cell_height as i32 - 2;
+        let underline_thickness = 1;
+        for dy in 0..underline_thickness {
+            canvas
+                .draw_line(
+                    sdl3::rect::Point::new(x, underline_y + dy),
+                    sdl3::rect::Point::new(x + cell_width as i32, underline_y + dy),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Draw strikethrough
+    if strikethrough {
+        let strikethrough_y = y + (cell_height as i32 / 2);
+        let strikethrough_thickness = 1;
+        for dy in 0..strikethrough_thickness {
+            canvas
+                .draw_line(
+                    sdl3::rect::Point::new(x, strikethrough_y + dy),
+                    sdl3::rect::Point::new(x + cell_width as i32, strikethrough_y + dy),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Note: Bold is typically handled by the font rendering itself or by rendering
+    // the text twice with a 1-pixel offset. For now, we rely on the font's bold variant
+    // or leave it as-is. SDL3's TTF library should handle bold automatically when
+    // we eventually add font style support.
 
     Ok(())
 }

@@ -11,21 +11,18 @@ mod state;
 mod system;
 mod tab_gui;
 mod terminal;
-mod terminal_config;
 mod ui;
 
 #[cfg(feature = "test-server")]
 mod test_server;
 
-use ui::render;
-
 use crate::tab_gui::TabBarGui;
-use crate::terminal::Terminal;
-use crate::terminal_config::TerminalLibrary;
+use crate::terminal::{Terminal, TerminalLibrary};
 
 use sdl3::event::Event;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use ui::render;
 
 // Build-time version information
 const BUILD_DATE: &str = env!("BUILD_DATE");
