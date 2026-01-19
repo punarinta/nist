@@ -737,7 +737,6 @@ impl ScreenBuffer {
 
             // Track the last character for REP command
             self.last_char = Some(first_char);
-
             self.cursor_x += char_width;
             self.dirty = true;
 

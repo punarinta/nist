@@ -486,14 +486,14 @@ pub(crate) fn process_csi_sequence(
             sb.pending_wrap = false;
         }
         'G' => {
-            // CHA (Cursor Horizontal Absolute)
+            // CHA - Cursor Horizontal Absolute
             let col = if args.is_empty() || args[0].is_empty() {
                 1
             } else {
                 args[0].parse::<usize>().unwrap_or(1)
             };
-            sb.pending_wrap = false;
-            sb.cursor_x = col.saturating_sub(1).min(sb.width() - 1);
+            let target_col = col.saturating_sub(1);
+            sb.move_cursor_to(target_col, sb.cursor_y);
         }
         '`' => {
             // HPA (Horizontal Position Absolute) - same as CHA but uses backtick
@@ -1164,8 +1164,31 @@ pub(crate) fn process_csi_sequence(
             sb.save_cursor();
         }
         'u' => {
-            // Restore cursor position (ANSI.SYS style)
-            sb.restore_cursor();
+            // Handle 'u' sequences which can be:
+            // 1. CSI u - Restore cursor position (ANSI.SYS style)
+            // 2. CSI > Ps u - Set keyboard protocol mode (XTerm extension)
+            // 3. CSI < flags u - Pop keyboard protocol mode (XTerm extension)
+
+            if !args.is_empty() && !args[0].is_empty() {
+                let arg = args[0];
+                if arg.starts_with('>') {
+                    // CSI > Ps u - Set keyboard protocol mode
+                    // This is an XTerm extension for enhanced keyboard reporting
+                    // We don't need to implement this, just recognize and ignore it
+                    // to avoid incorrectly restoring the cursor
+                } else if arg.starts_with('<') {
+                    // CSI < flags u - Pop keyboard protocol mode
+                    // This is an XTerm extension for enhanced keyboard reporting
+                    // We don't need to implement this, just recognize and ignore it
+                    // to avoid incorrectly restoring the cursor
+                } else {
+                    // Plain CSI u without special prefixes - restore cursor
+                    sb.restore_cursor();
+                }
+            } else {
+                // CSI u with no args - restore cursor position
+                sb.restore_cursor();
+            }
         }
         'q' => {
             // DECSCUSR (Set Cursor Style) - CSI Ps SP q

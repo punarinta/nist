@@ -49,7 +49,7 @@ impl TerminalLibrary {
                 command: "bash".to_string(),
                 args: vec![],
                 keys: KeyMappings {
-                    backspace: vec![8, 32, 8],      // BS SPACE BS sequence
+                    backspace: vec![127],           // DEL character
                     _delete: vec![27, 91, 51, 126], // ESC [ 3 ~
                     _return_key: vec![10],          // LF
                 },
