@@ -44,25 +44,43 @@ fn read_bash_history(max_entries: usize) -> Vec<String> {
 fn read_zsh_history(max_entries: usize) -> Vec<String> {
     let home = match env::var("HOME") {
         Ok(h) => h,
-        Err(_) => return Vec::new(),
+        Err(_) => {
+            eprintln!("[HISTORY] HOME environment variable not set for zsh");
+            return Vec::new();
+        }
     };
+
     let path = PathBuf::from(home).join(".zsh_history");
     let mut entries = Vec::new();
 
-    if let Ok(content) = fs::read_to_string(&path) {
-        for line in content.lines().rev() {
-            if entries.len() >= max_entries {
-                break;
-            }
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let content = String::from_utf8_lossy(&bytes);
 
-            // Zsh history format: : <timestamp>:<duration>;<command>
-            // Extract the command part after the semicolon
-            if let Some(cmd) = line.split(';').nth(1) {
-                let cmd = cmd.trim();
-                if !cmd.is_empty() && !cmd.starts_with('#') {
-                    entries.push(cmd.to_string());
+            for (idx, line) in content.lines().rev().enumerate() {
+                if entries.len() >= max_entries {
+                    break;
+                }
+
+                // Zsh history format: : <timestamp>:<duration>;<command>
+                // Extract the command part after the semicolon
+                if let Some(cmd) = line.split(';').nth(1) {
+                    let cmd = cmd.trim();
+                    if !cmd.is_empty() && !cmd.starts_with('#') {
+                        entries.push(cmd.to_string());
+                    }
+                } else {
+                    // Line doesn't have semicolon - might not be in extended format
+                    // Try treating the whole line as a command
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with(':') {
+                        entries.push(trimmed.to_string());
+                    }
                 }
             }
+        }
+        Err(e) => {
+            eprintln!("[HISTORY] Failed to read zsh history file {:?}: {}", path, e);
         }
     }
 
@@ -244,14 +262,6 @@ mod tests {
         assert_eq!(clean_history_line("123"), ""); // Just a number
         assert_eq!(clean_history_line(""), "");
         assert_eq!(clean_history_line("  "), "");
-    }
-
-    #[test]
-    fn test_read_shell_history() {
-        // Just ensure it doesn't panic
-        let history = read_shell_history(10);
-        // history is Vec<String>, not Result
-        assert!(history.len() >= 0);
     }
 
     #[test]

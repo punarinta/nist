@@ -28,6 +28,7 @@ const BUTTON_HOVER: Color = Color::RGB(90, 90, 90);
 const BUTTON_YES: Color = Color::RGB(60, 120, 180);
 const BUTTON_YES_HOVER: Color = Color::RGB(80, 140, 200);
 const TEXT_COLOR: Color = Color::RGB(255, 255, 255);
+const HISTORY_EMPTY_MESSAGE: &str = "No command history found. Start typing commands to build your history.";
 
 /// Wrap text to fit within a maximum width
 fn wrap_text(text: &str, font: &Font, max_width: u32) -> Vec<String> {
@@ -316,9 +317,10 @@ pub fn terminal_history_search_dialog(
         eprintln!("[DIALOG]   [{}]: {}", i, cmd);
     }
 
+    // Allow dialog to show even with empty history - user can still see the UI
+    // and understand that the feature exists, even if no history is available yet
     if combined_history.is_empty() {
-        eprintln!("[DIALOG] No history available, returning error");
-        return Err("No history available".to_string());
+        eprintln!("[DIALOG] No history available, but showing dialog anyway");
     }
 
     // 3. Calculate dialog dimensions
@@ -335,10 +337,13 @@ pub fn terminal_history_search_dialog(
     let dialog_x = (window_width - dialog_width) / 2;
     let dialog_y = (window_height - dialog_height) / 2;
 
-    eprintln!("[DIALOG] Dialog dimensions: {}x{} at ({}, {})", dialog_width, dialog_height, dialog_x, dialog_y);
-
     // 4. Create filtered list
-    let rows: Vec<ListRow> = combined_history.into_iter().map(|cmd| ListRow::new(cmd)).collect();
+    let rows: Vec<ListRow> = if combined_history.is_empty() {
+        // Show a helpful message when no history is available
+        vec![ListRow::new(HISTORY_EMPTY_MESSAGE.to_string())]
+    } else {
+        combined_history.into_iter().map(|cmd| ListRow::new(cmd)).collect()
+    };
 
     eprintln!("[DIALOG] Creating FilteredList with {} rows", rows.len());
     // Adjust position and size to account for padding
@@ -354,7 +359,11 @@ pub fn terminal_history_search_dialog(
     // 5. Set selection callback to insert command into terminal
     let terminal_clone = terminal;
     filtered_list.set_on_select(Box::new(move |row: &ListRow| {
-        eprintln!("[DIALOG] Selection callback fired! Command: {}", row.text);
+        // Don't paste the empty history placeholder message
+        if row.text == HISTORY_EMPTY_MESSAGE {
+            return;
+        }
+
         if let Some(ref term) = terminal_clone {
             if let Ok(mut t) = term.lock() {
                 // Insert command WITHOUT Enter - use send_paste to ensure it's flushed
