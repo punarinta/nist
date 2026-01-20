@@ -382,6 +382,72 @@ pub fn handle_hotkey_action(
             }
             KeyboardResult::render()
         }
+
+        HotkeyAction::ExtendSelectionUp => {
+            if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
+                if let Ok(mut t) = terminal.lock() {
+                    if t.extend_selection_up() {
+                        return KeyboardResult::render();
+                    }
+                }
+            }
+            KeyboardResult::none()
+        }
+
+        HotkeyAction::ExtendSelectionDown => {
+            if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
+                if let Ok(mut t) = terminal.lock() {
+                    if t.extend_selection_down() {
+                        return KeyboardResult::render();
+                    }
+                }
+            }
+            KeyboardResult::none()
+        }
+
+        HotkeyAction::ExtendSelectionLeft => {
+            if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
+                if let Ok(mut t) = terminal.lock() {
+                    if t.extend_selection_left() {
+                        return KeyboardResult::render();
+                    }
+                }
+            }
+            KeyboardResult::none()
+        }
+
+        HotkeyAction::ExtendSelectionRight => {
+            if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
+                if let Ok(mut t) = terminal.lock() {
+                    if t.extend_selection_right() {
+                        return KeyboardResult::render();
+                    }
+                }
+            }
+            KeyboardResult::none()
+        }
+
+        HotkeyAction::ExtendSelectionPageUp => {
+            if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
+                if let Ok(mut t) = terminal.lock() {
+                    if t.extend_selection_page_up() {
+                        return KeyboardResult::render();
+                    }
+                }
+            }
+            KeyboardResult::none()
+        }
+
+        HotkeyAction::ExtendSelectionPageDown => {
+            if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
+                if let Ok(mut t) = terminal.lock() {
+                    if t.extend_selection_page_down() {
+                        return KeyboardResult::render();
+                    }
+                }
+            }
+            KeyboardResult::none()
+        }
     }
 }
 
@@ -482,6 +548,12 @@ fn handle_copy_selection(
                         let pane_area_height = window_h - tab_bar_height;
                         let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_w, pane_area_height);
 
+                        // Get scroll information to convert absolute positions to screen coordinates
+                        let sb = t.screen_buffer.lock().unwrap();
+                        let scroll_offset = sb.scroll_offset;
+                        let scrollback_len = sb.scrollback_len();
+                        drop(sb);
+
                         // Find the active pane rect
                         pane_rects
                             .iter()
@@ -489,12 +561,17 @@ fn handle_copy_selection(
                             .map(|(_, rect, _, _, _)| {
                                 // Calculate selection bounds in screen coordinates
                                 let pane_padding = crate::ui::render::get_pane_padding();
-                                let (start_col, start_row, end_col, end_row) = sel.normalized();
+                                let (start_col, start_row_abs, end_col, end_row_abs) = sel.normalized();
+
+                                // Convert absolute row positions to screen row positions
+                                let visible_base = scrollback_len.saturating_sub(scroll_offset);
+                                let start_row_screen = (start_row_abs as i32 - visible_base as i32).max(0) as usize;
+                                let end_row_screen = (end_row_abs as i32 - visible_base as i32).max(0) as usize;
 
                                 let x = rect.x() + pane_padding as i32 + (start_col as f32 * char_width) as i32;
-                                let y = rect.y() + pane_padding as i32 + (start_row as f32 * char_height) as i32;
+                                let y = rect.y() + pane_padding as i32 + (start_row_screen as f32 * char_height) as i32;
                                 let width = ((end_col - start_col + 1) as f32 * char_width) as u32;
-                                let height = ((end_row - start_row + 1) as f32 * char_height) as u32;
+                                let height = ((end_row_screen - start_row_screen + 1) as f32 * char_height) as u32;
 
                                 Rect::new(x, y, width, height)
                             })

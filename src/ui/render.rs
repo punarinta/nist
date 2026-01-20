@@ -255,7 +255,7 @@ fn render_pane<'a, T>(
 
                 // Check if cell is selected
                 let is_selected = if let Some(ref sel) = selection_snapshot {
-                    sel.contains(col, row)
+                    sel.contains(col, row, sb.scroll_offset, sb.scrollback_len())
                 } else {
                     false
                 };

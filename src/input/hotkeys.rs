@@ -78,6 +78,14 @@ pub enum HotkeyAction {
     ScrollLineUp,
     ScrollLineDown,
     GoToPrompt, // Scroll to the prompt (reset scroll position)
+
+    // Selection extension with Shift+Arrow keys
+    ExtendSelectionUp,
+    ExtendSelectionDown,
+    ExtendSelectionLeft,
+    ExtendSelectionRight,
+    ExtendSelectionPageUp,
+    ExtendSelectionPageDown,
 }
 
 /// Match navigation hotkeys from settings (single-key only)
@@ -226,12 +234,14 @@ pub fn match_hotkey(keycode: Keycode, is_ctrl: bool, is_shift: bool) -> Option<H
             _ => None,
         }
     } else if is_shift && !is_ctrl {
-        // Shift combinations (scrollback navigation)
+        // Shift combinations (selection extension and scrollback navigation)
         match keycode {
-            Keycode::PageUp => Some(HotkeyAction::ScrollPageUp),
-            Keycode::PageDown => Some(HotkeyAction::ScrollPageDown),
-            Keycode::Up => Some(HotkeyAction::ScrollLineUp),
-            Keycode::Down => Some(HotkeyAction::ScrollLineDown),
+            Keycode::PageUp => Some(HotkeyAction::ExtendSelectionPageUp),
+            Keycode::PageDown => Some(HotkeyAction::ExtendSelectionPageDown),
+            Keycode::Up => Some(HotkeyAction::ExtendSelectionUp),
+            Keycode::Down => Some(HotkeyAction::ExtendSelectionDown),
+            Keycode::Left => Some(HotkeyAction::ExtendSelectionLeft),
+            Keycode::Right => Some(HotkeyAction::ExtendSelectionRight),
             _ => None,
         }
     } else {
@@ -241,7 +251,18 @@ pub fn match_hotkey(keycode: Keycode, is_ctrl: bool, is_shift: bool) -> Option<H
 
 /// Extract modifier flags from SDL keymod
 pub fn get_modifiers(keymod: sdl3::keyboard::Mod) -> (bool, bool, bool) {
+    // On macOS, the Cmd key (GUI) is the primary modifier, not Ctrl
+    // So we treat GUI as "ctrl" on macOS for consistency with platform conventions
+    #[cfg(target_os = "macos")]
+    let is_ctrl = {
+        let is_gui = keymod.contains(sdl3::keyboard::Mod::LGUIMOD) || keymod.contains(sdl3::keyboard::Mod::RGUIMOD);
+        let is_ctrl_key = keymod.contains(sdl3::keyboard::Mod::LCTRLMOD) || keymod.contains(sdl3::keyboard::Mod::RCTRLMOD);
+        is_gui || is_ctrl_key // Treat both Cmd and Ctrl as the primary modifier
+    };
+
+    #[cfg(not(target_os = "macos"))]
     let is_ctrl = keymod.contains(sdl3::keyboard::Mod::LCTRLMOD) || keymod.contains(sdl3::keyboard::Mod::RCTRLMOD);
+
     let is_shift = keymod.contains(sdl3::keyboard::Mod::LSHIFTMOD) || keymod.contains(sdl3::keyboard::Mod::RSHIFTMOD);
     let is_alt = keymod.contains(sdl3::keyboard::Mod::LALTMOD) || keymod.contains(sdl3::keyboard::Mod::RALTMOD);
     (is_ctrl, is_shift, is_alt)

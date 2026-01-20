@@ -31,24 +31,31 @@ pub(crate) struct Terminal {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Selection {
     pub start_col: usize,
-    pub start_row: usize,
+    pub start_row: usize, // Absolute row position (scrollback_len + screen_row at time of click)
     pub end_col: usize,
-    pub end_row: usize,
+    pub end_row: usize, // Absolute row position (scrollback_len + screen_row at time of drag)
 }
 
 impl Selection {
-    pub fn new(col: usize, row: usize) -> Self {
+    pub fn new(col: usize, screen_row: usize, scroll_offset: usize, scrollback_len: usize) -> Self {
+        // Convert screen row to absolute position
+        // When scrolled back, screen row 0 maps to an older position in scrollback
+        let absolute_row = scrollback_len.saturating_sub(scroll_offset) + screen_row;
+
         Selection {
             start_col: col,
-            start_row: row,
+            start_row: absolute_row,
             end_col: col,
-            end_row: row,
+            end_row: absolute_row,
         }
     }
 
-    pub fn update_end(&mut self, col: usize, row: usize) {
+    pub fn update_end(&mut self, col: usize, screen_row: usize, scroll_offset: usize, scrollback_len: usize) {
+        // Convert screen row to absolute position
+        let absolute_row = scrollback_len.saturating_sub(scroll_offset) + screen_row;
+
         self.end_col = col;
-        self.end_row = row;
+        self.end_row = absolute_row;
     }
 
     pub fn normalized(&self) -> (usize, usize, usize, usize) {
@@ -59,18 +66,21 @@ impl Selection {
         }
     }
 
-    pub fn contains(&self, col: usize, row: usize) -> bool {
+    pub fn contains(&self, col: usize, screen_row: usize, current_scroll_offset: usize, scrollback_len: usize) -> bool {
+        // Convert current screen row to absolute position for comparison
+        let absolute_row = scrollback_len.saturating_sub(current_scroll_offset) + screen_row;
+
         let (start_col, start_row, end_col, end_row) = self.normalized();
 
-        if row < start_row || row > end_row {
+        if absolute_row < start_row || absolute_row > end_row {
             return false;
         }
 
-        if row == start_row && row == end_row {
+        if absolute_row == start_row && absolute_row == end_row {
             col >= start_col && col <= end_col
-        } else if row == start_row {
+        } else if absolute_row == start_row {
             col >= start_col
-        } else if row == end_row {
+        } else if absolute_row == end_row {
             col <= end_col
         } else {
             true
@@ -428,14 +438,22 @@ impl Terminal {
 
     pub(crate) fn start_selection(&mut self, col: usize, row: usize) {
         if let Ok(mut sel) = self.selection.try_lock() {
-            *sel = Some(Selection::new(col, row));
+            if let Ok(sb) = self.screen_buffer.try_lock() {
+                let scroll_offset = sb.scroll_offset;
+                let scrollback_len = sb.scrollback_len();
+                *sel = Some(Selection::new(col, row, scroll_offset, scrollback_len));
+            }
         }
     }
 
     pub(crate) fn update_selection(&mut self, col: usize, row: usize) {
         if let Ok(mut selection) = self.selection.try_lock() {
             if let Some(ref mut sel) = *selection {
-                sel.update_end(col, row);
+                if let Ok(sb) = self.screen_buffer.try_lock() {
+                    let scroll_offset = sb.scroll_offset;
+                    let scrollback_len = sb.scrollback_len();
+                    sel.update_end(col, row, scroll_offset, scrollback_len);
+                }
             }
         }
     }
@@ -455,6 +473,10 @@ impl Terminal {
         if row >= screen_buffer.height() {
             return;
         }
+
+        // Get scroll information for absolute positioning
+        let scroll_offset = screen_buffer.scroll_offset;
+        let scrollback_len = screen_buffer.scrollback_len();
 
         let is_word_char = |ch: char| -> bool { ch.is_alphanumeric() || ch == '_' };
 
@@ -497,13 +519,160 @@ impl Terminal {
         drop(screen_buffer);
 
         if let Ok(mut sel) = self.selection.try_lock() {
+            // Convert screen row to absolute position
+            let absolute_row = scrollback_len.saturating_sub(scroll_offset) + row;
+
             *sel = Some(Selection {
                 start_col,
-                start_row: row,
+                start_row: absolute_row,
                 end_col,
-                end_row: row,
+                end_row: absolute_row,
             });
         }
+    }
+
+    /// Extend selection upward by one line, creating selection at cursor if none exists
+    pub(crate) fn extend_selection_up(&mut self) -> bool {
+        self.extend_selection_vertical(-1)
+    }
+
+    /// Extend selection downward by one line, creating selection at cursor if none exists
+    pub(crate) fn extend_selection_down(&mut self) -> bool {
+        self.extend_selection_vertical(1)
+    }
+
+    /// Extend selection left by one character, creating selection at cursor if none exists
+    pub(crate) fn extend_selection_left(&mut self) -> bool {
+        self.extend_selection_horizontal(-1)
+    }
+
+    /// Extend selection right by one character, creating selection at cursor if none exists
+    pub(crate) fn extend_selection_right(&mut self) -> bool {
+        self.extend_selection_horizontal(1)
+    }
+
+    /// Extend selection upward by one page, creating selection at cursor if none exists
+    pub(crate) fn extend_selection_page_up(&mut self) -> bool {
+        let height = self.height as i32;
+        self.extend_selection_vertical(-height)
+    }
+
+    /// Extend selection downward by one page, creating selection at cursor if none exists
+    pub(crate) fn extend_selection_page_down(&mut self) -> bool {
+        let height = self.height as i32;
+        self.extend_selection_vertical(height)
+    }
+
+    /// Helper: Extend selection vertically (positive = down, negative = up)
+    fn extend_selection_vertical(&mut self, delta_rows: i32) -> bool {
+        let mut needs_render = false;
+
+        let sb = match self.screen_buffer.try_lock() {
+            Ok(buf) => buf,
+            Err(_) => return false,
+        };
+
+        let scroll_offset = sb.scroll_offset;
+        let scrollback_len = sb.scrollback_len();
+        let screen_height = sb.height();
+
+        let cursor_x = sb.cursor_x;
+        let cursor_y = sb.cursor_y;
+
+        drop(sb);
+
+        let mut selection = match self.selection.try_lock() {
+            Ok(sel) => sel,
+            Err(_) => return false,
+        };
+
+        // If no selection exists, create one at cursor position
+        if selection.is_none() {
+            let absolute_row = scrollback_len.saturating_sub(scroll_offset) + cursor_y;
+            *selection = Some(Selection {
+                start_col: cursor_x,
+                start_row: absolute_row,
+                end_col: cursor_x,
+                end_row: absolute_row,
+            });
+        }
+
+        if let Some(ref mut sel) = *selection {
+            // Apply delta directly to absolute position
+            let new_absolute_row = (sel.end_row as i32 + delta_rows).max(0) as usize;
+
+            // Clamp to valid range (0 to scrollback_len + screen_height - 1)
+            let max_absolute_row = scrollback_len + screen_height - 1;
+            sel.end_row = new_absolute_row.min(max_absolute_row);
+
+            needs_render = true;
+
+            // Calculate where the new selection end appears on current screen
+            let selection_screen_row = (sel.end_row as i32) - (scrollback_len.saturating_sub(scroll_offset) as i32);
+
+            // Check if selection went offscreen and needs scrolling
+            let needs_scroll_up = selection_screen_row < 0;
+            let needs_scroll_down = selection_screen_row >= screen_height as i32;
+
+            // Auto-scroll if selection end went offscreen
+            drop(selection);
+
+            if let Ok(mut sb) = self.screen_buffer.try_lock() {
+                if needs_scroll_up {
+                    // Selection end is above visible area - scroll up
+                    let scroll_amount = (-selection_screen_row) as usize;
+                    sb.scroll_view_up(scroll_amount);
+                } else if needs_scroll_down {
+                    // Selection end is below visible area - scroll down
+                    let scroll_amount = (selection_screen_row - screen_height as i32 + 1) as usize;
+                    sb.scroll_view_down(scroll_amount);
+                }
+            }
+        }
+
+        needs_render
+    }
+
+    /// Helper: Extend selection horizontally (positive = right, negative = left)
+    fn extend_selection_horizontal(&mut self, delta_cols: i32) -> bool {
+        let mut needs_render = false;
+
+        let sb = match self.screen_buffer.try_lock() {
+            Ok(buf) => buf,
+            Err(_) => return false,
+        };
+
+        let scroll_offset = sb.scroll_offset;
+        let scrollback_len = sb.scrollback_len();
+        let screen_width = sb.width();
+        let cursor_x = sb.cursor_x;
+        let cursor_y = sb.cursor_y;
+
+        drop(sb);
+
+        let mut selection = match self.selection.try_lock() {
+            Ok(sel) => sel,
+            Err(_) => return false,
+        };
+
+        // If no selection exists, create one at cursor position
+        if selection.is_none() {
+            let absolute_row = scrollback_len.saturating_sub(scroll_offset) + cursor_y;
+            *selection = Some(Selection {
+                start_col: cursor_x,
+                start_row: absolute_row,
+                end_col: cursor_x,
+                end_row: absolute_row,
+            });
+        }
+
+        if let Some(ref mut sel) = *selection {
+            let new_col = (sel.end_col as i32 + delta_cols).max(0) as usize;
+            sel.end_col = new_col.min(screen_width.saturating_sub(1));
+            needs_render = true;
+        }
+
+        needs_render
     }
 
     pub(crate) fn get_selected_text(&self) -> Option<String> {
@@ -514,8 +683,11 @@ impl Terminal {
 
             let mut text = String::new();
 
+            // Note: start_row and end_row are absolute positions in scrollback+screen buffer
+            let max_absolute_row = screen_buffer.scrollback_len() + screen_buffer.height();
+
             for row in start_row..=end_row {
-                if row >= screen_buffer.height() {
+                if row >= max_absolute_row {
                     break;
                 }
 
@@ -528,7 +700,7 @@ impl Terminal {
 
                 let mut line = String::new();
                 for col in line_start..=line_end {
-                    if let Some(cell) = screen_buffer.get_cell_with_scrollback(col, row) {
+                    if let Some(cell) = screen_buffer.get_cell_absolute(col, row) {
                         if cell.width == 0 || cell.ch == '\0' {
                             continue;
                         }

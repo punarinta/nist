@@ -1479,6 +1479,10 @@ impl ScreenBuffer {
         self.scrollback_limit
     }
 
+    pub fn scrollback_len(&self) -> usize {
+        self.scrollback_buffer.len()
+    }
+
     pub fn get_scrollback_buffer(&self) -> &Vec<Vec<Cell>> {
         &self.scrollback_buffer
     }
@@ -1747,6 +1751,27 @@ impl ScreenBuffer {
             let screen_y = y - lines_from_scrollback;
             if screen_y < self.height {
                 return self.get_cell(x, screen_y);
+            }
+        }
+
+        None
+    }
+
+    /// Get a cell by absolute position in the combined scrollback+screen buffer
+    /// absolute_row: 0 to scrollback_len-1 = scrollback, scrollback_len onwards = current screen
+    pub fn get_cell_absolute(&self, x: usize, absolute_row: usize) -> Option<&Cell> {
+        let scrollback_len = self.scrollback_buffer.len();
+
+        if absolute_row < scrollback_len {
+            // Get from scrollback buffer
+            if x < self.scrollback_buffer[absolute_row].len() {
+                return Some(&self.scrollback_buffer[absolute_row][x]);
+            }
+        } else {
+            // Get from current screen
+            let screen_row = absolute_row - scrollback_len;
+            if screen_row < self.height && x < self.width {
+                return Some(&self.cells[screen_row][x]);
             }
         }
 
