@@ -57,7 +57,7 @@ fn read_zsh_history(max_entries: usize) -> Vec<String> {
         Ok(bytes) => {
             let content = String::from_utf8_lossy(&bytes);
 
-            for (idx, line) in content.lines().rev().enumerate() {
+            for (_idx, line) in content.lines().rev().enumerate() {
                 if entries.len() >= max_entries {
                     break;
                 }

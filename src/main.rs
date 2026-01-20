@@ -365,7 +365,7 @@ fn main() -> Result<(), String> {
             for event in &events {
                 // Reset cursor debounce timer on keyboard input
                 match event {
-                    Event::KeyDown { keycode, keymod, .. } => {
+                    Event::KeyDown { keycode: _, keymod: _, .. } => {
                         last_keyboard_input = Instant::now();
                     }
                     Event::TextInput { .. } => {

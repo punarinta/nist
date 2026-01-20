@@ -335,44 +335,6 @@ pub fn handle_hotkey_action(
             }
         }
 
-        HotkeyAction::ScrollPageUp => {
-            if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
-                if let Ok(t) = terminal.lock() {
-                    let height = t.height as usize;
-                    t.screen_buffer.lock().unwrap().scroll_view_up(height);
-                }
-            }
-            KeyboardResult::render()
-        }
-
-        HotkeyAction::ScrollPageDown => {
-            if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
-                if let Ok(t) = terminal.lock() {
-                    let height = t.height as usize;
-                    t.screen_buffer.lock().unwrap().scroll_view_down(height);
-                }
-            }
-            KeyboardResult::render()
-        }
-
-        HotkeyAction::ScrollLineUp => {
-            if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
-                if let Ok(t) = terminal.lock() {
-                    t.screen_buffer.lock().unwrap().scroll_view_up(1);
-                }
-            }
-            KeyboardResult::render()
-        }
-
-        HotkeyAction::ScrollLineDown => {
-            if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
-                if let Ok(t) = terminal.lock() {
-                    t.screen_buffer.lock().unwrap().scroll_view_down(1);
-                }
-            }
-            KeyboardResult::render()
-        }
-
         HotkeyAction::GoToPrompt => {
             // Alt-G-P: Reset scroll position to 0 (go back to the prompt)
             if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {

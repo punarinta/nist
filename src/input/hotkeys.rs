@@ -73,10 +73,6 @@ pub enum HotkeyAction {
     PasteQuick, // Ctrl+V paste for idle terminal (no shift)
 
     // Scrollback navigation
-    ScrollPageUp,
-    ScrollPageDown,
-    ScrollLineUp,
-    ScrollLineDown,
     GoToPrompt, // Scroll to the prompt (reset scroll position)
 
     // Selection extension with Shift+Arrow keys
