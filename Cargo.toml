@@ -1,6 +1,6 @@
 [package]
 name = "nist"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 
 [[bin]]
@@ -43,9 +43,6 @@ sdl3-ttf-sys = { version = "0.6", features = ["sdlttf-plutosvg", "sdlttf-harfbuz
 [target.'cfg(target_os = "windows")'.dependencies]
 sdl3 = { version = "0.17.1", features = ["ttf"] }
 sdl3-ttf-sys = { version = "0.6", features = ["sdlttf-plutosvg", "sdlttf-harfbuzz"] }
-
-[target.'cfg(target_os = "macos")'.dependencies.libproc]
-version = "0.14"
 
 [build-dependencies]
 chrono = "0.4"

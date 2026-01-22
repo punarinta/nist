@@ -498,8 +498,8 @@ fn handle_key_down_event(
         // Fall through to handle this key normally
     }
 
-    // For TerminalHistorySearch, check if terminals are grouped BEFORE matching hotkey
-    // If grouped, we want to pass Ctrl+R through to terminal, so we skip hotkey matching
+    // For TerminalHistorySearch, check if terminals are grouped OR if a foreground process is running
+    // BEFORE matching hotkey. If either is true, we pass Ctrl+R through to the terminal/process
     let is_ctrl_r = keycode == sdl3::keyboard::Keycode::R && is_ctrl_pressed && !is_shift_pressed && !is_alt_pressed;
     let mut should_skip_hotkey_for_ctrl_r = false;
 
@@ -510,9 +510,21 @@ fn handle_key_down_event(
                 .get(gui.active_tab)
                 .map(|t| t.pane_layout.selected_panes.is_empty())
                 .unwrap_or(true);
-            eprintln!("[EVENTS] Ctrl+R pressed, not_grouped: {}", is_not_grouped);
-            if !is_not_grouped {
-                // Terminals are grouped, skip hotkey matching to let key pass to terminal
+
+            // Check if a foreground process (ssh, vim, etc.) is running
+            let has_foreground_process = if let Some(terminal) = gui.tab_states.get(gui.active_tab).and_then(|t| t.pane_layout.get_active_terminal()) {
+                if let Ok(t) = terminal.lock() {
+                    t.is_foreground_process_running()
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if !is_not_grouped || has_foreground_process {
+                // Terminals are grouped OR a foreground process is running
+                // Skip hotkey matching to let key pass to terminal/process
                 should_skip_hotkey_for_ctrl_r = true;
             }
         }
@@ -523,8 +535,6 @@ fn handle_key_down_event(
         if let Some(nav_action) =
             super::hotkeys::match_navigation_hotkey(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed, &settings.hotkeys.navigation)
         {
-            eprintln!("[EVENTS] Navigation hotkey matched: {:?}", nav_action);
-
             use super::hotkeys::NavigationAction;
 
             // Map navigation action to keyboard action

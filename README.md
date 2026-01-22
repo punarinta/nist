@@ -34,7 +34,7 @@ State includes layout structure, relative pane sizes, current working directory,
 
 History search
 ===
-If a terminal is in a normal, not grouped, mode you can press Ctrl+R (configurable hotkey) and get a visual history search dialog with combined shell & private history in one list. Entries are deduplicated and filtered on the fly.
+If a terminal is in a normal, not grouped, mode you can press Ctrl+R (configurable hotkey) and get a visual history search dialog with combined shell & private history in one list. Entries are deduplicated and filtered on the fly. The terminal automatically detects it if you run in it a program that uses Ctrl+R (e.g. 'nano') and disables the search dialog, as it makes no sense there.
 
 Settings
 ===

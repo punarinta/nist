@@ -728,45 +728,16 @@ impl Terminal {
     }
 
     pub(crate) fn get_cwd(&self) -> Option<std::path::PathBuf> {
-        #[cfg(target_os = "linux")]
-        {
-            if let Some(pid) = self.child.process_id() {
-                let cwd_path = format!("/proc/{}/cwd", pid);
-                if let Ok(path) = std::fs::read_link(&cwd_path) {
-                    return Some(path);
-                }
+        // Use sysinfo for cross-platform cwd detection
+        if let Some(pid) = self.child.process_id() {
+            use sysinfo::{Pid, System};
+
+            let mut system = System::new();
+            system.refresh_process(Pid::from_u32(pid));
+
+            if let Some(process) = system.process(Pid::from_u32(pid)) {
+                return process.cwd().map(|p| p.to_path_buf());
             }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(pid) = self.child.process_id() {
-                use libproc::libproc::proc_pid::pidcwd;
-
-                if let Ok(path) = pidcwd(pid as i32) {
-                    return Some(path);
-                }
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            if let Some(pid) = self.child.process_id() {
-                use sysinfo::{Pid, System};
-
-                let mut system = System::new();
-                system.refresh_process(Pid::from_u32(pid));
-
-                if let Some(process) = system.process(Pid::from_u32(pid)) {
-                    return process.cwd().map(|p| p.to_path_buf());
-                }
-            }
-        }
-
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-        {
-            // For other platforms, this is not yet implemented
-            // Return None to use default directory
         }
 
         None
@@ -1036,6 +1007,39 @@ impl Terminal {
             }
             sb.restore_to_scrollback(lines_to_restore);
         }
+    }
+
+    /// Check if a foreground process (other than the shell) is running in the terminal
+    /// Returns true if a process like ssh, vim, less, etc. is running in foreground
+    /// Returns false if the shell is idle and waiting for input
+    pub(crate) fn is_foreground_process_running(&self) -> bool {
+        // Get the shell's PID
+        let Some(shell_pid) = self.child.process_id() else {
+            eprintln!("[TERMINAL] Could not get shell PID");
+            return false;
+        };
+
+        // Use sysinfo to check if the shell has any child processes
+        // This works cross-platform (Unix, Windows, macOS)
+        use sysinfo::{Pid, System};
+        let mut system = System::new();
+        system.refresh_processes();
+
+        let shell_pid_obj = Pid::from_u32(shell_pid);
+
+        // Check if the shell process has any children
+        // On Unix, child processes typically indicate a foreground command is running
+        // On Windows, cmd.exe/powershell.exe will spawn child processes for commands
+        for (pid, process) in system.processes() {
+            if let Some(parent_pid) = process.parent() {
+                if parent_pid == shell_pid_obj {
+                    // Found a child process of the shell
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 }
 
