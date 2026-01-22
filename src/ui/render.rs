@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::ansi::DEFAULT_BG_COLOR;
-use crate::screen_buffer::{is_block_or_box_drawing, is_cjk_grapheme, is_emoji_grapheme, is_special_symbol};
+use crate::cell::{is_block_or_box_drawing, is_cjk_grapheme, is_emoji_grapheme, is_special_symbol};
 use crate::sdl_renderer;
 use crate::tab_gui::TabBarGui;
 use crate::ui::context_menu::ContextMenu;
@@ -546,8 +546,8 @@ fn render_glyph<'a, T>(
             let char_rect = Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height);
             canvas.copy(cached_texture, None, char_rect).map_err(|e| e.to_string())?;
         } else if is_special_missing_symbol {
-            // Scale up special symbols to make them more visible (2.0x larger than default)
-            let target_size = (cell_width.min(cell_height) as f32 * 2.0) as u32;
+            // Scale up special symbols to make them more visible (1.5x larger than default)
+            let target_size = (cell_width.min(cell_height) as f32 * 1.5) as u32;
 
             let symbol_width = query.width;
             let symbol_height = query.height;

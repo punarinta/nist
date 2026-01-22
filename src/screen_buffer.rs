@@ -1,4 +1,5 @@
 use crate::ansi::{DEFAULT_BG_COLOR, DEFAULT_FG_COLOR};
+use crate::cell::{is_emoji_grapheme, Cell};
 use sdl3::pixels::Color;
 use unicode_width::UnicodeWidthChar;
 
@@ -87,163 +88,6 @@ impl CursorStyle {
             _ => CursorStyle::SteadyBar, // Default to pipe/bar for backwards compatibility
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct Cell {
-    pub ch: char,                   // Primary character (4 bytes)
-    pub extended: Option<Box<str>>, // For complex graphemes (emojis with modifiers)
-    pub fg_color: Color,
-    pub bg_color: Color,
-    pub width: u8, // 1 for normal chars, 2 for wide/emoji chars
-    pub bold: bool,
-    pub italic: bool,
-    pub underline: bool,
-    pub strikethrough: bool,
-    pub blink: bool,
-    pub reverse: bool,
-    pub invisible: bool,
-}
-
-impl Default for Cell {
-    fn default() -> Self {
-        Cell {
-            ch: ' ',
-            extended: None,
-            fg_color: DEFAULT_FG_COLOR,
-            bg_color: DEFAULT_BG_COLOR,
-            width: 1,
-            bold: false,
-            italic: false,
-            underline: false,
-            strikethrough: false,
-            blink: false,
-            reverse: false,
-            invisible: false,
-        }
-    }
-}
-
-/// Check if a character is a special symbol that needs scaling in rendering
-#[inline]
-pub fn is_special_symbol(ch: char) -> bool {
-    let codepoint = ch as u32;
-    // Exclude Block Elements (0x2580..=0x259F) and Box Drawing (0x2500..=0x257F)
-    // as they need to fill exactly one cell without scaling for ASCII art
-    matches!(codepoint,
-        0x2190..=0x21FF |  // Arrows (includes →, ←, ↑, ↓)
-        0x2200..=0x22FF |  // Mathematical Operators (includes ∀, ∃, ∈, ∞)
-        0x2300..=0x23FF |  // Miscellaneous Technical (includes ⎿)
-        0x2400..=0x243F |  // Control Pictures (includes ␀, ␣)
-        0x2460..=0x24FF |  // Enclosed Alphanumerics (includes ①, ②, ③)
-        0x25A0..=0x25FF |  // Geometric Shapes (includes ■)
-        0x2700..=0x27BF |  // Dingbats (includes ❯, ❌)
-        0x27C0..=0x27EF |  // Miscellaneous Mathematical Symbols-A
-        0x27F0..=0x27FF |  // Supplemental Arrows-A
-        0x2800..=0x28FF |  // Braille Patterns (includes ⠴)
-        0x2900..=0x297F |  // Supplemental Arrows-B
-        0x2980..=0x29FF |  // Miscellaneous Mathematical Symbols-B
-        0x2A00..=0x2AFF |  // Supplemental Mathematical Operators
-        0x2B00..=0x2BFF |  // Miscellaneous Symbols and Arrows
-        0xFF00..=0xFFEF    // Halfwidth and Fullwidth Forms (includes ･)
-    )
-}
-
-/// Check if a character is a block or box drawing character that needs cell-filling
-#[inline]
-pub fn is_block_or_box_drawing(ch: char) -> bool {
-    let codepoint = ch as u32;
-    matches!(codepoint,
-        0x2500..=0x257F |  // Box Drawing (includes ┃, ╹, etc.)
-        0x2580..=0x259F    // Block Elements (includes █, ▀, ▄, etc.)
-    )
-}
-
-/// Check if a character is likely an emoji based on Unicode ranges
-#[inline]
-pub fn is_emoji_char(ch: char) -> bool {
-    let codepoint = ch as u32;
-    matches!(codepoint,
-        // Emoticons
-        0x1F600..=0x1F64F |
-        // Miscellaneous Symbols and Pictographs
-        0x1F300..=0x1F5FF |
-        // Transport and Map Symbols
-        0x1F680..=0x1F6FF |
-        // Supplemental Symbols and Pictographs
-        0x1F900..=0x1F9FF |
-        // Symbols and Pictographs Extended-A
-        0x1FA00..=0x1FA6F |
-        0x1FA70..=0x1FAFF |
-        // Miscellaneous Symbols (including weather, zodiac)
-        0x2600..=0x26FF |
-        // Enclosed Alphanumeric Supplement (includes circled numbers and regional indicators for flags)
-        0x1F100..=0x1F1FF |
-        // Enclosed Ideographic Supplement
-        0x1F200..=0x1F2FF |
-        // Variation Selectors (emoji presentation)
-        0xFE00..=0xFE0F |
-        // Mahjong Tiles, Domino Tiles
-        0x1F000..=0x1F02F |
-        // Playing Cards
-        0x1F0A0..=0x1F0FF
-    )
-}
-
-/// Check if a string contains an emoji (including combined emojis with modifiers)
-#[inline]
-pub fn is_emoji_grapheme(s: &str) -> bool {
-    // Check if any character in the grapheme cluster is an emoji
-    s.chars().any(is_emoji_char)
-}
-
-/// Check if a character is a CJK (Chinese, Japanese, Korean) character
-#[inline]
-pub fn is_cjk_char(ch: char) -> bool {
-    let codepoint = ch as u32;
-    matches!(codepoint,
-        // CJK Unified Ideographs (most common Chinese characters)
-        0x4E00..=0x9FFF |
-        // CJK Extension A
-        0x3400..=0x4DBF |
-        // CJK Extension B
-        0x20000..=0x2A6DF |
-        // CJK Extension C
-        0x2A700..=0x2B73F |
-        // CJK Extension D
-        0x2B740..=0x2B81F |
-        // CJK Extension E
-        0x2B820..=0x2CEAF |
-        // CJK Extension F
-        0x2CEB0..=0x2EBEF |
-        // CJK Extension G
-        0x30000..=0x3134F |
-        // CJK Compatibility Ideographs
-        0xF900..=0xFAFF |
-        // CJK Compatibility Ideographs Supplement
-        0x2F800..=0x2FA1F |
-        // Hiragana (Japanese)
-        0x3040..=0x309F |
-        // Katakana (Japanese)
-        0x30A0..=0x30FF |
-        // Katakana Phonetic Extensions
-        0x31F0..=0x31FF |
-        // Hangul Syllables (Korean)
-        0xAC00..=0xD7AF |
-        // Hangul Jamo (Korean)
-        0x1100..=0x11FF |
-        // Hangul Jamo Extended-A
-        0xA960..=0xA97F |
-        // Hangul Jamo Extended-B
-        0xD7B0..=0xD7FF
-    )
-}
-
-/// Check if a string contains CJK characters
-#[inline]
-pub fn is_cjk_grapheme(s: &str) -> bool {
-    // Check if any character in the grapheme cluster is CJK
-    s.chars().any(is_cjk_char)
 }
 
 #[derive(Clone)]
@@ -348,10 +192,33 @@ impl ScreenBuffer {
         }
     }
 
-    pub fn resize(&mut self, width: usize, height: usize) {
+    /// Creates a new cell with current terminal formatting state
+    fn new_cell(&self, ch: char, extended: Option<Box<str>>, width: u8) -> Cell {
+        Cell {
+            ch,
+            extended,
+            fg_color: self.fg_color,
+            bg_color: self.bg_color,
+            width,
+            bold: self.bold,
+            italic: self.italic,
+            underline: self.underline,
+            strikethrough: self.strikethrough,
+            blink: self.blink,
+            reverse: self.reverse,
+            invisible: self.invisible,
+        }
+    }
+
+    /// Creates a continuation cell for wide characters (width 0, char '\0')
+    fn new_continuation_cell(&self) -> Cell {
+        self.new_cell('\0', None, 0)
+    }
+
+    pub fn resize(&mut self, new_width: usize, new_height: usize) {
         // Ensure minimum size to prevent buffer underflow
-        let width = width.max(2);
-        let height = height.max(2);
+        let width = new_width.max(2);
+        let height = new_height.max(2);
 
         let old_width = self.width;
         let old_height = self.height;
@@ -702,37 +569,12 @@ impl ScreenBuffer {
                 first_char
             };
 
-            self.cells[self.cursor_y][self.cursor_x] = Cell {
-                ch: translated_char,
-                extended: extended_data,
-                fg_color: self.fg_color,
-                bg_color: self.bg_color,
-                width: char_width as u8,
-                bold: self.bold,
-                italic: self.italic,
-                underline: self.underline,
-                strikethrough: self.strikethrough,
-                blink: self.blink,
-                reverse: self.reverse,
-                invisible: self.invisible,
-            };
+            self.cells[self.cursor_y][self.cursor_x] = self.new_cell(translated_char, extended_data, char_width as u8);
 
             // For double-width characters, mark the next cell as a continuation
             if char_width == 2 && self.cursor_x + 1 < self.width {
-                self.cells[self.cursor_y][self.cursor_x + 1] = Cell {
-                    ch: '\0', // Null char indicates continuation of previous cell
-                    extended: None,
-                    fg_color: self.fg_color,
-                    bg_color: self.bg_color,
-                    width: 0, // Width 0 means this is a continuation cell
-                    bold: self.bold,
-                    italic: self.italic,
-                    underline: self.underline,
-                    strikethrough: self.strikethrough,
-                    blink: self.blink,
-                    reverse: self.reverse,
-                    invisible: self.invisible,
-                };
+                // Mark the next cell as a continuation for double-width characters
+                self.cells[self.cursor_y][self.cursor_x + 1] = self.new_continuation_cell();
             }
 
             // Track the last character for REP command
@@ -1124,20 +966,7 @@ impl ScreenBuffer {
         // Clear rows from top to bottom (inclusive, 0-based)
         for y in top..=bottom.min(self.height - 1) {
             for x in 0..self.width {
-                self.cells[y][x] = Cell {
-                    ch: ' ',
-                    extended: None,
-                    fg_color: crate::ansi::DEFAULT_FG_COLOR,
-                    bg_color: crate::ansi::DEFAULT_BG_COLOR,
-                    width: 1,
-                    bold: false,
-                    italic: false,
-                    underline: false,
-                    strikethrough: false,
-                    blink: false,
-                    reverse: false,
-                    invisible: false,
-                };
+                self.cells[y][x] = Cell::default();
             }
         }
         self.dirty = true;
@@ -1175,20 +1004,7 @@ impl ScreenBuffer {
         // Fill inserted positions with blank characters
         let end = (cursor_x + n).min(self.width);
         for cell in row.iter_mut().take(end).skip(cursor_x) {
-            *cell = Cell {
-                ch: ' ',
-                extended: None,
-                fg_color: crate::ansi::DEFAULT_FG_COLOR,
-                bg_color: crate::ansi::DEFAULT_BG_COLOR,
-                width: 1,
-                bold: false,
-                italic: false,
-                underline: false,
-                strikethrough: false,
-                blink: false,
-                reverse: false,
-                invisible: false,
-            };
+            *cell = Cell::default();
         }
 
         self.dirty = true;
@@ -1220,20 +1036,7 @@ impl ScreenBuffer {
                 row[x] = row[source_pos].clone();
             } else {
                 // Fill with blank at the end
-                row[x] = Cell {
-                    ch: ' ',
-                    extended: None,
-                    fg_color: crate::ansi::DEFAULT_FG_COLOR,
-                    bg_color: crate::ansi::DEFAULT_BG_COLOR,
-                    width: 1,
-                    bold: false,
-                    italic: false,
-                    underline: false,
-                    strikethrough: false,
-                    blink: false,
-                    reverse: false,
-                    invisible: false,
-                };
+                row[x] = Cell::default();
             }
         }
 
@@ -1357,20 +1160,7 @@ impl ScreenBuffer {
         // Clear the newly inserted lines at cursor position
         for y in self.cursor_y..(self.cursor_y + n) {
             for x in 0..self.width {
-                self.cells[y][x] = Cell {
-                    ch: ' ',
-                    extended: None,
-                    fg_color: crate::ansi::DEFAULT_FG_COLOR,
-                    bg_color: crate::ansi::DEFAULT_BG_COLOR,
-                    width: 1,
-                    bold: false,
-                    italic: false,
-                    underline: false,
-                    strikethrough: false,
-                    blink: false,
-                    reverse: false,
-                    invisible: false,
-                };
+                self.cells[y][x] = Cell::default();
             }
         }
         self.dirty = true;
@@ -1402,20 +1192,7 @@ impl ScreenBuffer {
         // Clear the lines at the bottom of scrolling region
         for y in (scroll_bottom - n + 1)..=scroll_bottom {
             for x in 0..self.width {
-                self.cells[y][x] = Cell {
-                    ch: ' ',
-                    extended: None,
-                    fg_color: crate::ansi::DEFAULT_FG_COLOR,
-                    bg_color: crate::ansi::DEFAULT_BG_COLOR,
-                    width: 1,
-                    bold: false,
-                    italic: false,
-                    underline: false,
-                    strikethrough: false,
-                    blink: false,
-                    reverse: false,
-                    invisible: false,
-                };
+                self.cells[y][x] = Cell::default();
             }
         }
         self.dirty = true;
@@ -1492,26 +1269,26 @@ impl ScreenBuffer {
     }
 
     /// Restore output lines to scrollback buffer (for loading from saved state)
+    /// Recent lines are also loaded into the active buffer for immediate visibility
     pub fn restore_to_scrollback(&mut self, lines: Vec<String>) {
-        for line in lines {
+        if lines.is_empty() {
+            return;
+        }
+
+        // Determine how many lines to put in active buffer vs scrollback
+        // We want the most recent lines visible in the active buffer
+        let num_lines = lines.len();
+        let lines_for_active = num_lines.min(self.height);
+        let lines_for_scrollback = num_lines.saturating_sub(lines_for_active);
+
+        // Add older lines to scrollback buffer
+        for i in 0..lines_for_scrollback {
+            let line = &lines[i];
             let mut row = Vec::with_capacity(self.width);
 
             // Convert string to cells
             for ch in line.chars() {
-                let cell = Cell {
-                    ch,
-                    extended: None,
-                    fg_color: DEFAULT_FG_COLOR,
-                    bg_color: DEFAULT_BG_COLOR,
-                    width: 1,
-                    bold: false,
-                    italic: false,
-                    underline: false,
-                    strikethrough: false,
-                    blink: false,
-                    reverse: false,
-                    invisible: false,
-                };
+                let cell = Cell::with_char(ch);
                 row.push(cell);
             }
 
@@ -1525,6 +1302,37 @@ impl ScreenBuffer {
 
             // Add to scrollback buffer
             self.scrollback_buffer.push(row);
+        }
+
+        // Add recent lines to active buffer (visible area)
+        for i in 0..lines_for_active {
+            let line = &lines[lines_for_scrollback + i];
+            let mut row = Vec::with_capacity(self.width);
+
+            // Convert string to cells
+            for ch in line.chars() {
+                let cell = Cell::with_char(ch);
+                row.push(cell);
+            }
+
+            // Pad with empty cells to match width
+            while row.len() < self.width {
+                row.push(Cell::default());
+            }
+
+            // Truncate if too long
+            row.truncate(self.width);
+
+            // Add to active buffer
+            if i < self.cells.len() {
+                self.cells[i] = row;
+            }
+        }
+
+        // Position cursor at the end of the restored content
+        if lines_for_active > 0 {
+            self.cursor_y = (lines_for_active).min(self.height);
+            self.cursor_x = 0;
         }
 
         // Enforce scrollback limit

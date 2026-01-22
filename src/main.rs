@@ -1,5 +1,6 @@
 mod ai;
 mod ansi;
+mod cell;
 mod font_discovery;
 mod history;
 mod input;
