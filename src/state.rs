@@ -168,7 +168,10 @@ impl SerializablePaneNode {
     {
         match self {
             SerializablePaneNode::Leaf { working_directory, history } => {
-                let start_dir = working_directory.as_ref().and_then(|s| std::path::PathBuf::from(s).canonicalize().ok());
+                let start_dir = working_directory
+                    .as_ref()
+                    .and_then(|s| std::path::PathBuf::from(s).canonicalize().ok())
+                    .or_else(|| std::env::current_dir().ok());
                 let terminal = terminal_factory(start_dir);
 
                 // Restore history if present

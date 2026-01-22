@@ -155,7 +155,7 @@ impl Terminal {
         cmd.env("COLUMNS", initial_width.to_string());
         cmd.env("LINES", initial_height.to_string());
 
-        if let Some(dir) = start_directory {
+        if let Some(ref dir) = start_directory {
             cmd.cwd(dir);
         }
 
@@ -728,16 +728,34 @@ impl Terminal {
     }
 
     pub(crate) fn get_cwd(&self) -> Option<std::path::PathBuf> {
-        // Use sysinfo for cross-platform cwd detection
         if let Some(pid) = self.child.process_id() {
+            // On Linux, read /proc/<pid>/cwd directly for most accurate result
+            #[cfg(target_os = "linux")]
+            {
+                let proc_path = format!("/proc/{}/cwd", pid);
+                if let Ok(cwd) = std::fs::read_link(&proc_path) {
+                    eprintln!("[TERMINAL] get_cwd: PID {} has CWD {:?} (from /proc)", pid, cwd);
+                    return Some(cwd);
+                } else {
+                    eprintln!("[TERMINAL] get_cwd: failed to read /proc/{}/cwd", pid);
+                }
+            }
+
+            // Fall back to sysinfo for cross-platform support
             use sysinfo::{Pid, System};
 
             let mut system = System::new();
             system.refresh_process(Pid::from_u32(pid));
 
             if let Some(process) = system.process(Pid::from_u32(pid)) {
-                return process.cwd().map(|p| p.to_path_buf());
+                let cwd = process.cwd().map(|p| p.to_path_buf());
+                eprintln!("[TERMINAL] get_cwd: PID {} has CWD {:?} (from sysinfo)", pid, cwd);
+                return cwd;
+            } else {
+                eprintln!("[TERMINAL] get_cwd: process not found for PID {}", pid);
             }
+        } else {
+            eprintln!("[TERMINAL] get_cwd: no PID available");
         }
 
         None
@@ -1030,7 +1048,7 @@ impl Terminal {
         // Check if the shell process has any children
         // On Unix, child processes typically indicate a foreground command is running
         // On Windows, cmd.exe/powershell.exe will spawn child processes for commands
-        for (pid, process) in system.processes() {
+        for (_pid, process) in system.processes() {
             if let Some(parent_pid) = process.parent() {
                 if parent_pid == shell_pid_obj {
                     // Found a child process of the shell
