@@ -765,7 +765,7 @@ pub fn handle_mouse_motion(
                 let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_width, pane_area_height);
 
                 // Find which pane the mouse is over
-                for (_pane_id, rect, terminal, _, _) in pane_rects {
+                for (pane_id, rect, terminal, _, _) in pane_rects {
                     if mouse_x >= rect.x() && mouse_x < rect.x() + rect.width() as i32 && mouse_y >= rect.y() && mouse_y < rect.y() + rect.height() as i32 {
                         // Mouse is over this pane
                         if let Ok(t) = terminal.try_lock() {
@@ -777,7 +777,7 @@ pub fn handle_mouse_motion(
 
                             // Detect URL at this position
                             let new_url = if let Ok(sb) = t.screen_buffer.lock() {
-                                detect_url_at_position(&sb, row, col)
+                                detect_url_at_position(&sb, row, col, pane_id)
                             } else {
                                 None
                             };
@@ -786,7 +786,9 @@ pub fn handle_mouse_motion(
                             let url_changed = match (&mouse_state.hovered_url, &new_url) {
                                 (None, None) => false,
                                 (Some(_), None) | (None, Some(_)) => true,
-                                (Some(old), Some(new)) => old.url != new.url || old.row != new.row || old.col_start != new.col_start,
+                                (Some(old), Some(new)) => {
+                                    old.url != new.url || old.row != new.row || old.col_start != new.col_start || old.pane_id != new.pane_id
+                                }
                             };
 
                             if url_changed {

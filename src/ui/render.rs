@@ -134,7 +134,7 @@ pub fn render_frame<'a, T>(
 
     // Render each pane in the active tab (inactive tabs are NOT rendered)
     let mut any_dirty = false;
-    for (_pane_id, rect, terminal, is_active, is_selected) in pane_rects {
+    for (pane_id, rect, terminal, is_active, is_selected) in pane_rects {
         let was_dirty = render_pane(
             canvas,
             texture_creator,
@@ -154,6 +154,7 @@ pub fn render_frame<'a, T>(
             glyph_cache,
             scale_factor,
             mouse_state,
+            pane_id,
         )?;
         any_dirty = any_dirty || was_dirty;
     }
@@ -203,6 +204,7 @@ fn render_pane<'a, T>(
     glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
     scale_factor: f32,
     mouse_state: &crate::input::mouse::MouseState,
+    pane_id: crate::pane_layout::PaneId,
 ) -> Result<bool, String> {
     let t = terminal.lock().unwrap();
     let mut sb = t.screen_buffer.lock().unwrap();
@@ -315,11 +317,11 @@ fn render_pane<'a, T>(
                     };
 
                     // Check if this cell is part of a hovered URL (Ctrl+hover feature)
+                    // Also check that the URL belongs to THIS pane to avoid highlighting in wrong pane
                     let is_hovered_url = mouse_state.ctrl_pressed
-                        && mouse_state
-                            .hovered_url
-                            .as_ref()
-                            .map_or(false, |url| url.row == row && col >= url.col_start && col <= url.col_end);
+                        && mouse_state.hovered_url.as_ref().map_or(false, |url| {
+                            url.row == row && col >= url.col_start && col <= url.col_end && url.pane_id == pane_id
+                        });
 
                     // Override color to blue for hovered URLs
                     let (fg_r, fg_g, fg_b) = if is_hovered_url {

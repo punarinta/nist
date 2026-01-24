@@ -1,3 +1,4 @@
+use crate::pane_layout::PaneId;
 use crate::screen_buffer::ScreenBuffer;
 use regex::Regex;
 use std::sync::OnceLock;
@@ -9,6 +10,7 @@ pub struct UrlInfo {
     pub row: usize,
     pub col_start: usize,
     pub col_end: usize,
+    pub pane_id: PaneId,
 }
 
 /// Get the compiled URL regex pattern
@@ -26,7 +28,7 @@ fn url_regex() -> &'static Regex {
 
 /// Detect if there's a URL at the given position in the screen buffer
 /// Returns UrlInfo if a URL is found at or near the position
-pub fn detect_url_at_position(screen_buffer: &ScreenBuffer, row: usize, col: usize) -> Option<UrlInfo> {
+pub fn detect_url_at_position(screen_buffer: &ScreenBuffer, row: usize, col: usize, pane_id: PaneId) -> Option<UrlInfo> {
     // Check bounds
     if row >= screen_buffer.height() {
         return None;
@@ -49,6 +51,7 @@ pub fn detect_url_at_position(screen_buffer: &ScreenBuffer, row: usize, col: usi
                     row,
                     col_start: start,
                     col_end: end - 1, // Make it inclusive
+                    pane_id,
                 });
             }
         }
@@ -181,12 +184,14 @@ mod tests {
         }
 
         // Click on the URL (column 10 is within "https://example.com")
-        let result = detect_url_at_position(&screen_buffer, 0, 10);
+        let test_pane_id = PaneId(1);
+        let result = detect_url_at_position(&screen_buffer, 0, 10, test_pane_id);
         assert!(result.is_some());
 
         if let Some(url_info) = result {
             assert_eq!(url_info.url, "https://example.com");
             assert_eq!(url_info.row, 0);
+            assert_eq!(url_info.pane_id, test_pane_id);
         }
     }
 
@@ -195,7 +200,8 @@ mod tests {
         let screen_buffer = ScreenBuffer::new_with_scrollback(80, 24, 1000, CursorStyle::default());
 
         // Empty buffer, no URL
-        let result = detect_url_at_position(&screen_buffer, 0, 10);
+        let test_pane_id = PaneId(1);
+        let result = detect_url_at_position(&screen_buffer, 0, 10, test_pane_id);
         assert!(result.is_none());
     }
 
