@@ -81,6 +81,7 @@ pub fn render_frame<'a, T>(
     char_height: f32,
     cursor_visible: bool,
     glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
+    mouse_state: &crate::input::mouse::MouseState,
 ) -> Result<bool, String> {
     // Clear screen with terminal background color
     canvas.set_draw_color(DEFAULT_BG_COLOR);
@@ -152,6 +153,7 @@ pub fn render_frame<'a, T>(
             cursor_visible,
             glyph_cache,
             scale_factor,
+            mouse_state,
         )?;
         any_dirty = any_dirty || was_dirty;
     }
@@ -200,6 +202,7 @@ fn render_pane<'a, T>(
     cursor_visible: bool,
     glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
     scale_factor: f32,
+    mouse_state: &crate::input::mouse::MouseState,
 ) -> Result<bool, String> {
     let t = terminal.lock().unwrap();
     let mut sb = t.screen_buffer.lock().unwrap();
@@ -311,6 +314,23 @@ fn render_pane<'a, T>(
                         (cell_fg.r, cell_fg.g, cell_fg.b)
                     };
 
+                    // Check if this cell is part of a hovered URL (Ctrl+hover feature)
+                    let is_hovered_url = mouse_state.ctrl_pressed
+                        && mouse_state
+                            .hovered_url
+                            .as_ref()
+                            .map_or(false, |url| url.row == row && col >= url.col_start && col <= url.col_end);
+
+                    // Override color to blue for hovered URLs
+                    let (fg_r, fg_g, fg_b) = if is_hovered_url {
+                        (70, 130, 255) // Blue color for clickable URLs
+                    } else {
+                        (fg_r, fg_g, fg_b)
+                    };
+
+                    // Apply underline if cell has underline attribute OR if it's part of a hovered URL
+                    let should_underline = cell.underline || is_hovered_url;
+
                     render_glyph(
                         canvas,
                         texture_creator,
@@ -329,7 +349,7 @@ fn render_pane<'a, T>(
                         char_height as u32,
                         scale_factor,
                         cell.bold,
-                        cell.underline,
+                        should_underline,
                         cell.strikethrough,
                     )?;
                 }

@@ -166,10 +166,12 @@ pub fn handle_event(
             tab_bar_height,
             canvas_window,
             settings,
+            mouse_state,
             #[cfg(target_os = "linux")]
             clipboard_tx,
         ),
 
+        Event::KeyUp { keycode, .. } => handle_key_up_event(*keycode, mouse_state),
         Event::TextInput { ref text, .. } => handle_text_input_event(text, tab_bar, tab_bar_gui),
 
         _ => EventResult::none(),
@@ -402,6 +404,7 @@ fn handle_key_down_event(
     tab_bar_height: u32,
     canvas_window: &sdl3::video::Window,
     settings: &Settings,
+    mouse_state: &mut MouseState,
     #[cfg(target_os = "linux")] clipboard_tx: &Sender<Clipboard>,
 ) -> EventResult {
     let Some(keycode) = keycode else {
@@ -409,6 +412,12 @@ fn handle_key_down_event(
     };
 
     let (is_ctrl_pressed, is_shift_pressed, is_alt_pressed) = super::hotkeys::get_modifiers(keymod);
+
+    // Track Ctrl key state for URL hover detection
+    use sdl3::keyboard::Keycode;
+    if matches!(keycode, Keycode::LCtrl | Keycode::RCtrl) {
+        mouse_state.ctrl_pressed = true;
+    }
 
     // Handle tab editing mode
     if tab_bar.editing_tab.is_some() {
@@ -639,6 +648,25 @@ fn handle_key_down_event(
 
     // Send normal keys to terminal
     super::keyboard::handle_normal_key(keycode, tab_bar_gui);
+    EventResult::none()
+}
+
+fn handle_key_up_event(keycode: Option<sdl3::keyboard::Keycode>, mouse_state: &mut MouseState) -> EventResult {
+    use sdl3::keyboard::Keycode;
+
+    // Detect Ctrl key release and clear URL hover state
+    if let Some(key) = keycode {
+        if matches!(key, Keycode::LCtrl | Keycode::RCtrl) {
+            mouse_state.ctrl_pressed = false;
+            mouse_state.hovered_url = None;
+            return EventResult {
+                action: EventAction::None,
+                needs_render: true,
+                needs_resize: false,
+            };
+        }
+    }
+
     EventResult::none()
 }
 

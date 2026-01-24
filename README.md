@@ -18,6 +18,7 @@ Features
 - convenient command history search
 - AI-assistant to help working with OS (not for coding)
 - error detection
+- clickable URLs (hold Ctrl and hover to see if it is)
 
 Next steps
 ===

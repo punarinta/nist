@@ -13,6 +13,7 @@ mod system;
 mod tab_gui;
 mod terminal;
 mod ui;
+mod url_detection;
 
 #[cfg(feature = "test-server")]
 mod test_server;
@@ -999,6 +1000,7 @@ fn main() -> Result<(), String> {
                 char_height,
                 cursor_visible,
                 &mut glyph_cache,
+                &mouse_state,
             )?;
 
             if any_dirty {

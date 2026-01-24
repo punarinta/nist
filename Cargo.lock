@@ -998,6 +998,7 @@ dependencies = [
  "llm",
  "num",
  "portable-pty",
+ "regex",
  "sdl3",
  "sdl3-ttf-sys",
  "serde",

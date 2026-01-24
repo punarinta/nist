@@ -1,3 +1,4 @@
+use crate::url_detection::{detect_url_at_position, UrlInfo};
 use sdl3::mouse::MouseButton;
 use std::sync::{Arc, Mutex};
 
@@ -68,6 +69,8 @@ pub struct MouseState {
     pub dragging_tab: bool,
     pub tab_drag_start_pos: (i32, i32),
     pub ready_to_drag_tab: bool,
+    pub ctrl_pressed: bool,
+    pub hovered_url: Option<UrlInfo>,
 }
 
 impl MouseState {
@@ -82,6 +85,8 @@ impl MouseState {
             dragging_tab: false,
             tab_drag_start_pos: (0, 0),
             ready_to_drag_tab: false,
+            ctrl_pressed: false,
+            hovered_url: None,
         }
     }
 }
@@ -356,10 +361,27 @@ fn handle_left_button_down(
     let pane_area_y = tab_bar_height as i32;
     let pane_area_height = window_height - tab_bar_height;
 
-    // Check if Ctrl is pressed for group selection
+    // Check if Ctrl is pressed for group selection or URL opening
     let keyboard_state = event_pump.keyboard_state();
     let is_ctrl_pressed =
         keyboard_state.is_scancode_pressed(sdl3::keyboard::Scancode::LCtrl) || keyboard_state.is_scancode_pressed(sdl3::keyboard::Scancode::RCtrl);
+
+    // Ctrl+Click on URL - open it in browser
+    if is_ctrl_pressed && mouse_state.hovered_url.is_some() {
+        if let Some(ref url_info) = mouse_state.hovered_url {
+            match crate::url_detection::open_url_in_browser(&url_info.url) {
+                Ok(_) => {
+                    eprintln!("[URL] Opened URL: {}", url_info.url);
+                }
+                Err(e) => {
+                    eprintln!("[URL] Failed to open URL: {}", e);
+                }
+            }
+            // Clear the hovered URL after opening
+            mouse_state.hovered_url = None;
+            return MouseResult::render();
+        }
+    }
 
     if let Ok(mut gui) = tab_bar_gui.try_lock() {
         // Check if other tabs have selections (before mutable borrow)
@@ -728,6 +750,58 @@ pub fn handle_mouse_motion(
     }
 
     if mouse_y < tab_bar_height as i32 {
+        needs_render = true;
+    }
+
+    // Detect URL hover when Ctrl is held and mouse is in terminal area
+    if mouse_state.ctrl_pressed && mouse_y >= tab_bar_height as i32 {
+        // Calculate terminal coordinates
+        let pane_area_y = tab_bar_height as i32;
+        let pane_area_height = window_height - tab_bar_height;
+
+        // Try to get the active terminal and detect URL
+        if let Ok(mut gui) = tab_bar_gui.try_lock() {
+            if let Some(pane_layout) = gui.get_active_pane_layout() {
+                let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_width, pane_area_height);
+
+                // Find which pane the mouse is over
+                for (_pane_id, rect, terminal, _, _) in pane_rects {
+                    if mouse_x >= rect.x() && mouse_x < rect.x() + rect.width() as i32 && mouse_y >= rect.y() && mouse_y < rect.y() + rect.height() as i32 {
+                        // Mouse is over this pane
+                        if let Ok(t) = terminal.try_lock() {
+                            let pane_padding = crate::ui::render::get_pane_padding();
+
+                            // Convert to terminal cell coordinates
+                            let col = ((mouse_x - rect.x() - pane_padding as i32) as f32 / char_width).floor() as usize;
+                            let row = ((mouse_y - rect.y() - pane_padding as i32) as f32 / char_height).floor() as usize;
+
+                            // Detect URL at this position
+                            let new_url = if let Ok(sb) = t.screen_buffer.lock() {
+                                detect_url_at_position(&sb, row, col)
+                            } else {
+                                None
+                            };
+
+                            // Check if URL hover changed
+                            let url_changed = match (&mouse_state.hovered_url, &new_url) {
+                                (None, None) => false,
+                                (Some(_), None) | (None, Some(_)) => true,
+                                (Some(old), Some(new)) => old.url != new.url || old.row != new.row || old.col_start != new.col_start,
+                            };
+
+                            if url_changed {
+                                mouse_state.hovered_url = new_url;
+                                needs_render = true;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    } else if !mouse_state.ctrl_pressed && mouse_state.hovered_url.is_some() {
+        // Ctrl was released, clear hovered URL
+        mouse_state.hovered_url = None;
         needs_render = true;
     }
 
