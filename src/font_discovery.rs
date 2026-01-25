@@ -5,7 +5,7 @@
 //! It prioritizes fonts known to render emojis well across Windows, macOS, and Linux.
 //!
 //! The module searches platform-specific font directories:
-//! - Windows: C:\Windows\Fonts and user font directories
+//! - Windows: C:\Windows\Fonts, user font directories, and exe directory
 //! - macOS: /System/Library/Fonts, /Library/Fonts, ~/Library/Fonts
 //! - Linux: /usr/share/fonts, /usr/local/share/fonts, ~/.local/share/fonts
 //!
@@ -50,6 +50,10 @@ const PREFERRED_UI_FONTS: &[&str] = &[
 
 /// List of preferred monospace fonts with emoji support, in order of preference
 const PREFERRED_MONOSPACE_FONTS: &[&str] = &[
+    // Noto fonts - excellent emoji support
+    "NotoSansMono-Regular.ttf",
+    "NotoSansMono.ttf",
+    "NotoMono-Regular.ttf",
     // Windows system fonts
     "CascadiaCode.ttf",
     "CascadiaMono.ttf",
@@ -65,10 +69,6 @@ const PREFERRED_MONOSPACE_FONTS: &[&str] = &[
     "Courier New.ttf",
     // Hack - clean and readable
     "Hack-Regular.ttf",
-    // Noto fonts - excellent emoji support
-    "NotoSansMono-Regular.ttf",
-    "NotoSansMono.ttf",
-    "NotoMono-Regular.ttf",
     // JetBrains Mono - modern, good Unicode support
     "JetBrainsMono-Regular.ttf",
     "JetBrainsMonoNL-Regular.ttf",
@@ -175,6 +175,32 @@ const FONT_DIRECTORIES: &[&str] = &[
     "~/Library/Fonts",
 ];
 
+/// Gets the fonts directory bundled with the executable (Windows only)
+///
+/// On Windows, checks for a "fonts" subdirectory in the same directory as the
+/// running executable. This allows bundling fonts with the application.
+///
+/// # Returns
+///
+/// The path to the exe's fonts directory if it exists, or None
+#[cfg(target_os = "windows")]
+fn get_exe_fonts_dir() -> Option<PathBuf> {
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let fonts_dir = exe_dir.join("fonts");
+            if fonts_dir.exists() && fonts_dir.is_dir() {
+                return Some(fonts_dir);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_exe_fonts_dir() -> Option<PathBuf> {
+    None
+}
+
 /// Discovers the best available UI font with full emoji/Unicode support
 ///
 /// Searches through system font directories for proportional fonts known to have
@@ -187,6 +213,12 @@ const FONT_DIRECTORIES: &[&str] = &[
 pub fn find_best_ui_font() -> Option<String> {
     // Expand home directory in paths
     let mut search_paths = Vec::new();
+
+    // On Windows, check for bundled fonts in exe directory first
+    if let Some(exe_fonts_dir) = get_exe_fonts_dir() {
+        search_paths.push(exe_fonts_dir);
+    }
+
     for dir in FONT_DIRECTORIES {
         if let Some(expanded) = expand_home_dir(dir) {
             search_paths.push(expanded);
@@ -219,6 +251,12 @@ pub fn find_best_ui_font() -> Option<String> {
 pub fn find_best_monospace_font() -> Option<String> {
     // Expand home directory in paths
     let mut search_paths = Vec::new();
+
+    // On Windows, check for bundled fonts in exe directory first
+    if let Some(exe_fonts_dir) = get_exe_fonts_dir() {
+        search_paths.push(exe_fonts_dir);
+    }
+
     for dir in FONT_DIRECTORIES {
         if let Some(expanded) = expand_home_dir(dir) {
             search_paths.push(expanded);
@@ -251,6 +289,12 @@ pub fn find_best_monospace_font() -> Option<String> {
 pub fn find_specific_font(font_name: &str) -> Option<String> {
     // Expand home directory in paths
     let mut search_paths = Vec::new();
+
+    // On Windows, check for bundled fonts in exe directory first
+    if let Some(exe_fonts_dir) = get_exe_fonts_dir() {
+        search_paths.push(exe_fonts_dir);
+    }
+
     for dir in FONT_DIRECTORIES {
         if let Some(expanded) = expand_home_dir(dir) {
             search_paths.push(expanded);
@@ -279,6 +323,12 @@ pub fn find_specific_font(font_name: &str) -> Option<String> {
 pub fn find_emoji_font() -> Option<String> {
     // Expand home directory in paths
     let mut search_paths = Vec::new();
+
+    // On Windows, check for bundled fonts in exe directory first
+    if let Some(exe_fonts_dir) = get_exe_fonts_dir() {
+        search_paths.push(exe_fonts_dir);
+    }
+
     for dir in FONT_DIRECTORIES {
         if let Some(expanded) = expand_home_dir(dir) {
             search_paths.push(expanded);
@@ -311,6 +361,12 @@ pub fn find_emoji_font() -> Option<String> {
 pub fn find_cjk_font() -> Option<String> {
     // Expand home directory in paths
     let mut search_paths = Vec::new();
+
+    // On Windows, check for bundled fonts in exe directory first
+    if let Some(exe_fonts_dir) = get_exe_fonts_dir() {
+        search_paths.push(exe_fonts_dir);
+    }
+
     for dir in FONT_DIRECTORIES {
         if let Some(expanded) = expand_home_dir(dir) {
             search_paths.push(expanded);
