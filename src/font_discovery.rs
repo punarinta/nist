@@ -245,7 +245,6 @@ pub fn find_best_ui_font() -> Option<String> {
     for font_name in PREFERRED_UI_FONTS {
         for base_path in &search_paths {
             if let Some(font_path) = search_font_recursive(base_path, font_name) {
-                eprintln!("[FONT] Found emoji-supporting UI font: {}", font_path.display());
                 return Some(font_path.to_string_lossy().to_string());
             }
         }
@@ -283,7 +282,6 @@ pub fn find_best_monospace_font() -> Option<String> {
     for font_name in PREFERRED_MONOSPACE_FONTS {
         for base_path in &search_paths {
             if let Some(font_path) = search_font_recursive(base_path, font_name) {
-                eprintln!("[FONT] Found emoji-supporting monospace font: {}", font_path.display());
                 return Some(font_path.to_string_lossy().to_string());
             }
         }
@@ -355,7 +353,6 @@ pub fn find_emoji_font() -> Option<String> {
     for font_name in PREFERRED_EMOJI_FONTS {
         for base_path in &search_paths {
             if let Some(font_path) = search_font_recursive(base_path, font_name) {
-                eprintln!("[FONT] Found color emoji font: {}", font_path.display());
                 return Some(font_path.to_string_lossy().to_string());
             }
         }
@@ -393,7 +390,6 @@ pub fn find_cjk_font() -> Option<String> {
     for font_name in PREFERRED_CJK_FONTS {
         for base_path in &search_paths {
             if let Some(font_path) = search_font_recursive(base_path, font_name) {
-                eprintln!("[FONT] Found CJK font: {}", font_path.display());
                 return Some(font_path.to_string_lossy().to_string());
             }
         }
@@ -438,7 +434,6 @@ pub fn find_symbol_font() -> Option<String> {
     for font_name in PREFERRED_SYMBOL_FONTS {
         for base_path in &search_paths {
             if let Some(font_path) = search_font_recursive(base_path, font_name) {
-                eprintln!("[FONT] Found symbol font: {}", font_path.display());
                 return Some(font_path.to_string_lossy().to_string());
             }
         }
