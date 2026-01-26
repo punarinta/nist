@@ -669,7 +669,7 @@ fn render_glyph<'a, T>(
 
     // For block/box drawing characters, try unicode fallback font FIRST and scale to fill cell
     if is_block_box_char && !is_likely_emoji {
-        let unicode_fallback_result = unicode_fallback_font.render(text).blended(render_color);
+        let unicode_fallback_result = unicode_fallback_font.render(text).solid(render_color);
         if let Ok(unicode_surface) = unicode_fallback_result {
             if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
@@ -716,7 +716,14 @@ fn render_glyph<'a, T>(
 
     // Not in cache, render and cache it (try main font for non-emoji or if emoji font failed)
     // For single characters use render_char, for grapheme clusters use render
-    let render_result = if text.chars().count() == 1 {
+    // Use solid rendering for block/box characters to eliminate padding/gaps
+    let render_result = if is_block_box_char {
+        if text.chars().count() == 1 {
+            font.render_char(text.chars().next().unwrap()).solid(render_color)
+        } else {
+            font.render(text).solid(render_color)
+        }
+    } else if text.chars().count() == 1 {
         font.render_char(text.chars().next().unwrap()).blended(render_color)
     } else {
         font.render(text).blended(render_color)
@@ -775,7 +782,11 @@ fn render_glyph<'a, T>(
         // Try Unicode fallback font (for all characters that failed emoji/main/CJK fonts)
         // Skip if we already tried it above for the 3 special symbols
         if !is_special_missing_symbol {
-            let unicode_fallback_result = unicode_fallback_font.render(text).blended(render_color);
+            let unicode_fallback_result = if is_block_box_char {
+                unicode_fallback_font.render(text).solid(render_color)
+            } else {
+                unicode_fallback_font.render(text).blended(render_color)
+            };
             if let Ok(unicode_surface) = unicode_fallback_result {
                 if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
                     if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {

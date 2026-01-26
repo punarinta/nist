@@ -158,6 +158,22 @@ const PREFERRED_CJK_FONTS: &[&str] = &[
     "ukai.ttc",
 ];
 
+/// List of preferred symbol fonts with Unicode symbols and special characters
+const PREFERRED_SYMBOL_FONTS: &[&str] = &[
+    // Noto Complete Symbols - comprehensive symbol coverage
+    "NotoComplete-Symbols.ttf",
+    // Segoe UI Symbol - Windows symbol font
+    "seguisym.ttf",
+    "Segoe UI Symbol.ttf",
+    // Symbola - comprehensive Unicode symbol font
+    "Symbola.ttf",
+    // DejaVu Sans - includes many symbols
+    "DejaVuSans.ttf",
+    // Noto Sans Symbols - official Noto symbols
+    "NotoSansSymbols-Regular.ttf",
+    "NotoSansSymbols2-Regular.ttf",
+];
+
 /// Common font directories on Windows, Linux, and macOS systems
 const FONT_DIRECTORIES: &[&str] = &[
     // Windows paths
@@ -387,7 +403,52 @@ pub fn find_cjk_font() -> Option<String> {
     None
 }
 
-/// Recursively searches for a font file in a directory tree
+/// Searches through system font directories for preferred symbol fonts.
+/// These fonts contain Unicode symbols, special characters, and dingbats.
+///
+/// # Returns
+///
+/// The full path to a symbol font file if found, or None if no suitable font is found.
+///
+/// # Example
+///
+/// ```no_run
+/// use crate::font_discovery::find_symbol_font;
+///
+/// if let Some(font_path) = find_symbol_font() {
+///     println!("Found symbol font: {}", font_path);
+/// }
+/// ```
+pub fn find_symbol_font() -> Option<String> {
+    // Expand home directory in paths
+    let mut search_paths = Vec::new();
+
+    // On Windows, check for bundled fonts in exe directory first
+    if let Some(exe_fonts_dir) = get_exe_fonts_dir() {
+        search_paths.push(exe_fonts_dir);
+    }
+
+    for dir in FONT_DIRECTORIES {
+        if let Some(expanded) = expand_home_dir(dir) {
+            search_paths.push(expanded);
+        }
+    }
+
+    // Search for each preferred symbol font in each directory
+    for font_name in PREFERRED_SYMBOL_FONTS {
+        for base_path in &search_paths {
+            if let Some(font_path) = search_font_recursive(base_path, font_name) {
+                eprintln!("[FONT] Found symbol font: {}", font_path.display());
+                return Some(font_path.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    eprintln!("[FONT] WARNING: No symbol fonts found in system directories");
+    None
+}
+
+/// Recursively searches for a font file in a directory
 ///
 /// # Arguments
 ///

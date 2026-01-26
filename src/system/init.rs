@@ -241,6 +241,10 @@ fn configure_sdl_hints() {
     sdl3::hint::set("SDL_VIDEO_WAYLAND_APP_ID", "nist");
     sdl3::hint::set("SDL_APP_ID", "nist");
     sdl3::hint::set("SDL_APP_NAME", "Nisdos Terminal");
+
+    // Use nearest neighbor scaling for pixel-perfect rendering
+    // This prevents anti-aliasing artifacts when stretching block characters
+    sdl3::hint::set("SDL_RENDER_SCALE_QUALITY", "0");
 }
 
 /// Create the main window
@@ -439,7 +443,18 @@ fn load_fonts<'a>(ttf_context: &'a Sdl3TtfContext, settings: &settings::Settings
     eprintln!("[INIT] Loaded emoji font: {}", emoji_font_path);
 
     // Load Unicode fallback font - use FreeMono for specific missing symbols (U+23BF, U+276F, U+2588)
+    // On Windows, prioritize NotoComplete-Symbols for better symbol coverage
     // Note: This may cause minor alignment issues in some apps, but allows these symbols to render
+    #[cfg(target_os = "windows")]
+    let unicode_fallback_font_path = font_discovery::find_symbol_font().unwrap_or_else(|| {
+        eprintln!("[INIT] WARNING: No symbol font found, trying FreeMono as fallback...");
+        font_discovery::find_specific_font("FreeMono.ttf").unwrap_or_else(|| {
+            eprintln!("[INIT] WARNING: FreeMono not found either, using terminal font (some symbols may not render)");
+            font_path.clone()
+        })
+    });
+
+    #[cfg(not(target_os = "windows"))]
     let unicode_fallback_font_path = font_discovery::find_specific_font("FreeMono.ttf").unwrap_or_else(|| {
         eprintln!("[INIT] WARNING: FreeMono not found, using terminal font (some symbols may not render)");
         font_path.clone()
