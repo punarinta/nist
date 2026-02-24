@@ -275,8 +275,8 @@ fn main() -> Result<(), String> {
 
         // Update CPU usage periodically
         if last_cpu_update.elapsed() >= cpu_update_interval {
-            sys.refresh_cpu();
-            cpu_usage = sys.global_cpu_info().cpu_usage();
+            sys.refresh_cpu_all();
+            cpu_usage = sys.global_cpu_usage();
             last_cpu_update = Instant::now();
         }
 

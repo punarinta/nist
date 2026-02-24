@@ -773,7 +773,7 @@ impl Terminal {
             use sysinfo::{Pid, System};
 
             let mut system = System::new();
-            system.refresh_process(Pid::from_u32(pid));
+            system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), false);
 
             if let Some(process) = system.process(Pid::from_u32(pid)) {
                 let cwd = process.cwd().map(|p| p.to_path_buf());
@@ -1069,7 +1069,7 @@ impl Terminal {
         // This works cross-platform (Unix, Windows, macOS)
         use sysinfo::{Pid, System};
         let mut system = System::new();
-        system.refresh_processes();
+        system.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
 
         let shell_pid_obj = Pid::from_u32(shell_pid);
 
