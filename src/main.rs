@@ -470,6 +470,9 @@ fn main() -> Result<(), String> {
                     input::events::EventAction::SwitchTab(tab_idx) => {
                         if let Ok(mut gui) = tab_bar_gui.try_lock() {
                             gui.set_active_tab(tab_idx);
+                            if let Err(e) = state::save_state(&gui) {
+                                eprintln!("[STATE] Failed to save state on tab switch: {}", e);
+                            }
                         }
                         // Resize terminals in the newly active tab to match their pane dimensions
                         // This ensures terminals that were inactive during window resizing get properly sized
