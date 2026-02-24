@@ -346,7 +346,7 @@ fn handle_left_button_down(
 ) -> MouseResult {
     // Check if clicking on tab bar
     if mouse_y < tab_bar_height as i32 {
-        return handle_tab_bar_click(mouse_x, mouse_y, tab_bar, tab_bar_gui, mouse_state);
+        return handle_tab_bar_click(mouse_x, mouse_y, clicks, tab_bar, tab_bar_gui, mouse_state);
     }
 
     // Click outside tab bar - cancel any editing
@@ -474,7 +474,7 @@ fn handle_left_button_down(
 }
 
 /// Handle tab bar clicks
-fn handle_tab_bar_click(mouse_x: i32, mouse_y: i32, tab_bar: &mut TabBar, tab_bar_gui: &Arc<Mutex<TabBarGui>>, mouse_state: &mut MouseState) -> MouseResult {
+fn handle_tab_bar_click(mouse_x: i32, mouse_y: i32, clicks: u8, tab_bar: &mut TabBar, tab_bar_gui: &Arc<Mutex<TabBarGui>>, mouse_state: &mut MouseState) -> MouseResult {
     // Update hover state
     tab_bar.update_hover(mouse_x, mouse_y);
 
@@ -519,8 +519,8 @@ fn handle_tab_bar_click(mouse_x: i32, mouse_y: i32, tab_bar: &mut TabBar, tab_ba
             Ok(gui) => gui.active_tab,
             Err(_) => return MouseResult::none(), // Skip if can't get lock
         };
-        if tab_idx == current_active && tab_bar.editing_tab.is_none() {
-            // Clicking on already active tab - start editing
+        if tab_idx == current_active && tab_bar.editing_tab.is_none() && clicks >= 2 {
+            // Double-clicking on already active tab - start editing
             tab_bar.start_editing(tab_idx);
             if let Ok(mut gui) = tab_bar_gui.try_lock() {
                 gui.tab_states[tab_idx].start_editing();
