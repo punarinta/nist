@@ -531,6 +531,34 @@ impl Terminal {
         }
     }
 
+    pub(crate) fn select_line_at(&mut self, row: usize) {
+        let screen_buffer = match self.screen_buffer.try_lock() {
+            Ok(buf) => buf,
+            Err(_) => return,
+        };
+
+        if row >= screen_buffer.height() {
+            return;
+        }
+
+        let scroll_offset = screen_buffer.scroll_offset;
+        let scrollback_len = screen_buffer.scrollback_len();
+        let width = screen_buffer.width();
+
+        drop(screen_buffer);
+
+        if let Ok(mut sel) = self.selection.try_lock() {
+            let absolute_row = scrollback_len.saturating_sub(scroll_offset) + row;
+
+            *sel = Some(Selection {
+                start_col: 0,
+                start_row: absolute_row,
+                end_col: width.saturating_sub(1),
+                end_row: absolute_row,
+            });
+        }
+    }
+
     /// Extend selection upward by one line, creating selection at cursor if none exists
     pub(crate) fn extend_selection_up(&mut self) -> bool {
         self.extend_selection_vertical(-1)

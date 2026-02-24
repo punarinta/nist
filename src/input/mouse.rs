@@ -22,6 +22,7 @@ pub enum MouseAction {
     CloseTab(usize),
     SwitchTab(usize),
     OpenSettings,
+    TabReordered,
     None,
 }
 
@@ -413,8 +414,8 @@ fn handle_left_button_down(
                 // Note: handle_click already sets the active pane
             }
 
-            // Handle double-click word selection
-            if clicks == 2 && mouse_y >= tab_bar_height as i32 {
+            // Handle double-click word selection and triple-click line selection
+            if clicks >= 2 && mouse_y >= tab_bar_height as i32 {
                 if let Some(terminal) = gui.get_active_terminal() {
                     if let Ok(mut t) = terminal.try_lock() {
                         // Convert mouse coordinates to terminal cell coordinates
@@ -429,8 +430,13 @@ fn handle_left_button_down(
                                 let col = ((mouse_x - rect.x() - pane_padding as i32) as f32 / char_width) as usize;
                                 let row = ((mouse_y - rect.y() - pane_padding as i32) as f32 / char_height) as usize;
 
-                                // Select the word at this position
-                                t.select_word_at(col, row);
+                                if clicks >= 3 {
+                                    // Select the whole line at this position
+                                    t.select_line_at(row);
+                                } else {
+                                    // Select the word at this position
+                                    t.select_word_at(col, row);
+                                }
 
                                 // Don't prepare for regular selection
                                 drop(t);
@@ -600,6 +606,7 @@ pub fn handle_mouse_button_up(
             if let Ok(mut gui) = tab_bar_gui.try_lock() {
                 gui.reorder_tab(from_idx, to_idx);
             }
+            result.action = MouseAction::TabReordered;
         }
         result.needs_render = true;
     }
