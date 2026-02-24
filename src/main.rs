@@ -451,7 +451,9 @@ fn main() -> Result<(), String> {
                                 }
                                 break 'running; // Last tab closed
                             }
-                            // State already saved above before removing tab
+                            if let Err(e) = state::save_state(&gui) {
+                                eprintln!("[MAIN] Failed to save state after tab removal: {}", e);
+                            }
                             #[cfg(feature = "test-server")]
                             if let Some(ref server) = test_server {
                                 server.update_tabs(gui.get_all_terminals());
@@ -805,6 +807,7 @@ fn main() -> Result<(), String> {
 
                         needs_render = true;
                         need_resize = true;
+                        need_state_save = true;
 
                         #[cfg(feature = "test-server")]
                         if let Some(ref server) = test_server {
@@ -822,6 +825,7 @@ fn main() -> Result<(), String> {
                     for tab_idx in tabs_to_remove.into_iter().rev() {
                         eprintln!("[MAIN] Removing tab {} (all panes closed)", tab_idx);
                         gui.remove_tab(tab_idx);
+                        need_state_save = true;
                         #[cfg(feature = "test-server")]
                         if let Some(ref server) = test_server {
                             server.update_tabs(gui.get_all_terminals());
@@ -854,6 +858,7 @@ fn main() -> Result<(), String> {
                                 if let Some(terminal) = pane_layout.extract_pane(pane_id) {
                                     let new_tab_index = gui.tab_states.len() + 1;
                                     gui.add_tab(terminal, format!("Tab {}", new_tab_index));
+                                    need_state_save = true;
                                 }
                             }
                             "kill_shell" => {
