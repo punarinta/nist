@@ -19,6 +19,7 @@ use crate::cell::{is_block_or_box_drawing, is_cjk_grapheme, is_emoji_grapheme, i
 use crate::sdl_renderer;
 use crate::tab_gui::TabBarGui;
 use crate::ui::context_menu::ContextMenu;
+use crate::ui::custom_cell;
 
 /// Get the platform-specific pane padding in pixels
 #[inline]
@@ -525,6 +526,18 @@ fn render_glyph<'a, T>(
 ) -> Result<(), String> {
     let cache_key = text.to_string();
 
+    // Try custom rendering for specific problematic block characters
+    if text.chars().count() == 1 {
+        if let Some(ch) = text.chars().next() {
+            if custom_cell::can_render_custom(ch) {
+                custom_cell::render_custom_cell(canvas, ch, x, y, cell_width, cell_height, r, g, b)?;
+                // Draw decorations (underline, strikethrough) for custom-rendered glyphs
+                draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, bold, underline, strikethrough)?;
+                return Ok(());
+            }
+        }
+    }
+
     // Check cache first
     if let Some(cached_texture) = glyph_cache.get_mut(&cache_key) {
         // Apply color modulation to the white texture
@@ -660,29 +673,15 @@ fn render_glyph<'a, T>(
         }
     }
 
-    // Check if this is a symbol from ranges that are often missing from terminal fonts
-    // but present in FreeMono: Miscellaneous Technical, Dingbats, Geometric Shapes, etc.
+    // Check if this is a symbol from ranges that are often missing from NotoSansMono
+    // but present in FreeMono (e.g., U+23BF ⎿, U+276F ❯ from Miscellaneous Technical/Dingbats)
     let is_special_missing_symbol = text.chars().count() == 1 && text.chars().next().map_or(false, is_special_symbol);
 
     // Check if this is a block/box drawing character that needs cell-filling
     let is_block_box_char = text.chars().count() == 1 && text.chars().next().map_or(false, is_block_or_box_drawing);
 
-    // For block/box drawing characters, try unicode fallback font FIRST and scale to fill cell
-    if is_block_box_char && !is_likely_emoji {
-        let unicode_fallback_result = unicode_fallback_font.render(text).solid(render_color);
-        if let Ok(unicode_surface) = unicode_fallback_result {
-            if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
-                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
-                    // Stretch to fill the entire cell for ASCII art
-                    // No aspect ratio preservation - these characters are designed to be stretched
-                    let char_rect = Rect::new(x, y, cell_width, cell_height);
-                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
-                    glyph_cache.insert(cache_key, texture);
-                    return Ok(());
-                }
-            }
-        }
-    } else if is_special_missing_symbol && !is_likely_emoji {
+    // For special symbols that are often missing from terminal fonts, try unicode fallback font first
+    if is_special_missing_symbol && !is_likely_emoji {
         let unicode_fallback_result = unicode_fallback_font.render(text).blended(render_color);
         if let Ok(unicode_surface) = unicode_fallback_result {
             if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
@@ -780,7 +779,7 @@ fn render_glyph<'a, T>(
         }
 
         // Try Unicode fallback font (for all characters that failed emoji/main/CJK fonts)
-        // Skip if we already tried it above for the 3 special symbols
+        // Skip if we already tried it above for special symbols
         if !is_special_missing_symbol {
             let unicode_fallback_result = if is_block_box_char {
                 unicode_fallback_font.render(text).solid(render_color)
@@ -790,10 +789,18 @@ fn render_glyph<'a, T>(
             if let Ok(unicode_surface) = unicode_fallback_result {
                 if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
                     if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
-                        let char_rect = Rect::new(x, y, unicode_surface.width(), unicode_surface.height());
-                        canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
-                        glyph_cache.insert(cache_key, texture);
-                        return Ok(());
+                        // If this is a block/box drawing character, stretch to fill entire cell
+                        if is_block_box_char {
+                            let char_rect = Rect::new(x, y, cell_width, cell_height);
+                            canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                            glyph_cache.insert(cache_key, texture);
+                            return Ok(());
+                        } else {
+                            let char_rect = Rect::new(x, y, unicode_surface.width(), unicode_surface.height());
+                            canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                            glyph_cache.insert(cache_key, texture);
+                            return Ok(());
+                        }
                     }
                 }
             }

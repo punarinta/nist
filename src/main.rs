@@ -451,6 +451,7 @@ fn main() -> Result<(), String> {
                                 }
                                 break 'running; // Last tab closed
                             }
+                            // State already saved above before removing tab
                             #[cfg(feature = "test-server")]
                             if let Some(ref server) = test_server {
                                 server.update_tabs(gui.get_all_terminals());
@@ -710,6 +711,15 @@ fn main() -> Result<(), String> {
                         }
                     }
 
+                    input::events::EventAction::TabRenamed | input::events::EventAction::PaneClosed | input::events::EventAction::TabReordered => {
+                        // Save state after tab rename, pane closure, or tab reorder
+                        if let Ok(gui) = tab_bar_gui.try_lock() {
+                            if let Err(e) = state::save_state(&gui) {
+                                eprintln!("[MAIN] Failed to save state: {}", e);
+                            }
+                        }
+                    }
+
                     input::events::EventAction::None => {}
                 }
 
@@ -731,6 +741,7 @@ fn main() -> Result<(), String> {
 
             // Check for dead terminals and clean up panes
             let mut need_resize = false;
+            let mut need_state_save = false;
             {
                 let mut gui = tab_bar_gui.lock().unwrap();
                 let mut tabs_to_remove = Vec::new();
@@ -758,6 +769,7 @@ fn main() -> Result<(), String> {
                     // Track if we need to resize terminals after closing panes
                     if any_panes_closed && !tabs_to_remove.contains(&tab_idx) {
                         need_resize = true;
+                        need_state_save = true;
                     }
                 }
 
@@ -857,6 +869,15 @@ fn main() -> Result<(), String> {
                 }
             }
 
+            // Save state after pane closure (automatic cleanup)
+            if need_state_save {
+                if let Ok(gui) = tab_bar_gui.try_lock() {
+                    if let Err(e) = state::save_state(&gui) {
+                        eprintln!("[MAIN] Failed to save state after pane closure: {}", e);
+                    }
+                }
+            }
+
             // Handle pending operations
             if pending_new_tab {
                 pending_new_tab = false;
@@ -883,10 +904,18 @@ fn main() -> Result<(), String> {
                 let mut gui = tab_bar_gui.lock().unwrap();
                 let new_tab_index = gui.tab_states.len() + 1;
                 gui.add_tab(new_terminal, format!("Tab {}", new_tab_index));
+                drop(gui);
+
+                // Save state after tab creation
+                if let Ok(gui) = tab_bar_gui.try_lock() {
+                    if let Err(e) = state::save_state(&gui) {
+                        eprintln!("[MAIN] Failed to save state after tab creation: {}", e);
+                    }
+                }
 
                 #[cfg(feature = "test-server")]
                 if let Some(ref server) = test_server {
-                    server.update_tabs(gui.get_all_terminals());
+                    server.update_tabs(tab_bar_gui.lock().unwrap().get_all_terminals());
                 }
             }
 
@@ -969,6 +998,13 @@ fn main() -> Result<(), String> {
                     // Resize all terminals to match their new pane dimensions
                     let (w, h) = canvas.window().size_in_pixels();
                     resize_terminals_after_split(&tab_bar_gui, char_width, char_height, tab_bar_height, w, h, new_pane_id);
+
+                    // Save state after pane split
+                    if let Ok(gui) = tab_bar_gui.try_lock() {
+                        if let Err(e) = state::save_state(&gui) {
+                            eprintln!("[MAIN] Failed to save state after pane split: {}", e);
+                        }
+                    }
 
                     #[cfg(feature = "test-server")]
                     if let Some(ref server) = test_server {

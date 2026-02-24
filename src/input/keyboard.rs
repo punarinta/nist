@@ -24,6 +24,8 @@ pub enum KeyboardAction {
     Quit,
     RequestTerminalHistorySearch,
     RequestAiCommandGeneration,
+    TabRenamed,
+    PaneClosed,
     None,
 }
 
@@ -114,7 +116,7 @@ pub fn handle_tab_editing_key(keycode: Keycode, tab_bar: &mut TabBar, tab_bar_gu
                 // Save and finish editing
                 gui.tab_states[idx].finish_editing(true);
                 tab_bar.finish_editing(true);
-                KeyboardResult::render()
+                KeyboardResult::with_action(KeyboardAction::TabRenamed)
             }
             Keycode::Escape => {
                 // Cancel editing
@@ -215,7 +217,7 @@ pub fn handle_hotkey_action(
                     } else {
                         // Pane closed, need to resize remaining terminals
                         drop(gui);
-                        return KeyboardResult::with_resize(KeyboardAction::None);
+                        return KeyboardResult::with_resize(KeyboardAction::PaneClosed);
                     }
                 }
                 KeyboardResult::render()

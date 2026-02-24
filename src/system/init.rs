@@ -442,27 +442,17 @@ fn load_fonts<'a>(ttf_context: &'a Sdl3TtfContext, settings: &settings::Settings
         .map_err(|e| format!("Emoji font loading failed: {}", e))?;
     eprintln!("[INIT] Loaded emoji font: {}", emoji_font_path);
 
-    // Load Unicode fallback font - use FreeMono for specific missing symbols (U+23BF, U+276F, U+2588)
-    // On Windows, prioritize NotoComplete-Symbols for better symbol coverage
-    // Note: This may cause minor alignment issues in some apps, but allows these symbols to render
-    #[cfg(target_os = "windows")]
+    // Load symbol font for rare symbols missing from NotoSansMono (e.g., U+23BF ⎿, U+276F ❯)
+    // Block drawing characters (U+2580-U+259F) are in NotoSansMono and use it as the primary font
+    // Uses font_discovery to search for best available symbol font across all platforms
     let unicode_fallback_font_path = font_discovery::find_symbol_font().unwrap_or_else(|| {
-        eprintln!("[INIT] WARNING: No symbol font found, trying FreeMono as fallback...");
-        font_discovery::find_specific_font("FreeMono.ttf").unwrap_or_else(|| {
-            eprintln!("[INIT] WARNING: FreeMono not found either, using terminal font (some symbols may not render)");
-            font_path.clone()
-        })
-    });
-
-    #[cfg(not(target_os = "windows"))]
-    let unicode_fallback_font_path = font_discovery::find_specific_font("FreeMono.ttf").unwrap_or_else(|| {
-        eprintln!("[INIT] WARNING: FreeMono not found, using terminal font (some symbols may not render)");
+        eprintln!("[INIT] WARNING: No symbol font found, using terminal font (some symbols may not render)");
         font_path.clone()
     });
     let unicode_fallback_font = ttf_context
         .load_font(&unicode_fallback_font_path, font_size)
         .map_err(|e| format!("Unicode fallback font loading failed: {}", e))?;
-    eprintln!("[INIT] Loaded Unicode fallback font: {} (for special symbols)", unicode_fallback_font_path);
+    eprintln!("[INIT] Loaded symbol font: {}", unicode_fallback_font_path);
 
     // Load CJK font for Chinese, Japanese, Korean characters
     let cjk_font_path = font_discovery::find_cjk_font().unwrap_or_else(|| {

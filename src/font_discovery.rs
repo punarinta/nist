@@ -167,7 +167,10 @@ const PREFERRED_SYMBOL_FONTS: &[&str] = &[
     "Segoe UI Symbol.ttf",
     // Symbola - comprehensive Unicode symbol font
     "Symbola.ttf",
-    // DejaVu Sans - includes many symbols
+    // FreeMono - excellent coverage of technical symbols and dingbats (U+23BF, U+276F, etc.)
+    "FreeMono.ttf",
+    "FreeMonoBold.ttf",
+    // DejaVu Sans - includes many symbols (missing some like U+23BF)
     "DejaVuSans.ttf",
     // Noto Sans Symbols - official Noto symbols
     "NotoSansSymbols-Regular.ttf",

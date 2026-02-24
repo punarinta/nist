@@ -21,6 +21,9 @@ pub enum EventAction {
     SplitPane(crate::pane_layout::SplitDirection),
     CloseTab(usize),
     SwitchTab(usize),
+    TabRenamed,
+    TabReordered,
+    PaneClosed,
     MinimizeWindow,
     Resize,
     StartTextInput,
@@ -229,6 +232,7 @@ fn handle_mouse_button_down_event(
         MouseAction::CloseTab(idx) => EventAction::CloseTab(idx),
         MouseAction::SwitchTab(idx) => EventAction::SwitchTab(idx),
         MouseAction::OpenSettings => EventAction::OpenSettings,
+        MouseAction::TabReordered => EventAction::TabReordered,
         MouseAction::None => EventAction::None,
     };
 
@@ -580,6 +584,8 @@ fn handle_key_down_event(
                 KeyboardAction::Quit => EventAction::Quit,
                 KeyboardAction::RequestTerminalHistorySearch => EventAction::TerminalHistorySearch,
                 KeyboardAction::RequestAiCommandGeneration => EventAction::AiCommandGeneration,
+                KeyboardAction::TabRenamed => EventAction::TabRenamed,
+                KeyboardAction::PaneClosed => EventAction::PaneClosed,
                 KeyboardAction::None => EventAction::None,
             };
 
@@ -624,6 +630,8 @@ fn handle_key_down_event(
                     KeyboardAction::Quit => EventAction::Quit,
                     KeyboardAction::RequestTerminalHistorySearch => EventAction::TerminalHistorySearch,
                     KeyboardAction::RequestAiCommandGeneration => EventAction::AiCommandGeneration,
+                    KeyboardAction::TabRenamed => EventAction::TabRenamed,
+                    KeyboardAction::PaneClosed => EventAction::PaneClosed,
                     KeyboardAction::None => EventAction::None,
                 };
 
