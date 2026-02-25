@@ -1166,23 +1166,28 @@ pub(crate) fn process_csi_sequence(
         'u' => {
             // Handle 'u' sequences which can be:
             // 1. CSI u - Restore cursor position (ANSI.SYS style)
-            // 2. CSI > Ps u - Set keyboard protocol mode (XTerm extension)
-            // 3. CSI < flags u - Pop keyboard protocol mode (XTerm extension)
+            // 2. CSI > Ps u - Set keyboard protocol mode (kitty/XTerm extension)
+            // 3. CSI < flags u - Pop keyboard protocol mode (kitty/XTerm extension)
+            // 4. CSI ? u - Query current keyboard mode (kitty keyboard protocol)
+            //              Responds with ESC[?0u (no progressive enhancement)
 
             if !args.is_empty() && !args[0].is_empty() {
                 let arg = args[0];
                 if arg.starts_with('>') {
                     // CSI > Ps u - Set keyboard protocol mode
-                    // This is an XTerm extension for enhanced keyboard reporting
-                    // We don't need to implement this, just recognize and ignore it
-                    // to avoid incorrectly restoring the cursor
+                    // Kitty keyboard protocol - ignore (we don't support it)
                 } else if arg.starts_with('<') {
                     // CSI < flags u - Pop keyboard protocol mode
-                    // This is an XTerm extension for enhanced keyboard reporting
-                    // We don't need to implement this, just recognize and ignore it
-                    // to avoid incorrectly restoring the cursor
+                    // Kitty keyboard protocol - ignore (we don't support it)
+                } else if arg.starts_with('?') {
+                    // CSI ? u - Query current keyboard mode (kitty keyboard protocol)
+                    // Respond with ESC[?0u meaning level 0 (no progressive enhancement)
+                    if let Ok(mut w) = writer.lock() {
+                        let _ = w.write_all(b"\x1b[?0u");
+                        let _ = w.flush();
+                    }
                 } else {
-                    // Plain CSI u without special prefixes - restore cursor
+                    // Plain CSI Ps u - restore cursor position (ANSI.SYS style)
                     sb.restore_cursor();
                 }
             } else {
