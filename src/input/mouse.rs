@@ -384,6 +384,8 @@ fn handle_left_button_down(
         }
     }
 
+    let mut terminal_has_mouse_tracking = false;
+
     if let Ok(mut gui) = tab_bar_gui.try_lock() {
         // Check if other tabs have selections (before mutable borrow)
         let has_other_tab_selections = if is_ctrl_pressed { gui.has_selections_on_other_tab() } else { false };
@@ -414,8 +416,16 @@ fn handle_left_button_down(
                 // Note: handle_click already sets the active pane
             }
 
-            // Handle double-click word selection and triple-click line selection
-            if clicks >= 2 && mouse_y >= tab_bar_height as i32 {
+            // Check if the running program wants mouse events
+            if let Some(terminal) = gui.get_active_terminal() {
+                if let Ok(t) = terminal.try_lock() {
+                    terminal_has_mouse_tracking = t.is_mouse_tracking_enabled();
+                }
+            }
+
+            // Handle double-click word selection and triple-click line selection.
+            // Skip when the program has mouse tracking enabled - pass the clicks through instead.
+            if !terminal_has_mouse_tracking && clicks >= 2 && mouse_y >= tab_bar_height as i32 {
                 if let Some(terminal) = gui.get_active_terminal() {
                     if let Ok(mut t) = terminal.try_lock() {
                         // Convert mouse coordinates to terminal cell coordinates
@@ -451,10 +461,13 @@ fn handle_left_button_down(
         }
     }
 
-    // Prepare for potential selection (don't start yet)
-    mouse_state.mouse_down_for_selection = true;
-    mouse_state.selection_start_pos = (mouse_x, mouse_y);
-    mouse_state.selection_started = false;
+    // Prepare for potential drag selection (don't start yet).
+    // Skip when the program has mouse tracking enabled - it handles its own selection.
+    if !terminal_has_mouse_tracking {
+        mouse_state.mouse_down_for_selection = true;
+        mouse_state.selection_start_pos = (mouse_x, mouse_y);
+        mouse_state.selection_started = false;
+    }
 
     // Send left mouse button press event to terminal (button 0 = left)
     send_mouse_to_terminal(

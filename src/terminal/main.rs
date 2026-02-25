@@ -436,6 +436,14 @@ impl Terminal {
         }
     }
 
+    pub(crate) fn is_mouse_tracking_enabled(&self) -> bool {
+        if let Ok(mode) = self.mouse_tracking_mode.try_lock() {
+            *mode != MouseTrackingMode::Disabled
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn start_selection(&mut self, col: usize, row: usize) {
         if let Ok(mut sel) = self.selection.try_lock() {
             if let Ok(sb) = self.screen_buffer.try_lock() {
