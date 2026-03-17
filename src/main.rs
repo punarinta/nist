@@ -460,6 +460,53 @@ fn main() -> Result<(), String> {
                             }
                         }
                     }
+                    input::events::EventAction::CloseTabWithConfirm(close_idx) => {
+                        // Check if this is the last tab with one pane (would quit the app)
+                        let is_last_tab_with_one_pane = if let Ok(gui) = tab_bar_gui.try_lock() {
+                            gui.tab_states.len() == 1
+                                && gui
+                                    .tab_states
+                                    .get(close_idx)
+                                    .map(|tab| tab.pane_layout.root.count_leaf_panes() == 1)
+                                    .unwrap_or(false)
+                        } else {
+                            false
+                        };
+
+                        if is_last_tab_with_one_pane {
+                            if !ui::dialogs::confirm_quit(&mut canvas, &mut event_pump, &tab_font, scale_factor) {
+                                needs_render = true;
+                                continue;
+                            }
+                            if let Ok(gui) = tab_bar_gui.try_lock() {
+                                if let Err(e) = state::save_state(&gui) {
+                                    eprintln!("[MAIN] Failed to save state: {}", e);
+                                }
+                            }
+                            break 'running;
+                        }
+
+                        if !ui::dialogs::confirm_close_tab(&mut canvas, &mut event_pump, &tab_font, scale_factor) {
+                            needs_render = true;
+                            continue;
+                        }
+
+                        if let Ok(mut gui) = tab_bar_gui.try_lock() {
+                            if gui.remove_tab(close_idx) {
+                                if let Err(e) = state::save_state(&gui) {
+                                    eprintln!("[MAIN] Failed to save state: {}", e);
+                                }
+                                break 'running;
+                            }
+                            if let Err(e) = state::save_state(&gui) {
+                                eprintln!("[MAIN] Failed to save state after tab removal: {}", e);
+                            }
+                            #[cfg(feature = "test-server")]
+                            if let Some(ref server) = test_server {
+                                server.update_tabs(gui.get_all_terminals());
+                            }
+                        }
+                    }
                     input::events::EventAction::NewTab => {
                         pending_new_tab = true;
                     }

@@ -20,6 +20,7 @@ pub enum MouseAction {
     CloseWindow,
     MinimizeWindow,
     CloseTab(usize),
+    CloseTabWithConfirm(usize),
     SwitchTab(usize),
     OpenSettings,
     TabReordered,
@@ -515,7 +516,7 @@ fn handle_tab_bar_click(mouse_x: i32, mouse_y: i32, clicks: u8, tab_bar: &mut Ta
     } else if tab_bar.add_button_rect.contains_point(mouse_x, mouse_y) {
         return MouseResult::with_action(MouseAction::NewTab);
     } else if let Some(close_idx) = tab_bar.get_clicked_close_button(mouse_x, mouse_y) {
-        return MouseResult::with_action(MouseAction::CloseTab(close_idx));
+        return MouseResult::with_action(MouseAction::CloseTabWithConfirm(close_idx));
     } else if let Some(tab_idx) = tab_bar.get_clicked_tab(mouse_x, mouse_y) {
         // If currently editing a different tab, cancel the edit
         if let Some(editing_idx) = tab_bar.editing_tab {
