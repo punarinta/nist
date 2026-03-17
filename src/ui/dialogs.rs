@@ -66,7 +66,7 @@ fn wrap_text(text: &str, font: &Font, max_width: u32) -> Vec<String> {
 
 /// Shows a custom confirmation dialog with Yes/No buttons
 /// Returns true if user clicked Yes, false if No or closed the dialog
-pub fn show_confirmation_dialog(canvas: &mut Canvas<Window>, event_pump: &mut EventPump, font: &Font, scale_factor: f32, title: &str, message: &str) -> bool {
+pub fn show_confirmation_dialog(canvas: &mut Canvas<Window>, event_pump: &mut EventPump, font: &Font, scale_factor: f32, title: Option<&str>, message: &str) -> bool {
     let texture_creator = &canvas.texture_creator();
 
     // Capture current screen content as a texture background
@@ -77,7 +77,7 @@ pub fn show_confirmation_dialog(canvas: &mut Canvas<Window>, event_pump: &mut Ev
         .and_then(|surface| texture_creator.create_texture_from_surface(&surface).ok());
 
     // Calculate text dimensions first to determine required dialog size
-    let title_surface = font.render(title).blended(TEXT_COLOR).ok();
+    let title_surface = title.and_then(|t| font.render(t).blended(TEXT_COLOR).ok());
     let message_surface = font.render(message).blended(TEXT_COLOR).ok();
 
     let title_width = title_surface.as_ref().map(|s| s.width()).unwrap_or(0);
@@ -100,7 +100,8 @@ pub fn show_confirmation_dialog(canvas: &mut Canvas<Window>, event_pump: &mut Ev
     let dialog_width = required_text_width.max(min_button_area_width).max((500.0 * scale_factor) as i32) as u32;
 
     // Calculate required height based on text content
-    let content_height = padding + title_height as i32 + text_spacing + message_height as i32 + text_spacing + button_height as i32 + padding;
+    let title_block_height = if title_surface.is_some() { title_height as i32 + text_spacing } else { 0 };
+    let content_height = padding + title_block_height + message_height as i32 + text_spacing + button_height as i32 + padding;
     let dialog_height = content_height.max((160.0 * scale_factor) as i32) as u32;
 
     let dialog_x = (window_width as i32 - dialog_width as i32) / 2;
@@ -218,7 +219,7 @@ pub fn show_confirmation_dialog(canvas: &mut Canvas<Window>, event_pump: &mut Ev
         if let Some(ref msg_surf) = message_surface {
             if let Ok(msg_texture) = texture_creator.create_texture_from_surface(msg_surf) {
                 let msg_x = dialog_x + (dialog_width as i32 - message_width as i32) / 2;
-                let msg_y = dialog_y + padding + title_height as i32 + text_spacing;
+                let msg_y = dialog_y + padding + title_block_height;
                 let msg_rect = Rect::new(msg_x, msg_y, message_width, message_height);
                 let _ = canvas.copy(&msg_texture, None, msg_rect);
             }
@@ -273,8 +274,20 @@ pub fn confirm_quit(canvas: &mut Canvas<Window>, event_pump: &mut EventPump, fon
         event_pump,
         font,
         scale_factor,
-        "Sure to close the app?",
+        Some("Sure to close the app?"),
         "This is the last terminal. Are you sure you want to quit?",
+    )
+}
+
+/// Shows a confirmation dialog for closing a tab
+pub fn confirm_close_tab(canvas: &mut Canvas<Window>, event_pump: &mut EventPump, font: &Font, scale_factor: f32) -> bool {
+    show_confirmation_dialog(
+        canvas,
+        event_pump,
+        font,
+        scale_factor,
+        None,
+        "Are you sure you want to close this tab?",
     )
 }
 
