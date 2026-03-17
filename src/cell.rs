@@ -106,7 +106,11 @@ pub fn is_emoji_char(ch: char) -> bool {
         // Mahjong Tiles, Domino Tiles
         0x1F000..=0x1F02F |
         // Playing Cards
-        0x1F0A0..=0x1F0FF
+        0x1F0A0..=0x1F0FF |
+        // Emoji characters in Miscellaneous Technical range (⌚⌛⏩⏪⏫⏬⏭⏮⏯⏰⏱⏲⏳⏸⏹⏺)
+        0x231A..=0x231B |  // Watch, Hourglass
+        0x23E9..=0x23F3 |  // Fast-forward/rewind/up/down, hourglass with flowing sand (⏳)
+        0x23F8..=0x23FA    // Pause, Stop, Record
     )
 }
 
@@ -155,7 +159,13 @@ pub fn is_cjk_char(ch: char) -> bool {
         // Hangul Jamo Extended-A
         0xA960..=0xA97F |
         // Hangul Jamo Extended-B
-        0xD7B0..=0xD7FF
+        0xD7B0..=0xD7FF |
+        // CJK Symbols and Punctuation (。、「」『』【】〔〕…—～ etc.)
+        0x3000..=0x303F |
+        // CJK Compatibility Forms
+        0xFE30..=0xFE4F |
+        // Halfwidth and Fullwidth Forms (，！？：；""'' etc.)
+        0xFF00..=0xFFEF
     )
 }
 
