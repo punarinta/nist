@@ -97,6 +97,8 @@ pub fn is_emoji_char(ch: char) -> bool {
         0x1FA70..=0x1FAFF |
         // Miscellaneous Symbols (including weather, zodiac)
         0x2600..=0x26FF |
+        // Dingbats (❌ U+274C, ✔ U+2714, ✖ U+2716, ❗ U+2757, etc.)
+        0x2700..=0x27BF |
         // Enclosed Alphanumeric Supplement (includes circled numbers and regional indicators for flags)
         0x1F100..=0x1F1FF |
         // Enclosed Ideographic Supplement

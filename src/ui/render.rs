@@ -519,7 +519,7 @@ fn render_glyph<'a, T>(
     b: u8,
     cell_width: u32,
     cell_height: u32,
-    _scale_factor: f32,
+    scale_factor: f32,
     bold: bool,
     underline: bool,
     strikethrough: bool,
@@ -561,7 +561,13 @@ fn render_glyph<'a, T>(
         } else if is_likely_emoji {
             // Scale emoji to fill available space (double-width emojis get 2x cell_width)
             // Use the smaller of width or height to maintain square aspect ratio
-            let target_size = cell_width.min(cell_height);
+            // Symbol-range emojis (e.g. ❌ U+274C) get 1.5x scale to match symbol rendering
+            let base_size = cell_width.min(cell_height);
+            let target_size = if is_special_missing_symbol {
+                (base_size as f32 * scale_factor) as u32
+            } else {
+                base_size
+            };
 
             let emoji_width = query.width;
             let emoji_height = query.height;
@@ -581,8 +587,7 @@ fn render_glyph<'a, T>(
             let char_rect = Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height);
             canvas.copy(cached_texture, None, char_rect).map_err(|e| e.to_string())?;
         } else if is_special_missing_symbol {
-            // Scale up special symbols to make them more visible (1.5x larger than default)
-            let target_size = (cell_width.min(cell_height) as f32 * 1.5) as u32;
+            let target_size = (cell_width.min(cell_height) as f32 * scale_factor) as u32;
 
             let symbol_width = query.width;
             let symbol_height = query.height;
@@ -622,6 +627,9 @@ fn render_glyph<'a, T>(
     // Check if this is a CJK character - if so, try CJK font FIRST
     let is_likely_cjk = is_cjk_grapheme(text);
 
+    // Check if this is a special symbol (used for scaling decisions below)
+    let is_special_missing_symbol = text.chars().count() == 1 && text.chars().next().map_or(false, is_special_symbol);
+
     if is_likely_emoji {
         // Try emoji font first for emoji characters
         let emoji_result = emoji_font.render(text).blended(render_color);
@@ -630,7 +638,13 @@ fn render_glyph<'a, T>(
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
                     // Scale emoji to fill available space (double-width emojis get 2x cell_width)
                     // Use the smaller of width or height to maintain square aspect ratio
-                    let target_size = cell_width.min(cell_height);
+                    // Symbol-range emojis (e.g. ❌ U+274C) get 1.5x scale to match symbol rendering
+                    let base_size = cell_width.min(cell_height);
+                    let target_size = if is_special_missing_symbol {
+                        (base_size as f32 * scale_factor) as u32
+                    } else {
+                        base_size
+                    };
 
                     let emoji_width = surface.width();
                     let emoji_height = surface.height();
@@ -673,21 +687,21 @@ fn render_glyph<'a, T>(
         }
     }
 
-    // Check if this is a symbol from ranges that are often missing from NotoSansMono
-    // but present in FreeMono (e.g., U+23BF ⎿, U+276F ❯ from Miscellaneous Technical/Dingbats)
-    let is_special_missing_symbol = text.chars().count() == 1 && text.chars().next().map_or(false, is_special_symbol);
-
     // Check if this is a block/box drawing character that needs cell-filling
     let is_block_box_char = text.chars().count() == 1 && text.chars().next().map_or(false, is_block_or_box_drawing);
 
-    // For special symbols that are often missing from terminal fonts, try unicode fallback font first
-    if is_special_missing_symbol && !is_likely_emoji {
+    // For special symbols that are often missing from terminal fonts, try unicode fallback font first.
+    // Use find_glyph to verify the font actually has the glyph before rendering, because SDL_ttf
+    // renders a .notdef box (with width > 0) for missing characters, causing false positives.
+    let symbol_font_has_glyph = is_special_missing_symbol && !is_likely_emoji
+        && text.chars().next().map_or(false, |ch| unicode_fallback_font.find_glyph(ch).is_some());
+
+    if symbol_font_has_glyph {
         let unicode_fallback_result = unicode_fallback_font.render(text).blended(render_color);
         if let Ok(unicode_surface) = unicode_fallback_result {
             if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
-                    // Scale up special symbols to make them more visible (2.0x larger than default)
-                    let target_size = (cell_width.min(cell_height) as f32 * 2.0) as u32;
+                    let target_size = (cell_width.min(cell_height) as f32 * scale_factor) as u32;
 
                     let symbol_width = unicode_surface.width();
                     let symbol_height = unicode_surface.height();
@@ -728,6 +742,7 @@ fn render_glyph<'a, T>(
         font.render(text).blended(render_color)
     };
 
+    // Try main font first
     if let Ok(surface) = render_result {
         if surface.width() > 0 && surface.height() > 0 {
             if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
@@ -748,39 +763,44 @@ fn render_glyph<'a, T>(
                 }
             }
         }
+    }
 
-        // Main font produced empty surface - try fallback fonts
-        if !is_likely_emoji {
-            // Try emoji font for non-emoji characters (might be symbols with emoji variants)
-            let emoji_fallback_result = emoji_font.render(text).blended(render_color);
-            if let Ok(emoji_surface) = emoji_fallback_result {
-                if emoji_surface.width() > 0 && emoji_surface.height() > 0 {
-                    if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&emoji_surface) {
-                        let char_rect = Rect::new(x, y, emoji_surface.width(), emoji_surface.height());
-                        canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
-                        glyph_cache.insert(cache_key, texture);
-                        return Ok(());
-                    }
-                }
-            }
-        }
-
-        // Try CJK font for CJK characters (Chinese, Japanese, Korean)
-        let cjk_fallback_result = cjk_font.render(text).blended(render_color);
-        if let Ok(cjk_surface) = cjk_fallback_result {
-            if cjk_surface.width() > 0 && cjk_surface.height() > 0 {
-                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&cjk_surface) {
-                    let char_rect = Rect::new(x, y, cjk_surface.width(), cjk_surface.height());
+    // Main font failed (Err) or produced empty surface - try fallback fonts
+    if !is_likely_emoji {
+        // Try emoji font for non-emoji characters (might be symbols with emoji variants)
+        let emoji_fallback_result = emoji_font.render(text).blended(render_color);
+        if let Ok(emoji_surface) = emoji_fallback_result {
+            if emoji_surface.width() > 0 && emoji_surface.height() > 0 {
+                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&emoji_surface) {
+                    let char_rect = Rect::new(x, y, emoji_surface.width(), emoji_surface.height());
                     canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
                     glyph_cache.insert(cache_key, texture);
                     return Ok(());
                 }
             }
         }
+    }
 
-        // Try Unicode fallback font (for all characters that failed emoji/main/CJK fonts)
-        // Skip if we already tried it above for special symbols
-        if !is_special_missing_symbol {
+    // Try CJK font for CJK characters (Chinese, Japanese, Korean)
+    let cjk_fallback_result = cjk_font.render(text).blended(render_color);
+    if let Ok(cjk_surface) = cjk_fallback_result {
+        if cjk_surface.width() > 0 && cjk_surface.height() > 0 {
+            if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&cjk_surface) {
+                let char_rect = Rect::new(x, y, cjk_surface.width(), cjk_surface.height());
+                canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                glyph_cache.insert(cache_key, texture);
+                return Ok(());
+            }
+        }
+    }
+
+    // Try Unicode fallback font (for all characters that failed emoji/main/CJK fonts)
+    // Skip if we already successfully used it above for special symbols.
+    // Also use find_glyph to avoid rendering .notdef boxes for unsupported characters.
+    if !symbol_font_has_glyph {
+        let has_glyph = text.chars().next()
+            .map_or(false, |ch| unicode_fallback_font.find_glyph(ch).is_some());
+        if has_glyph {
             let unicode_fallback_result = if is_block_box_char {
                 unicode_fallback_font.render(text).solid(render_color)
             } else {
@@ -805,21 +825,21 @@ fn render_glyph<'a, T>(
                 }
             }
         }
+    }
 
-        // Character not supported in any font, try fallback '□'
-        let fallback_key = "□".to_string();
-        if let Some(cached_fallback) = glyph_cache.get_mut(&fallback_key) {
-            cached_fallback.set_color_mod(r, g, b);
-            let query = cached_fallback.query();
-            let char_rect = Rect::new(x, y, query.width, query.height);
-            canvas.copy(cached_fallback, None, char_rect).map_err(|e| e.to_string())?;
-        } else if let Ok(fallback_surface) = font.render_char('□').blended(render_color) {
-            if fallback_surface.width() > 0 && fallback_surface.height() > 0 {
-                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&fallback_surface) {
-                    let char_rect = Rect::new(x, y, fallback_surface.width(), fallback_surface.height());
-                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
-                    glyph_cache.insert(fallback_key, texture);
-                }
+    // Character not supported in any font, try fallback '□'
+    let fallback_key = "□".to_string();
+    if let Some(cached_fallback) = glyph_cache.get_mut(&fallback_key) {
+        cached_fallback.set_color_mod(r, g, b);
+        let query = cached_fallback.query();
+        let char_rect = Rect::new(x, y, query.width, query.height);
+        canvas.copy(cached_fallback, None, char_rect).map_err(|e| e.to_string())?;
+    } else if let Ok(fallback_surface) = font.render_char('□').blended(render_color) {
+        if fallback_surface.width() > 0 && fallback_surface.height() > 0 {
+            if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&fallback_surface) {
+                let char_rect = Rect::new(x, y, fallback_surface.width(), fallback_surface.height());
+                canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                glyph_cache.insert(fallback_key, texture);
             }
         }
     }

@@ -165,6 +165,9 @@ const PREFERRED_SYMBOL_FONTS: &[&str] = &[
     // Segoe UI Symbol - Windows symbol font
     "seguisym.ttf",
     "Segoe UI Symbol.ttf",
+    // macOS system fonts with comprehensive symbol/dingbat coverage
+    "ZapfDingbats.ttf",   // Zapf Dingbats: covers U+2700-U+27BF (➜ U+279C, ❯ U+276F, ✓ U+2713, etc.)
+    "Apple Symbols.ttf",  // General symbol coverage (arrows, math, technical, geometric)
     // Symbola - comprehensive Unicode symbol font
     "Symbola.ttf",
     // FreeMono - excellent coverage of technical symbols and dingbats (U+23BF, U+276F, etc.)
@@ -217,6 +220,23 @@ fn get_exe_fonts_dir() -> Option<PathBuf> {
 
 #[cfg(not(target_os = "windows"))]
 fn get_exe_fonts_dir() -> Option<PathBuf> {
+    // In development builds, use the bundled fonts from the project source tree
+    #[cfg(not(production))]
+    {
+        let bundled_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/static/fonts"));
+        if bundled_dir.exists() && bundled_dir.is_dir() {
+            return Some(bundled_dir);
+        }
+    }
+    // In production builds (or if bundled dir not found), check for fonts/ next to the executable
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let fonts_dir = exe_dir.join("fonts");
+            if fonts_dir.exists() && fonts_dir.is_dir() {
+                return Some(fonts_dir);
+            }
+        }
+    }
     None
 }
 

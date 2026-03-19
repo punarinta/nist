@@ -777,18 +777,32 @@ impl Terminal {
                 }
             }
 
+            // On macOS, sysinfo::Process::cwd() returns None for child processes.
+            // Use proc_pidinfo with PROC_PIDVNODEPATHINFO directly instead.
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(cwd) = macos_get_proc_cwd(pid) {
+                    eprintln!("[TERMINAL] get_cwd: PID {} has CWD {:?} (from proc_pidinfo)", pid, cwd);
+                    return Some(cwd);
+                }
+                eprintln!("[TERMINAL] get_cwd: proc_pidinfo failed for PID {}", pid);
+            }
+
             // Fall back to sysinfo for cross-platform support
-            use sysinfo::{Pid, System};
+            #[cfg(not(target_os = "macos"))]
+            {
+                use sysinfo::{Pid, System};
 
-            let mut system = System::new();
-            system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), false);
+                let mut system = System::new();
+                system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), false);
 
-            if let Some(process) = system.process(Pid::from_u32(pid)) {
-                let cwd = process.cwd().map(|p| p.to_path_buf());
-                eprintln!("[TERMINAL] get_cwd: PID {} has CWD {:?} (from sysinfo)", pid, cwd);
-                return cwd;
-            } else {
-                eprintln!("[TERMINAL] get_cwd: process not found for PID {}", pid);
+                if let Some(process) = system.process(Pid::from_u32(pid)) {
+                    let cwd = process.cwd().map(|p| p.to_path_buf());
+                    eprintln!("[TERMINAL] get_cwd: PID {} has CWD {:?} (from sysinfo)", pid, cwd);
+                    return cwd;
+                } else {
+                    eprintln!("[TERMINAL] get_cwd: process not found for PID {}", pid);
+                }
             }
         } else {
             eprintln!("[TERMINAL] get_cwd: no PID available");
@@ -1101,4 +1115,53 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         let _ = self.kill();
     }
+}
+
+/// On macOS, use proc_pidinfo with PROC_PIDVNODEPATHINFO to get a process's CWD.
+/// sysinfo::Process::cwd() returns None on macOS for child processes.
+#[cfg(target_os = "macos")]
+fn macos_get_proc_cwd(pid: u32) -> Option<std::path::PathBuf> {
+    extern "C" {
+        fn proc_pidinfo(
+            pid: i32,
+            flavor: i32,
+            arg: u64,
+            buffer: *mut core::ffi::c_void,
+            buffersize: i32,
+        ) -> i32;
+    }
+
+    // proc_vnodepathinfo layout (from sys/proc_info.h):
+    //   vinfo_stat:       136 bytes
+    //   vnode_info:       vinfo_stat(136) + u32(4) + u32(4) + fsid_t(8) = 152 bytes
+    //   vnode_info_path:  vnode_info(152) + char[1024] = 1176 bytes
+    //   proc_vnodepathinfo: pvi_cdir(1176) + pvi_rdir(1176) = 2352 bytes
+    //   pvi_cdir.vip_path starts at byte offset 152
+    const PROC_PIDVNODEPATHINFO: i32 = 9;
+    const BUF_SIZE: usize = 2352;
+    const PATH_OFFSET: usize = 152;
+    const MAXPATHLEN: usize = 1024;
+
+    let mut buf = vec![0u8; BUF_SIZE];
+    let ret = unsafe {
+        proc_pidinfo(
+            pid as i32,
+            PROC_PIDVNODEPATHINFO,
+            0,
+            buf.as_mut_ptr() as *mut core::ffi::c_void,
+            BUF_SIZE as i32,
+        )
+    };
+
+    if ret > 0 {
+        let path_bytes = &buf[PATH_OFFSET..PATH_OFFSET + MAXPATHLEN];
+        let null_pos = path_bytes.iter().position(|&b| b == 0).unwrap_or(MAXPATHLEN);
+        if null_pos > 0 {
+            if let Ok(path_str) = std::str::from_utf8(&path_bytes[..null_pos]) {
+                return Some(std::path::PathBuf::from(path_str));
+            }
+        }
+    }
+
+    None
 }
