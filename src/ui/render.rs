@@ -16,9 +16,20 @@ use std::sync::{Arc, Mutex};
 
 use crate::ghostty_buffer::{CursorStyle, DEFAULT_BG_COLOR};
 use crate::cell::{is_cjk_grapheme, is_emoji_grapheme};
+use crate::pane_layout::PaneId;
 use crate::sdl_renderer;
 use crate::tab_gui::TabBarGui;
 use crate::ui::context_menu::ContextMenu;
+
+/// Cached per-pane render texture.
+/// Inactive panes are only re-rendered when `gb.dirty` is set.
+pub struct PaneCacheEntry {
+    pub texture: sdl3::render::Texture,
+    pub width: u32,
+    pub height: u32,
+    pub last_is_selected: bool,
+    pub last_is_active: bool,
+}
 
 /// Get the platform-specific pane padding in pixels
 #[inline]
@@ -61,9 +72,9 @@ pub fn adjust_mouse_coords_for_padding(mouse_x: i32, mouse_y: i32, rect_x: i32, 
 
 /// Render the entire frame including tab bar and active tab's panes
 /// Returns true if any terminal content was dirty and needed re-rendering
-pub fn render_frame<'a, T>(
+pub fn render_frame<T>(
     canvas: &mut Canvas<Window>,
-    texture_creator: &'a TextureCreator<T>,
+    texture_creator: &TextureCreator<T>,
     tab_bar: &mut sdl_renderer::TabBar,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
     tab_font: &Font,
@@ -78,7 +89,8 @@ pub fn render_frame<'a, T>(
     char_width: f32,
     char_height: f32,
     cursor_visible: bool,
-    glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
+    glyph_cache: &mut HashMap<String, sdl3::render::Texture>,
+    pane_cache: &mut HashMap<PaneId, PaneCacheEntry>,
     mouse_state: &crate::input::mouse::MouseState,
     voice_recording: bool,
     voice_transcribing: bool,
@@ -134,33 +146,88 @@ pub fn render_frame<'a, T>(
         }
     };
 
-    // Render each pane in the active tab (inactive tabs are NOT rendered)
+    // Render each pane using per-pane texture cache.
+    // Active pane: always re-render (cursor blink, selection, URL hover).
+    // Inactive pane: only re-render when gb.dirty (new bytes or scroll).
     let mut any_dirty = false;
     let mut active_pane_rect: Option<Rect> = None;
     for (pane_id, rect, terminal, is_active, is_selected) in pane_rects {
         if is_active {
             active_pane_rect = Some(rect);
         }
-        let was_dirty = render_pane(
-            canvas,
-            texture_creator,
-            terminal_font,
-            emoji_font,
-            unicode_fallback_font,
-            cjk_font,
-            rect,
-            terminal.clone(),
-            is_active,
-            is_selected,
-            pane_count,
-            char_width,
-            char_height,
-            cursor_visible,
-            glyph_cache,
-            mouse_state,
-            pane_id,
-        )?;
-        any_dirty = any_dirty || was_dirty;
+
+        let pane_w = rect.width();
+        let pane_h = rect.height();
+
+        // Peek at dirty + selection state before rendering (without clearing dirty yet)
+        let (gb_dirty, size_changed, selection_changed, active_changed) = {
+            let t = terminal.lock().unwrap();
+            let gb = t.ghostty_buffer.lock().unwrap();
+            let dirty = gb.dirty;
+            let size_chg = pane_cache.get(&pane_id)
+                .map_or(true, |e| e.width != pane_w || e.height != pane_h);
+            let sel_chg = pane_cache.get(&pane_id)
+                .map_or(true, |e| e.last_is_selected != is_selected);
+            let act_chg = pane_cache.get(&pane_id)
+                .map_or(true, |e| e.last_is_active != is_active);
+            (dirty, size_chg, sel_chg, act_chg)
+        };
+
+        let needs_redraw = is_active || gb_dirty || size_changed || selection_changed || active_changed
+            || !pane_cache.contains_key(&pane_id);
+
+        // Create or recreate target texture when size changes or first use
+        if size_changed || !pane_cache.contains_key(&pane_id) {
+            match texture_creator.create_texture_target(None, pane_w, pane_h) {
+                Ok(texture) => {
+                    pane_cache.insert(pane_id, PaneCacheEntry {
+                        texture,
+                        width: pane_w,
+                        height: pane_h,
+                        last_is_selected: is_selected,
+                        last_is_active: is_active,
+                    });
+                }
+                Err(e) => {
+                    // No cache available — fall back to direct rendering
+                    eprintln!("[RENDER] Failed to create pane texture: {e}");
+                    let was_dirty = render_pane(
+                        canvas, texture_creator, terminal_font, emoji_font,
+                        unicode_fallback_font, cjk_font, rect, terminal.clone(),
+                        is_active, is_selected, pane_count, char_width, char_height,
+                        cursor_visible, glyph_cache, mouse_state, pane_id,
+                    )?;
+                    any_dirty = any_dirty || was_dirty;
+                    continue;
+                }
+            }
+        }
+
+        // Re-render into the cached texture when needed
+        if needs_redraw {
+            let mut render_result: Result<bool, String> = Ok(false);
+            {
+                let entry = pane_cache.get_mut(&pane_id).unwrap();
+                entry.last_is_selected = is_selected;
+                entry.last_is_active = is_active;
+                let texture_rect = Rect::new(0, 0, pane_w, pane_h);
+                canvas.with_texture_canvas(&mut entry.texture, |tc| {
+                    tc.set_draw_color(DEFAULT_BG_COLOR);
+                    tc.clear();
+                    render_result = render_pane(
+                        tc, texture_creator, terminal_font, emoji_font,
+                        unicode_fallback_font, cjk_font, texture_rect, terminal.clone(),
+                        is_active, is_selected, pane_count, char_width, char_height,
+                        cursor_visible, glyph_cache, mouse_state, pane_id,
+                    );
+                }).map_err(|e| e.to_string())?;
+            }
+            any_dirty = any_dirty || render_result?;
+        }
+
+        // Blit cached texture to the window at the pane's screen position
+        let entry = pane_cache.get(&pane_id).unwrap();
+        canvas.copy(&entry.texture, None, rect).map_err(|e| e.to_string())?;
     }
 
     // Render voice input indicator on top of the active pane
@@ -196,9 +263,9 @@ pub fn render_frame<'a, T>(
 /// - Skips rendering of spaces with default background
 ///
 /// Returns true if the terminal content was dirty
-fn render_pane<'a, T>(
+fn render_pane<T>(
     canvas: &mut Canvas<Window>,
-    texture_creator: &'a TextureCreator<T>,
+    texture_creator: &TextureCreator<T>,
     font: &Font,
     emoji_font: &Font,
     unicode_fallback_font: &Font,
@@ -211,7 +278,7 @@ fn render_pane<'a, T>(
     char_width: f32,
     char_height: f32,
     cursor_visible: bool,
-    glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
+    glyph_cache: &mut HashMap<String, sdl3::render::Texture>,
     mouse_state: &crate::input::mouse::MouseState,
     pane_id: crate::pane_layout::PaneId,
 ) -> Result<bool, String> {
@@ -557,9 +624,9 @@ fn render_pane<'a, T>(
 }
 
 /// Render Kitty Graphics Protocol image placements for a pane.
-fn render_kitty_images<'a, T>(
+fn render_kitty_images<T>(
     canvas: &mut Canvas<Window>,
-    texture_creator: &'a TextureCreator<T>,
+    texture_creator: &TextureCreator<T>,
     placements: &mut Vec<crate::kitty_graphics::KittyPlacement>,
     rect: Rect,
     pane_padding: u32,
@@ -625,14 +692,14 @@ fn render_kitty_images<'a, T>(
 }
 
 /// Render a single glyph with caching
-fn render_glyph<'a, T>(
+fn render_glyph<T>(
     canvas: &mut Canvas<Window>,
-    texture_creator: &'a TextureCreator<T>,
+    texture_creator: &TextureCreator<T>,
     font: &Font,
     emoji_font: &Font,
     unicode_fallback_font: &Font,
     cjk_font: &Font,
-    glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
+    glyph_cache: &mut HashMap<String, sdl3::render::Texture>,
     text: &str,
     x: i32,
     y: i32,
@@ -662,6 +729,11 @@ fn render_glyph<'a, T>(
             let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
             let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
             canvas.copy(cached_texture, None, Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
+        } else if query.width > cell_width || query.height > cell_height {
+            let scale = (cell_width as f32 / query.width as f32).min(cell_height as f32 / query.height as f32);
+            let scaled_width = (query.width as f32 * scale) as u32;
+            let scaled_height = (query.height as f32 * scale) as u32;
+            canvas.copy(cached_texture, None, Rect::new(x, y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
         } else {
             canvas.copy(cached_texture, None, Rect::new(x, y, query.width, query.height)).map_err(|e| e.to_string())?;
         }
@@ -776,7 +848,10 @@ fn render_glyph<'a, T>(
         if let Ok(surface) = unicode_fallback_font.render(text).blended(render_color) {
             if surface.width() > 0 && surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                    canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
+                    let scale = (cell_width as f32 / surface.width() as f32).min(cell_height as f32 / surface.height() as f32).min(1.0);
+                    let scaled_width = (surface.width() as f32 * scale) as u32;
+                    let scaled_height = (surface.height() as f32 * scale) as u32;
+                    canvas.copy(&texture, None, Rect::new(x, y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
                     glyph_cache.insert(cache_key, texture);
                     return Ok(());
                 }

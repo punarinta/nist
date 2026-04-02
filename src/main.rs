@@ -23,6 +23,7 @@ use crate::tab_gui::TabBarGui;
 use crate::terminal::{Terminal, TerminalLibrary};
 
 use sdl3::event::Event;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use ui::render;
@@ -161,6 +162,7 @@ fn main() -> Result<(), String> {
     let ctrl_keys = app.ctrl_keys;
     let mut mouse_state = app.mouse_state;
     let mut glyph_cache = app.glyph_cache;
+    let mut pane_cache: HashMap<crate::pane_layout::PaneId, render::PaneCacheEntry> = HashMap::new();
     let window_logical_size = app.window_logical_size;
 
     #[cfg(target_os = "linux")]
@@ -558,9 +560,11 @@ fn main() -> Result<(), String> {
                     }
                     input::events::EventAction::Resize => {
                         let (new_width, new_height) = canvas.window().size_in_pixels();
-                        window_logical_size.0.store(new_width as i32, std::sync::atomic::Ordering::Relaxed);
-                        window_logical_size.1.store(new_height as i32, std::sync::atomic::Ordering::Relaxed);
+                        let (new_log_w, new_log_h) = canvas.window().size();
+                        window_logical_size.0.store(new_log_w as i32, std::sync::atomic::Ordering::Relaxed);
+                        window_logical_size.1.store(new_log_h as i32, std::sync::atomic::Ordering::Relaxed);
                         eprintln!("[MAIN] Window resized to {}x{}", new_width, new_height);
+                        pane_cache.clear();
                         // Resize all terminals to match their pane dimensions
                         resize_terminals_to_panes(&tab_bar_gui, char_width, char_height, tab_bar_height, new_width, new_height);
                     }
@@ -704,6 +708,7 @@ fn main() -> Result<(), String> {
 
                                     // Clear glyph cache - old glyphs are wrong size
                                     glyph_cache.clear();
+                                    pane_cache.clear();
                                     eprintln!("[MAIN] Glyph cache cleared");
                                 } else {
                                     eprintln!("[MAIN] Failed to measure character dimensions after font reload");
@@ -932,6 +937,7 @@ fn main() -> Result<(), String> {
             // Resize terminals if panes were closed
             if need_resize {
                 let (w, h) = canvas.window().size_in_pixels();
+                pane_cache.clear();
                 resize_terminals_to_panes(&tab_bar_gui, char_width, char_height, tab_bar_height, w, h);
             }
 
@@ -1095,6 +1101,7 @@ fn main() -> Result<(), String> {
 
                     // Resize all terminals to match their new pane dimensions
                     let (w, h) = canvas.window().size_in_pixels();
+                    pane_cache.clear();
                     resize_terminals_after_split(&tab_bar_gui, char_width, char_height, tab_bar_height, w, h, new_pane_id);
 
                     // Save state after pane split
@@ -1154,6 +1161,7 @@ fn main() -> Result<(), String> {
                 char_height,
                 cursor_visible,
                 &mut glyph_cache,
+                &mut pane_cache,
                 &mouse_state,
                 voice_manager.is_recording(),
                 voice_manager.is_transcribing(),

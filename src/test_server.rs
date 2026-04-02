@@ -5,6 +5,7 @@ use crate::terminal::{Terminal, TerminalLibrary};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -88,6 +89,12 @@ pub enum TestCommand {
     },
     #[serde(rename = "ctrl_mouse_wheel")]
     CtrlMouseWheel { delta: i32 }, // 1 for scroll up (zoom in), -1 for scroll down (zoom out)
+    /// Check what the SDL hit test would return for a logical window coordinate.
+    /// x=-30 means "30 logical pixels from the right edge of the window".
+    /// Returns "Normal", "Draggable", "ResizeTop", "ResizeBottom", "ResizeLeft",
+    /// "ResizeRight", "ResizeTopLeft", "ResizeTopRight", "ResizeBottomLeft", "ResizeBottomRight".
+    #[serde(rename = "check_hit_test")]
+    CheckHitTest { x: i32, y: i32 },
 }
 
 #[derive(Serialize, Debug)]
@@ -160,6 +167,8 @@ pub enum TestResponse {
     Cwd { path: String },
     #[serde(rename = "selection")]
     Selection { text: Option<String> },
+    #[serde(rename = "hit_test")]
+    HitTest { result: String },
 }
 
 impl ScreenBufferSnapshot {
@@ -323,6 +332,16 @@ pub struct TestServer {
     _tab_bar_height: u32,
     window_width: Arc<Mutex<u32>>,
     window_height: Arc<Mutex<u32>>,
+    /// Shared logical window size (same Arc used by the hit-test closure).
+    hit_test_window_size: Arc<(AtomicI32, AtomicI32)>,
+    /// Shared logical x of the right edge of the last rendered tab.
+    hit_test_tabs_right_edge: Arc<AtomicI32>,
+    /// Logical tab-bar height (36 px).
+    hit_test_tab_bar_height: i32,
+    /// Logical width of the window-control buttons exclusion zone (200 px).
+    hit_test_buttons_width: i32,
+    /// Logical resize-border width (8 px).
+    hit_test_resize_border: i32,
 }
 
 impl TestServer {
@@ -335,6 +354,11 @@ impl TestServer {
         tab_bar_height: u32,
         window_width: u32,
         window_height: u32,
+        hit_test_window_size: Arc<(AtomicI32, AtomicI32)>,
+        hit_test_tabs_right_edge: Arc<AtomicI32>,
+        hit_test_tab_bar_height: i32,
+        hit_test_buttons_width: i32,
+        hit_test_resize_border: i32,
     ) -> Result<Self, std::io::Error> {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", port))?;
         listener.set_nonblocking(true)?;
@@ -351,6 +375,11 @@ impl TestServer {
             _tab_bar_height: tab_bar_height,
             window_width: Arc::new(Mutex::new(window_width)),
             window_height: Arc::new(Mutex::new(window_height)),
+            hit_test_window_size,
+            hit_test_tabs_right_edge,
+            hit_test_tab_bar_height,
+            hit_test_buttons_width,
+            hit_test_resize_border,
         })
     }
 
@@ -1212,6 +1241,39 @@ impl TestServer {
                 TestResponse::Error {
                     message: "Failed to simulate zoom".to_string(),
                 }
+            }
+            TestCommand::CheckHitTest { x, y } => {
+                // Evaluate the hit-test logic with the same shared state used by the
+                // real SDL hit-test closure.  x < 0 means "from the right edge".
+                let w = self.hit_test_window_size.0.load(Ordering::Relaxed);
+                let h = self.hit_test_window_size.1.load(Ordering::Relaxed);
+                let x = if x < 0 { w + x } else { x };
+                let tabs_right_edge = self.hit_test_tabs_right_edge.load(Ordering::Relaxed);
+                let resize_border = self.hit_test_resize_border;
+                let tab_bar_height = self.hit_test_tab_bar_height;
+                let buttons_width = self.hit_test_buttons_width;
+
+                let at_left   = x < resize_border;
+                let at_right  = x >= w - resize_border;
+                let at_top    = y < resize_border;
+                let at_bottom = y >= h - resize_border;
+
+                let result = match (at_left, at_right, at_top, at_bottom) {
+                    (true, _, true, _)  => "ResizeTopLeft",
+                    (_, true, true, _)  => "ResizeTopRight",
+                    (true, _, _, true)  => "ResizeBottomLeft",
+                    (_, true, _, true)  => "ResizeBottomRight",
+                    (true, _, _, _)     => "ResizeLeft",
+                    (_, true, _, _)     => "ResizeRight",
+                    (_, _, true, _)     => "ResizeTop",
+                    (_, _, _, true)     => "ResizeBottom",
+                    _ if y < tab_bar_height
+                        && x >= tabs_right_edge
+                        && x < w - buttons_width => "Draggable",
+                    _ => "Normal",
+                };
+                eprintln!("[TEST_SERVER] check_hit_test ({},{}) w={} -> {}", x, y, w, result);
+                TestResponse::HitTest { result: result.to_string() }
             }
         }
     }

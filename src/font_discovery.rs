@@ -158,8 +158,8 @@ const PREFERRED_SYMBOL_FONTS: &[&str] = &[
     "seguisym.ttf",
     "Segoe UI Symbol.ttf",
     // macOS system fonts with comprehensive symbol/dingbat coverage
+    "Apple Symbols.ttf",  // Broad coverage: arrows, math, technical (U+23BF ⎿), dingbats, geometric
     "ZapfDingbats.ttf",   // Zapf Dingbats: covers U+2700-U+27BF (➜ U+279C, ❯ U+276F, ✓ U+2713, etc.)
-    "Apple Symbols.ttf",  // General symbol coverage (arrows, math, technical, geometric)
     // Symbola - comprehensive Unicode symbol font
     "Symbola.ttf",
     // FreeMono - excellent coverage of technical symbols and dingbats (U+23BF, U+276F, etc.)

@@ -552,8 +552,12 @@ impl TabBar {
             x += tab_width as i32 + 1;
         }
 
-        // Update the shared right-edge so the hit-test knows where tabs end
-        self.tabs_right_edge.store(x, Ordering::Relaxed);
+        // Update the shared right-edge so the hit-test knows where tabs end.
+        // The hit-test closure receives *logical* coordinates, so convert physical x
+        // to logical by dividing by the display scale factor.
+        let display_scale = canvas.window().display_scale();
+        let x_logical = if display_scale > 0.0 { (x as f32 / display_scale) as i32 } else { x };
+        self.tabs_right_edge.store(x_logical, Ordering::Relaxed);
 
         // Now render the dragged tab on top with visual feedback
         if let Some((idx, tab_name, original_x, tab_width)) = dragged_tab_data {

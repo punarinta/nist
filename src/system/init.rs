@@ -74,7 +74,7 @@ pub struct InitializedApp<'a> {
     pub sys: System,
     pub ctrl_keys: std::collections::HashMap<sdl3::keyboard::Scancode, u8>,
     pub mouse_state: crate::input::mouse::MouseState,
-    pub glyph_cache: HashMap<String, sdl3::render::Texture<'a>>,
+    pub glyph_cache: HashMap<String, sdl3::render::Texture>,
     pub window_logical_size: Arc<(AtomicI32, AtomicI32)>,
     #[cfg(target_os = "linux")]
     pub clipboard_tx: Sender<Clipboard>,
@@ -100,7 +100,10 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
     #[cfg(not(target_os = "windows"))]
     let signal_rx = setup_signal_handlers()?;
 
-    let (window_width, window_height) = (2376_u32, 1593_u32);
+    // This is the "restore" size used by macOS when un-zooming from the maximized state
+    // (e.g. after clicking the minimize button).  Keep it comfortably within any laptop
+    // display so the window never appears bigger than the screen on restore.
+    let (window_width, window_height) = (1280_u32, 800_u32);
 
     let sdl_context = sdl3::init().unwrap();
 
@@ -170,6 +173,19 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
     // Set context menu images
     load_and_set_context_menu_images(&tab_bar_gui);
 
+    // Set up hit test for borderless window resize/drag support.
+    // SDL hit test receives *logical* window coordinates (same space as SDL_GetWindowSize),
+    // not physical pixels.  All thresholds must therefore be in logical pixels too.
+    let (log_w, log_h) = canvas.window().size();
+    let window_logical_size = Arc::new((
+        AtomicI32::new(log_w as i32),
+        AtomicI32::new(log_h as i32),
+    ));
+    // Logical-pixel constants for the hit test.
+    let log_tab_bar_height: i32 = 36;
+    let log_buttons_width:  i32 = 200; // 3 buttons × ~60px + spacing
+    let log_resize_border:  i32 = 8;
+
     // Initialize test server if requested
     #[cfg(feature = "test-server")]
     let test_server = initialize_test_server(
@@ -180,45 +196,38 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
         tab_bar_height,
         drawable_width,
         drawable_height,
+        window_logical_size.clone(),
+        tab_bar.tabs_right_edge.clone(),
+        log_tab_bar_height,
+        log_buttons_width,
+        log_resize_border,
     );
-
-    // Set up hit test for borderless window resize/drag support.
-    // SDL hit test receives physical pixel coordinates on HiDPI displays.
-    let (phys_w, phys_h) = canvas.window().size_in_pixels();
-    let window_logical_size = Arc::new((
-        AtomicI32::new(phys_w as i32),
-        AtomicI32::new(phys_h as i32),
-    ));
     {
         let size = window_logical_size.clone();
         let tabs_right_edge = tab_bar.tabs_right_edge.clone();
-        let phys_tab_bar_height = tab_bar_height as i32;
-        // Right-side exclusion zone: 3 buttons * ~button_size + spacing, scaled
-        let phys_buttons_width = (200.0 * scale_info.scale_factor) as i32;
-        let resize_border = (8.0 * scale_info.scale_factor) as i32;
         canvas.window_mut().set_hit_test(move |point| {
             let w = size.0.load(Ordering::Relaxed);
             let h = size.1.load(Ordering::Relaxed);
             let x = point.x();
             let y = point.y();
-            let at_left = x < resize_border;
-            let at_right = x >= w - resize_border;
-            let at_top = y < resize_border;
-            let at_bottom = y >= h - resize_border;
+            let at_left   = x < log_resize_border;
+            let at_right  = x >= w - log_resize_border;
+            let at_top    = y < log_resize_border;
+            let at_bottom = y >= h - log_resize_border;
             match (at_left, at_right, at_top, at_bottom) {
-                (true, _, true, _) => HitTestResult::ResizeTopLeft,
-                (_, true, true, _) => HitTestResult::ResizeTopRight,
-                (true, _, _, true) => HitTestResult::ResizeBottomLeft,
-                (_, true, _, true) => HitTestResult::ResizeBottomRight,
-                (true, _, _, _) => HitTestResult::ResizeLeft,
-                (_, true, _, _) => HitTestResult::ResizeRight,
-                (_, _, true, _) => HitTestResult::ResizeTop,
-                (_, _, _, true) => HitTestResult::ResizeBottom,
+                (true, _, true, _)  => HitTestResult::ResizeTopLeft,
+                (_, true, true, _)  => HitTestResult::ResizeTopRight,
+                (true, _, _, true)  => HitTestResult::ResizeBottomLeft,
+                (_, true, _, true)  => HitTestResult::ResizeBottomRight,
+                (true, _, _, _)     => HitTestResult::ResizeLeft,
+                (_, true, _, _)     => HitTestResult::ResizeRight,
+                (_, _, true, _)     => HitTestResult::ResizeTop,
+                (_, _, _, true)     => HitTestResult::ResizeBottom,
                 // Only the empty gap between the last tab and window buttons is draggable.
                 // Tabs themselves must stay Normal so clicks reach the application.
-                _ if y < phys_tab_bar_height
+                _ if y < log_tab_bar_height
                     && x >= tabs_right_edge.load(Ordering::Relaxed)
-                    && x < w - phys_buttons_width => HitTestResult::Draggable,
+                    && x < w - log_buttons_width => HitTestResult::Draggable,
                 _ => HitTestResult::Normal,
             }
         }).map_err(|e| e.to_string())?;
@@ -604,6 +613,11 @@ fn initialize_test_server(
     tab_bar_height: u32,
     drawable_width: u32,
     drawable_height: u32,
+    hit_test_window_size: Arc<(AtomicI32, AtomicI32)>,
+    hit_test_tabs_right_edge: Arc<AtomicI32>,
+    hit_test_tab_bar_height: i32,
+    hit_test_buttons_width: i32,
+    hit_test_resize_border: i32,
 ) -> Option<crate::test_server::TestServer> {
     test_port.and_then(|port| {
         let terminals = match tab_bar_gui.try_lock() {
@@ -623,6 +637,11 @@ fn initialize_test_server(
             tab_bar_height,
             drawable_width,
             drawable_height,
+            hit_test_window_size,
+            hit_test_tabs_right_edge,
+            hit_test_tab_bar_height,
+            hit_test_buttons_width,
+            hit_test_resize_border,
         ) {
             Ok(server) => {
                 eprintln!("[INIT] Test server enabled on port {}", port);

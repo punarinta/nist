@@ -17,8 +17,6 @@ pub fn is_emoji_char(ch: char) -> bool {
         0x1FA70..=0x1FAFF |
         // Miscellaneous Symbols (including weather, zodiac)
         0x2600..=0x26FF |
-        // Dingbats (❌ U+274C, ✔ U+2714, ✖ U+2716, ❗ U+2757, etc.)
-        0x2700..=0x27BF |
         // Enclosed Alphanumeric Supplement (includes circled numbers and regional indicators for flags)
         0x1F100..=0x1F1FF |
         // Enclosed Ideographic Supplement
@@ -29,10 +27,9 @@ pub fn is_emoji_char(ch: char) -> bool {
         0x1F000..=0x1F02F |
         // Playing Cards
         0x1F0A0..=0x1F0FF |
-        // Emoji characters in Miscellaneous Technical range (⌚⌛⏩⏪⏫⏬⏭⏮⏯⏰⏱⏲⏳⏸⏹⏺)
+        // Emoji characters in Miscellaneous Technical range (⌚⌛⏩⏪⏫⏬⏭⏮⏯⏰⏱⏲⏳)
         0x231A..=0x231B |  // Watch, Hourglass
-        0x23E9..=0x23F3 |  // Fast-forward/rewind/up/down, hourglass with flowing sand (⏳)
-        0x23F8..=0x23FA    // Pause, Stop, Record
+        0x23E9..=0x23F3    // Fast-forward/rewind/up/down, hourglass with flowing sand (⏳)
     )
 }
 
