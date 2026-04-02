@@ -10,5 +10,6 @@ pub mod events;
 pub mod hotkeys;
 pub mod keyboard;
 pub mod mouse;
+pub mod voice;
 
 // Re-export types and functions used by main.rs

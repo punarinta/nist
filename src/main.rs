@@ -201,6 +201,9 @@ fn main() -> Result<(), String> {
     let mut needs_render = true;
     let mut skip_render_count = 0;
 
+    // Voice input manager
+    let mut voice_manager = input::voice::VoiceInputManager::new();
+
     'running: loop {
         // Check for termination signals (SIGTERM, SIGINT, SIGHUP from OS)
         #[cfg(not(target_os = "windows"))]
@@ -763,6 +766,24 @@ fn main() -> Result<(), String> {
                         }
                     }
 
+                    input::events::EventAction::VoiceInput => {
+                        if !voice_manager.is_active() {
+                            if let Some(vendor) = settings.external.iter().find(|v| v.name == "stt") {
+                                voice_manager.start_recording(vendor.api_key.clone(), vendor.url.clone(), vendor.lang.clone());
+                                eprintln!("[MAIN] Voice input started");
+                            } else {
+                                eprintln!("[MAIN] Voice input: no 'stt' vendor in settings.external");
+                            }
+                            needs_render = true;
+                        }
+                    }
+
+                    input::events::EventAction::StopVoiceInput => {
+                        voice_manager.stop_recording();
+                        eprintln!("[MAIN] Voice input stopped");
+                        needs_render = true;
+                    }
+
                     input::events::EventAction::TabRenamed | input::events::EventAction::PaneClosed | input::events::EventAction::TabReordered => {
                         // Save state after tab rename, pane closure, or tab reorder
                         if let Ok(gui) = tab_bar_gui.try_lock() {
@@ -1069,6 +1090,28 @@ fn main() -> Result<(), String> {
                 }
             }
 
+            // Poll voice transcription results and type them into the active terminal
+            loop {
+                match voice_manager.poll_result() {
+                    input::voice::VoicePollResult::Text(text) => {
+                        if let Ok(mut gui) = tab_bar_gui.try_lock() {
+                            if let Some(pane_layout) = gui.get_active_pane_layout() {
+                                if let Some(terminal) = pane_layout.get_active_terminal() {
+                                    terminal.lock().unwrap().send_text(&text);
+                                    eprintln!("[VOICE] Typed: {:?}", text);
+                                }
+                            }
+                        }
+                        needs_render = true;
+                    }
+                    input::voice::VoicePollResult::Done => {
+                        needs_render = true;
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+
             // Render everything using optimized render module
             // This only renders the active tab and visible content
             let any_dirty = render::render_frame(
@@ -1092,6 +1135,8 @@ fn main() -> Result<(), String> {
                 cursor_visible,
                 &mut glyph_cache,
                 &mouse_state,
+                voice_manager.is_recording(),
+                voice_manager.is_transcribing(),
             )?;
 
             if any_dirty {

@@ -33,6 +33,8 @@ pub enum EventAction {
     ChangeFontSize(f32),
     TerminalHistorySearch,
     AiCommandGeneration,
+    VoiceInput,
+    StopVoiceInput,
     None,
 }
 
@@ -175,7 +177,7 @@ pub fn handle_event(
             clipboard_tx,
         ),
 
-        Event::KeyUp { keycode, .. } => handle_key_up_event(*keycode, mouse_state),
+        Event::KeyUp { keycode, .. } => handle_key_up_event(*keycode, mouse_state, settings),
         Event::TextInput { ref text, .. } => handle_text_input_event(text, tab_bar, tab_bar_gui),
 
         _ => EventResult::none(),
@@ -563,6 +565,7 @@ fn handle_key_down_event(
                 NavigationAction::GoToPrompt => super::keyboard::KeyboardAction::None,                              // Will be handled below
                 NavigationAction::TerminalHistorySearch => super::keyboard::KeyboardAction::RequestTerminalHistorySearch,
                 NavigationAction::AiCommandGeneration => super::keyboard::KeyboardAction::RequestAiCommandGeneration,
+                NavigationAction::VoiceInput => super::keyboard::KeyboardAction::RequestVoiceInput,
             };
 
             // Handle the action
@@ -586,6 +589,7 @@ fn handle_key_down_event(
                 KeyboardAction::Quit => EventAction::Quit,
                 KeyboardAction::RequestTerminalHistorySearch => EventAction::TerminalHistorySearch,
                 KeyboardAction::RequestAiCommandGeneration => EventAction::AiCommandGeneration,
+                KeyboardAction::RequestVoiceInput => EventAction::VoiceInput,
                 KeyboardAction::TabRenamed => EventAction::TabRenamed,
                 KeyboardAction::PaneClosed => EventAction::PaneClosed,
                 KeyboardAction::None => EventAction::None,
@@ -632,6 +636,7 @@ fn handle_key_down_event(
                     KeyboardAction::Quit => EventAction::Quit,
                     KeyboardAction::RequestTerminalHistorySearch => EventAction::TerminalHistorySearch,
                     KeyboardAction::RequestAiCommandGeneration => EventAction::AiCommandGeneration,
+                    KeyboardAction::RequestVoiceInput => EventAction::VoiceInput,
                     KeyboardAction::TabRenamed => EventAction::TabRenamed,
                     KeyboardAction::PaneClosed => EventAction::PaneClosed,
                     KeyboardAction::None => EventAction::None,
@@ -661,20 +666,36 @@ fn handle_key_down_event(
     EventResult::none()
 }
 
-fn handle_key_up_event(keycode: Option<sdl3::keyboard::Keycode>, mouse_state: &mut MouseState) -> EventResult {
+fn handle_key_up_event(keycode: Option<sdl3::keyboard::Keycode>, mouse_state: &mut MouseState, settings: &Settings) -> EventResult {
     use sdl3::keyboard::Keycode;
 
+    let Some(key) = keycode else {
+        return EventResult::none();
+    };
+
     // Detect Ctrl key release and clear URL hover state
-    if let Some(key) = keycode {
-        if matches!(key, Keycode::LCtrl | Keycode::RCtrl) {
-            mouse_state.ctrl_pressed = false;
-            mouse_state.hovered_url = None;
-            return EventResult {
-                action: EventAction::None,
-                needs_render: true,
-                needs_resize: false,
-            };
-        }
+    if matches!(key, Keycode::LCtrl | Keycode::RCtrl) {
+        mouse_state.ctrl_pressed = false;
+        mouse_state.hovered_url = None;
+        return EventResult {
+            action: EventAction::None,
+            needs_render: true,
+            needs_resize: false,
+        };
+    }
+
+    // Check if a "hold" navigation hotkey was released
+    if let Some(nav_action) = super::hotkeys::match_hold_release_navigation_hotkey(key, &settings.hotkeys.navigation) {
+        use super::hotkeys::NavigationAction;
+        let event_action = match nav_action {
+            NavigationAction::VoiceInput => EventAction::StopVoiceInput,
+            _ => EventAction::None,
+        };
+        return EventResult {
+            action: event_action,
+            needs_render: false,
+            needs_resize: false,
+        };
     }
 
     EventResult::none()

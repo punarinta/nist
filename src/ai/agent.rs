@@ -55,6 +55,7 @@ fn get_vendor(settings: &Settings, vendor_name: &str) -> Result<ExternalVendor, 
             name: "nisdos".to_string(),
             api_key: String::new(),
             url: DEFAULT_AI_URL.to_string(),
+            lang: None,
         });
     }
 
@@ -313,6 +314,7 @@ mod tests {
             name: "nisdos".to_string(),
             api_key: "test_key".to_string(),
             url: "http://test.com".to_string(),
+            lang: None,
         });
 
         let result = get_vendor(&settings, "nisdos");
@@ -412,6 +414,7 @@ mod tests {
             name: "nisdos".to_string(),
             api_key: "test-key".to_string(), // Replace with actual key for testing
             url: DEFAULT_AI_URL.to_string(),
+            lang: None,
         });
 
         let history = vec!["ls -la".to_string(), "cd /home".to_string(), "pwd".to_string()];

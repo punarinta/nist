@@ -24,6 +24,7 @@ pub enum KeyboardAction {
     Quit,
     RequestTerminalHistorySearch,
     RequestAiCommandGeneration,
+    RequestVoiceInput,
     TabRenamed,
     PaneClosed,
     None,
@@ -272,6 +273,11 @@ pub fn handle_hotkey_action(
             NavigationAction::AiCommandGeneration => {
                 // Request AI command generation dialog
                 KeyboardResult::with_action(KeyboardAction::RequestAiCommandGeneration)
+            }
+
+            NavigationAction::VoiceInput => {
+                // Request voice input toggle
+                KeyboardResult::with_action(KeyboardAction::RequestVoiceInput)
             }
         },
 

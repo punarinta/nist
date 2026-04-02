@@ -83,6 +83,8 @@ pub fn render_frame<'a, T>(
     cursor_visible: bool,
     glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
     mouse_state: &crate::input::mouse::MouseState,
+    voice_recording: bool,
+    voice_transcribing: bool,
 ) -> Result<bool, String> {
     // Clear screen with terminal background color
     canvas.set_draw_color(DEFAULT_BG_COLOR);
@@ -135,7 +137,11 @@ pub fn render_frame<'a, T>(
 
     // Render each pane in the active tab (inactive tabs are NOT rendered)
     let mut any_dirty = false;
+    let mut active_pane_rect: Option<Rect> = None;
     for (pane_id, rect, terminal, is_active, is_selected) in pane_rects {
+        if is_active {
+            active_pane_rect = Some(rect);
+        }
         let was_dirty = render_pane(
             canvas,
             texture_creator,
@@ -158,6 +164,13 @@ pub fn render_frame<'a, T>(
             pane_id,
         )?;
         any_dirty = any_dirty || was_dirty;
+    }
+
+    // Render voice input indicator on top of the active pane
+    if voice_recording || voice_transcribing {
+        if let Some(rect) = active_pane_rect {
+            render_voice_indicator(canvas, rect, voice_transcribing, cursor_visible)?;
+        }
     }
 
     // Render dividers between panes
@@ -927,6 +940,90 @@ fn render_scrollback_indicator<T>(
             canvas.copy(&texture, None, text_rect).map_err(|e| e.to_string())?;
         }
     }
+
+    Ok(())
+}
+
+/// Render the green microphone indicator in the top-right corner of the active pane.
+/// Shows solid green while recording, pulsing yellow while transcribing.
+/// Render a microphone icon in the top-right corner of the given pane rect.
+///
+/// Layout (all sizes in logical pixels, scaled by scale_factor):
+///
+///   ┌──────────────────────┐  ← dark semi-transparent pill (48 × 48)
+///   │         ╭──╮         │
+///   │        ╭────╮        │  ← mic capsule head (14 × 22, rounded top)
+///   │        │    │        │
+///   │        └────┘        │
+///   │     ╰──────╯         │  ← curved stand arms (two 6×3 rects)
+///   │         ││           │  ← stand pole (4 × 8)
+///   │      ━━━━━━━━        │  ← base bar (18 × 3)
+///   └──────────────────────┘
+fn render_voice_indicator(
+    canvas: &mut Canvas<Window>,
+    pane_rect: Rect,
+    is_transcribing: bool,
+    cursor_visible: bool,
+) -> Result<(), String> {
+    // All sizes are intentionally large so the icon is clearly visible
+    const BG_SIZE: u32 = 48;
+    const MARGIN: i32 = 8;
+
+    let bx = pane_rect.right() - MARGIN - BG_SIZE as i32;
+    let by = pane_rect.top() + MARGIN;
+    let cx = bx + BG_SIZE as i32 / 2; // horizontal centre
+
+    // ── dark semi-transparent background pill ────────────────────────────────
+    canvas.set_blend_mode(BlendMode::Blend);
+    canvas.set_draw_color(Color::RGBA(18, 18, 18, 210));
+    canvas.fill_rect(Rect::new(bx, by, BG_SIZE, BG_SIZE))
+        .map_err(|e| e.to_string())?;
+    canvas.set_blend_mode(BlendMode::None);
+
+    // ── icon colour ──────────────────────────────────────────────────────────
+    let color = if is_transcribing {
+        if cursor_visible { Color::RGB(230, 190, 0) } else { Color::RGB(110, 90, 0) }
+    } else if cursor_visible {
+        Color::RGB(0, 220, 60)
+    } else {
+        Color::RGB(0, 130, 40)
+    };
+    canvas.set_draw_color(color);
+
+    // ── mic capsule head (14 px wide × 22 px tall, centred, rounded top) ───────
+    const HEAD_W: u32 = 14;
+    const HEAD_H: u32 = 22;
+    let head_x = cx - HEAD_W as i32 / 2;
+    let head_y = by + 4;
+    // body
+    canvas.fill_rect(Rect::new(head_x, head_y + 2, HEAD_W, HEAD_H - 2))
+        .map_err(|e| e.to_string())?;
+    // rounded top: row 1 — 1 px inset each side
+    canvas.fill_rect(Rect::new(head_x + 1, head_y + 1, HEAD_W - 2, 1))
+        .map_err(|e| e.to_string())?;
+    // rounded top: row 0 — 2 px inset each side
+    canvas.fill_rect(Rect::new(head_x + 2, head_y, HEAD_W - 4, 1))
+        .map_err(|e| e.to_string())?;
+
+    // ── stand arms: two small rects that suggest the curved bottom ───────────
+    //   left arm
+    canvas.fill_rect(Rect::new(head_x - 6, head_y + HEAD_H as i32 - 4, 6, 3))
+        .map_err(|e| e.to_string())?;
+    //   right arm
+    canvas.fill_rect(Rect::new(head_x + HEAD_W as i32, head_y + HEAD_H as i32 - 4, 6, 3))
+        .map_err(|e| e.to_string())?;
+
+    // ── stand pole ───────────────────────────────────────────────────────────
+    const POLE_W: u32 = 4;
+    const POLE_H: u32 = 8;
+    canvas.fill_rect(Rect::new(cx - POLE_W as i32 / 2, head_y + HEAD_H as i32 - 1, POLE_W, POLE_H))
+        .map_err(|e| e.to_string())?;
+
+    // ── base bar ─────────────────────────────────────────────────────────────
+    const BASE_W: u32 = 20;
+    const BASE_H: u32 = 3;
+    canvas.fill_rect(Rect::new(cx - BASE_W as i32 / 2, head_y + HEAD_H as i32 + POLE_H as i32 - 1, BASE_W, BASE_H))
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }

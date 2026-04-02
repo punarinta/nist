@@ -58,6 +58,7 @@ pub enum NavigationAction {
     GoToPrompt,
     TerminalHistorySearch,
     AiCommandGeneration,
+    VoiceInput,
 }
 
 /// Represents actions that can be triggered by hotkeys
@@ -130,6 +131,9 @@ pub fn match_navigation_hotkey(
     if matches_any(&navigation_hotkeys.ai_command_generation) {
         return Some(NavigationAction::AiCommandGeneration);
     }
+    if matches_any(&navigation_hotkeys.voice_input) {
+        return Some(NavigationAction::VoiceInput);
+    }
 
     None
 }
@@ -184,6 +188,60 @@ pub fn match_sequential_navigation_hotkey(
     if matches_any_sequential(&navigation_hotkeys.ai_command_generation) {
         return Some(NavigationAction::AiCommandGeneration);
     }
+    if matches_any_sequential(&navigation_hotkeys.voice_input) {
+        return Some(NavigationAction::VoiceInput);
+    }
+
+    None
+}
+
+/// Match a key release event against "hold" navigation hotkeys
+/// Returns NavigationAction if the released keycode matches any hold binding (modifiers not checked on release)
+pub fn match_hold_release_navigation_hotkey(keycode: Keycode, navigation_hotkeys: &NavigationHotkeys) -> Option<NavigationAction> {
+    let matches_hold_key = |bindings: &[KeyBinding]| -> bool {
+        bindings.iter().any(|binding| {
+            binding.hold
+                && !binding.is_sequential()
+                && binding.key.to_keycode().map_or(false, |kc| kc == keycode)
+        })
+    };
+
+    if matches_hold_key(&navigation_hotkeys.split_right) {
+        return Some(NavigationAction::SplitRight);
+    }
+    if matches_hold_key(&navigation_hotkeys.split_down) {
+        return Some(NavigationAction::SplitDown);
+    }
+    if matches_hold_key(&navigation_hotkeys.close_pane) {
+        return Some(NavigationAction::ClosePane);
+    }
+    if matches_hold_key(&navigation_hotkeys.next_pane) {
+        return Some(NavigationAction::NextPane);
+    }
+    if matches_hold_key(&navigation_hotkeys.previous_pane) {
+        return Some(NavigationAction::PreviousPane);
+    }
+    if matches_hold_key(&navigation_hotkeys.new_tab) {
+        return Some(NavigationAction::NewTab);
+    }
+    if matches_hold_key(&navigation_hotkeys.next_tab) {
+        return Some(NavigationAction::NextTab);
+    }
+    if matches_hold_key(&navigation_hotkeys.previous_tab) {
+        return Some(NavigationAction::PreviousTab);
+    }
+    if matches_hold_key(&navigation_hotkeys.go_to_prompt) {
+        return Some(NavigationAction::GoToPrompt);
+    }
+    if matches_hold_key(&navigation_hotkeys.terminal_history_search) {
+        return Some(NavigationAction::TerminalHistorySearch);
+    }
+    if matches_hold_key(&navigation_hotkeys.ai_command_generation) {
+        return Some(NavigationAction::AiCommandGeneration);
+    }
+    if matches_hold_key(&navigation_hotkeys.voice_input) {
+        return Some(NavigationAction::VoiceInput);
+    }
 
     None
 }
@@ -209,6 +267,7 @@ pub fn is_sequential_navigation_hotkey_start(keycode: Keycode, is_ctrl: bool, is
         || starts_with(&navigation_hotkeys.go_to_prompt)
         || starts_with(&navigation_hotkeys.terminal_history_search)
         || starts_with(&navigation_hotkeys.ai_command_generation)
+        || starts_with(&navigation_hotkeys.voice_input)
 }
 
 /// Match a keycode and modifiers to a hotkey action (hardcoded hotkeys)

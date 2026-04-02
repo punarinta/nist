@@ -125,6 +125,9 @@ pub struct KeyBinding {
     pub key: Key,
     #[serde(default)]
     pub key2: Option<Key>,
+    /// If true, the action fires on key-down and automatically stops on key-up
+    #[serde(default)]
+    pub hold: bool,
 }
 
 impl Key {
@@ -304,6 +307,8 @@ pub struct NavigationHotkeys {
     pub terminal_history_search: Vec<KeyBinding>,
     #[serde(rename = "aiCommandGeneration", default = "default_ai_command_generation")]
     pub ai_command_generation: Vec<KeyBinding>,
+    #[serde(rename = "voiceInput", default = "default_voice_input")]
+    pub voice_input: Vec<KeyBinding>,
 }
 
 // Default functions for NavigationHotkeys fields
@@ -314,6 +319,7 @@ fn default_split_right() -> Vec<KeyBinding> {
         alt: false,
         key: Key::J,
         key2: None,
+        hold: false,
     }]
 }
 
@@ -324,6 +330,7 @@ fn default_split_down() -> Vec<KeyBinding> {
         alt: false,
         key: Key::H,
         key2: None,
+        hold: false,
     }]
 }
 
@@ -334,6 +341,7 @@ fn default_close_pane() -> Vec<KeyBinding> {
         alt: false,
         key: Key::W,
         key2: None,
+        hold: false,
     }]
 }
 
@@ -344,6 +352,7 @@ fn default_next_pane() -> Vec<KeyBinding> {
         alt: false,
         key: Key::RightBracket,
         key2: None,
+        hold: false,
     }]
 }
 
@@ -354,6 +363,7 @@ fn default_previous_pane() -> Vec<KeyBinding> {
         alt: false,
         key: Key::LeftBracket,
         key2: None,
+        hold: false,
     }]
 }
 
@@ -364,6 +374,7 @@ fn default_new_tab() -> Vec<KeyBinding> {
         alt: false,
         key: Key::T,
         key2: None,
+        hold: false,
     }]
 }
 
@@ -375,6 +386,7 @@ fn default_next_tab() -> Vec<KeyBinding> {
             alt: false,
             key: Key::Tab,
             key2: None,
+            hold: false,
         },
         KeyBinding {
             ctrl: true,
@@ -382,6 +394,7 @@ fn default_next_tab() -> Vec<KeyBinding> {
             alt: false,
             key: Key::Tab,
             key2: None,
+            hold: false,
         },
     ]
 }
@@ -397,6 +410,7 @@ fn default_go_to_prompt() -> Vec<KeyBinding> {
         alt: true,
         key: Key::G,
         key2: Some(Key::P),
+        hold: false,
     }]
 }
 
@@ -407,6 +421,7 @@ fn default_terminal_history_search() -> Vec<KeyBinding> {
         alt: false,
         key: Key::R,
         key2: None,
+        hold: false,
     }]
 }
 
@@ -417,6 +432,18 @@ fn default_ai_command_generation() -> Vec<KeyBinding> {
         alt: false,
         key: Key::A,
         key2: None,
+        hold: false,
+    }]
+}
+
+fn default_voice_input() -> Vec<KeyBinding> {
+    vec![KeyBinding {
+        ctrl: true,
+        shift: true,
+        alt: false,
+        key: Key::V,
+        key2: None,
+        hold: true,
     }]
 }
 
@@ -434,6 +461,7 @@ impl Default for NavigationHotkeys {
             go_to_prompt: default_go_to_prompt(),
             terminal_history_search: default_terminal_history_search(),
             ai_command_generation: default_ai_command_generation(),
+            voice_input: default_voice_input(),
         }
     }
 }
@@ -473,16 +501,33 @@ pub struct ExternalVendor {
     pub api_key: String,
     #[serde(default)]
     pub url: String,
+    #[serde(default)]
+    pub lang: Option<String>,
 }
 
 /// Settings structure
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub external: Vec<ExternalVendor>,
     pub terminal: TerminalSettings,
     #[serde(default)]
     pub hotkeys: Hotkeys,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            external: vec![ExternalVendor {
+                name: "stt".to_string(),
+                api_key: "your-api-key".to_string(),
+                url: "https://api.groq.com/openai/v1/audio/transcriptions".to_string(),
+                lang: None,
+            }],
+            terminal: TerminalSettings::default(),
+            hotkeys: Hotkeys::default(),
+        }
+    }
 }
 
 /// Get the path to the settings file based on build profile
@@ -570,7 +615,8 @@ mod tests {
     #[test]
     fn test_default_settings() {
         let settings = Settings::default();
-        assert_eq!(settings.external.len(), 0);
+        assert_eq!(settings.external.len(), 1); // default stt vendor template
+        assert_eq!(settings.external[0].name, "stt");
         assert_eq!(settings.terminal.font_size, 12.0);
         assert_eq!(settings.terminal.font_family, "auto");
         assert_eq!(settings.terminal.cursor, "pipe");
