@@ -225,7 +225,7 @@ impl Terminal {
         }
     }
 
-    pub(crate) fn set_size(&mut self, new_width: u32, new_height: u32) {
+    pub(crate) fn set_size(&mut self, new_width: u32, new_height: u32, cell_width_px: u32, cell_height_px: u32) {
         self.width = new_width;
         self.height = new_height;
 
@@ -236,14 +236,14 @@ impl Terminal {
         let new_size = PtySize {
             rows: new_height as u16,
             cols: new_width as u16,
-            pixel_width: 0,
-            pixel_height: 0,
+            pixel_width: (new_width * cell_width_px) as u16,
+            pixel_height: (new_height * cell_height_px) as u16,
         };
 
         if let Err(err) = self.master.resize(new_size) {
             eprintln!("[TERMINAL] Failed to resize PTY: {}", err);
         } else {
-            eprintln!("[TERMINAL] Resized PTY to {}x{}", new_width, new_height);
+            eprintln!("[TERMINAL] Resized PTY to {}x{} ({}x{} px)", new_width, new_height, new_size.pixel_width, new_size.pixel_height);
         }
     }
 

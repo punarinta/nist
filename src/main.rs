@@ -4,6 +4,7 @@ mod font_discovery;
 mod ghostty_buffer;
 mod history;
 mod input;
+mod kitty_graphics;
 mod pane_layout;
 mod sdl_renderer;
 mod settings;
@@ -53,7 +54,11 @@ fn resize_terminals_to_panes(
                 if let Ok(mut t) = terminal.lock() {
                     // Only resize if dimensions have changed
                     if t.width != cols || t.height != rows {
-                        t.set_size(cols, rows);
+                        t.set_size(cols, rows, char_width as u32, char_height as u32);
+                    }
+                    // Always sync cell pixel dimensions (for Kitty Graphics Protocol)
+                    if let Ok(mut gb) = t.ghostty_buffer.lock() {
+                        gb.set_cell_pixel_size(char_width as u32, char_height as u32);
                     }
                 }
             }
@@ -101,7 +106,7 @@ fn resize_terminals_after_split(
                             "[RESIZE] Pane {:?}: {}x{} -> {}x{} (clear={})",
                             pane_id, t.width, t.height, cols, rows, clear_screen
                         );
-                        t.set_size(cols, rows);
+                        t.set_size(cols, rows, char_width as u32, char_height as u32);
                     } else {
                         eprintln!("[RESIZE] Pane {:?}: already {}x{}", pane_id, cols, rows);
                     }

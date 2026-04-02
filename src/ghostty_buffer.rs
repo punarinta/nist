@@ -6,6 +6,8 @@ use sdl3::pixels::Color;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
+use crate::kitty_graphics::KittyGraphicsState;
+
 /// Cursor style as set by DECSCUSR escape sequences.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum CursorStyle {
@@ -85,6 +87,16 @@ pub struct GhosttyBuffer {
     pub dirty: bool,
     width: u16,
     height: u16,
+    /// Cell pixel dimensions for pixel-aware terminal queries (XTWINOPS).
+    cell_width_px: u32,
+    cell_height_px: u32,
+    /// Shared size state read by the XTWINOPS size callback.
+    /// Tuple: (rows, cols, cell_width_px, cell_height_px).
+    size_state: Arc<Mutex<(u16, u16, u32, u32)>>,
+    /// PTY writer for sending Kitty protocol responses.
+    pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Kitty Graphics Protocol state.
+    pub kitty_graphics: KittyGraphicsState,
 }
 
 // SAFETY: `terminal` is only accessed from the main render thread.
@@ -123,6 +135,21 @@ impl GhosttyBuffer {
             })
             .expect("GhosttyBuffer: on_pty_write failed");
 
+        // Wire size callback for XTWINOPS queries (CSI 14t / 16t / 18t).
+        // `icat` and other graphics apps use these to determine pixel dimensions.
+        let size_state = Arc::new(Mutex::new((
+            initial_rows,
+            initial_cols,
+            0u32,
+            0u32,
+        )));
+        let size_state_clone = Arc::clone(&size_state);
+        terminal
+            .on_size(move || {
+                size_state_clone.lock().map(|s| *s).unwrap_or((0, 0, 0, 0))
+            })
+            .expect("GhosttyBuffer: on_size failed");
+
         // Configure the default color theme to match our palette.
         terminal
             .set_default_fg_color(Some(RgbColor { r: 255, g: 255, b: 255 }))
@@ -155,6 +182,11 @@ impl GhosttyBuffer {
             dirty: true,
             width: initial_cols,
             height: initial_rows,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            size_state,
+            pty_writer: writer,
+            kitty_graphics: KittyGraphicsState::new(),
         };
 
         (gb, incoming_clone)
@@ -183,7 +215,62 @@ impl GhosttyBuffer {
                 incoming.drain(..MAX_BYTES_PER_FRAME).collect()
             }
         };
-        self.terminal.vt_write(&bytes);
+
+        // Intercept Kitty Graphics Protocol sequences for image rendering.
+        let kitty_seqs = crate::kitty_graphics::find_kitty_sequences(&bytes);
+        if kitty_seqs.is_empty() {
+            self.terminal.vt_write(&bytes);
+        } else {
+            let mut last = 0usize;
+            for (seq_start, seq_end) in kitty_seqs {
+                // Feed everything before this sequence to the VT parser first
+                // so the cursor advances to the correct position.
+                if last < seq_start {
+                    self.terminal.vt_write(&bytes[last..seq_start]);
+                }
+                // Snapshot cursor position at placement point.
+                let cx = self.cursor_x() as u16;
+                let cy = self.cursor_y() as u16;
+                let scrollback_len = self.scrollback_len();
+                // Handle the Kitty sequence ourselves (image storage + response).
+                if let Some(response) = self.kitty_graphics.process_raw_sequence(
+                    &bytes[seq_start..seq_end], cx, cy, scrollback_len,
+                ) {
+                    if let Ok(mut w) = self.pty_writer.lock() {
+                        let _ = w.write_all(&response);
+                        let _ = w.flush();
+                    }
+                }
+                // Also pass to libghostty so it can manage virtual placeholder
+                // cells, cursor advancement, and scrollback.
+                let cy_before = self.cursor_y();
+                self.terminal.vt_write(&bytes[seq_start..seq_end]);
+                let cy_after = self.cursor_y();
+
+                // If libghostty didn't advance the cursor (e.g. couldn't decode the file),
+                // scroll the terminal by emitting newlines so the image doesn't overlap text.
+                // cursor-down (ESC[nB) doesn't scroll; newlines do.
+                if cy_after == cy_before {
+                    if let Some(placement) = self.kitty_graphics.placements.last() {
+                        if placement.abs_row == scrollback_len + cy as usize {
+                            let n_rows = if self.cell_height_px > 0 {
+                                (placement.pixel_height + self.cell_height_px - 1) / self.cell_height_px
+                            } else {
+                                0
+                            };
+                            if n_rows > 0 {
+                                self.terminal.vt_write("\n".repeat(n_rows as usize).as_bytes());
+                            }
+                        }
+                    }
+                }
+                last = seq_end;
+            }
+            if last < bytes.len() {
+                self.terminal.vt_write(&bytes[last..]);
+            }
+        }
+
         self.dirty = true;
     }
 
@@ -202,7 +289,23 @@ impl GhosttyBuffer {
         let rows = rows.max(2) as u16;
         self.width = cols;
         self.height = rows;
-        let _ = self.terminal.resize(cols, rows, 0, 0);
+        if let Ok(mut s) = self.size_state.lock() {
+            s.0 = rows;
+            s.1 = cols;
+        }
+        let _ = self.terminal.resize(cols, rows, self.cell_width_px, self.cell_height_px);
+    }
+
+    /// Update the cell pixel dimensions used for pixel-aware terminal queries
+    /// (XTWINOPS CSI 14t / 16t).  Call this whenever the font metrics change.
+    pub fn set_cell_pixel_size(&mut self, cell_width_px: u32, cell_height_px: u32) {
+        self.cell_width_px = cell_width_px;
+        self.cell_height_px = cell_height_px;
+        if let Ok(mut s) = self.size_state.lock() {
+            s.2 = cell_width_px;
+            s.3 = cell_height_px;
+        }
+        let _ = self.terminal.resize(self.width, self.height, cell_width_px, cell_height_px);
     }
 
     // ── cursor ───────────────────────────────────────────────────────────────

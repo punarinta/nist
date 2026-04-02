@@ -499,7 +499,7 @@ impl TestServer {
                 if let Ok(terminals) = self.terminals.lock() {
                     if let Some(terminal) = terminals.get(active_idx) {
                         if let Ok(mut t) = terminal.lock() {
-                            t.set_size(width, height);
+                            t.set_size(width, height, 0, 0);
                             thread::sleep(std::time::Duration::from_millis(100));
                             return TestResponse::Ok;
                         }
@@ -749,7 +749,7 @@ impl TestServer {
                             if let Ok(mut t) = terminal.lock() {
                                 if t.width != cols || t.height != rows {
                                     eprintln!("[TEST_SERVER] SwitchTab: Resizing terminal from {}x{} to {}x{}", t.width, t.height, cols, rows);
-                                    t.set_size(cols, rows);
+                                    t.set_size(cols, rows, 0, 0);
                                 }
                             }
                         }
@@ -928,7 +928,7 @@ impl TestServer {
                                         "[TEST_SERVER] Pane {:?}: {}x{} -> {}x{} (clear={})",
                                         pane_id, t.width, t.height, cols, rows, clear_screen
                                     );
-                                    t.set_size(cols, rows);
+                                    t.set_size(cols, rows, 0, 0);
                                 } else {
                                     eprintln!("[TEST_SERVER] Pane {:?}: already {}x{}", pane_id, cols, rows);
                                 }
@@ -1203,7 +1203,7 @@ impl TestServer {
                                 current_width, current_height, new_width, new_height
                             );
 
-                            t.set_size(new_width, new_height);
+                            t.set_size(new_width, new_height, 0, 0);
 
                             return TestResponse::Ok;
                         }

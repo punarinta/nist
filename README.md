@@ -20,6 +20,7 @@ Features
 - error detection
 - clickable URLs (hold Ctrl and hover to see if it is)
 - voice input in any program running in the terminal
+- [Kitty](https://sw.kovidgoyal.net/kitty/graphics-protocol/) protocol support
 
 Next steps
 ===
@@ -27,7 +28,6 @@ Next steps
 - UI themes
 - plugins system
 - ligatures support
-- proper [Kitty](https://sw.kovidgoyal.net/kitty/graphics-protocol/) protocol support
 
 State
 ===

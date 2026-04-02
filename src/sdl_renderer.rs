@@ -2,6 +2,8 @@
 //! Provides font rendering, drawing primitives, and UI elements
 
 use crate::input::hotkeys::SequentialHotkeyState;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 use sdl3::pixels::Color;
 use sdl3::rect::Rect;
 use sdl3::render::{Canvas, TextureCreator};
@@ -55,6 +57,9 @@ pub struct TabBar {
     pub first_visible_tab_index: usize,
     pub left_scroll_button_rect: ClickableRect,
     pub right_scroll_button_rect: ClickableRect,
+    /// Physical x-coordinate of the right edge of the last rendered tab.
+    /// Shared with the hit-test closure so that only the gap after tabs is Draggable.
+    pub tabs_right_edge: Arc<AtomicI32>,
 }
 
 impl TabBar {
@@ -82,6 +87,7 @@ impl TabBar {
             first_visible_tab_index: 0,
             left_scroll_button_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
             right_scroll_button_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
+            tabs_right_edge: Arc::new(AtomicI32::new(0)),
         }
     }
 
@@ -367,7 +373,7 @@ impl TabBar {
             }
 
             let close_size = self.height - 12;
-            let filtered_tab_name: String = tab_name.chars().filter(|c| c.is_alphabetic()).collect();
+            let filtered_tab_name: String = tab_name.chars().filter(|c| is_renderable_tab_char(*c)).collect();
             let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { &filtered_tab_name };
             // Use uniform tab width for all tabs
             let tab_width = uniform_tab_width as u32;
@@ -546,6 +552,9 @@ impl TabBar {
             x += tab_width as i32 + 1;
         }
 
+        // Update the shared right-edge so the hit-test knows where tabs end
+        self.tabs_right_edge.store(x, Ordering::Relaxed);
+
         // Now render the dragged tab on top with visual feedback
         if let Some((idx, tab_name, original_x, tab_width)) = dragged_tab_data {
             let dragged_x = original_x + self.drag_offset_x;
@@ -561,7 +570,7 @@ impl TabBar {
                 Color::RGB(40, 40, 40) // Slightly brighter
             };
 
-            let filtered_tab_name: String = tab_name.chars().filter(|c| c.is_alphabetic()).collect();
+            let filtered_tab_name: String = tab_name.chars().filter(|c| is_renderable_tab_char(*c)).collect();
             let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { &filtered_tab_name };
 
             // Calculate available space for text (same as non-dragged tabs)
@@ -806,6 +815,28 @@ impl TabBar {
 
         Ok(())
     }
+}
+
+/// Returns true if a character should be shown in tab names.
+/// Allows letters, digits, punctuation, and typographic symbols,
+/// but rejects emoji and pictographic icons.
+fn is_renderable_tab_char(c: char) -> bool {
+    let cp = c as u32;
+    // Reject emoji / pictographic blocks:
+    //   U+2600–U+27FF  Misc Symbols, Dingbats
+    //   U+2900–U+2FFF  Supplemental Arrows, Misc Math, etc. (mostly symbols)
+    //   U+3000–U+303F  CJK Symbols (keep letters; reject if not letter/digit)
+    //   U+1F000+       Emoji, symbols, flags, etc.
+    //   U+FE00–U+FE0F  Variation selectors
+    //   U+E000–U+F8FF  Private use area
+    if (0x2600..=0x27FF).contains(&cp) { return false; }
+    if (0x2B00..=0x2BFF).contains(&cp) { return false; } // Misc Symbols and Arrows
+    if cp >= 0x1F000 { return false; }
+    if (0xFE00..=0xFE0F).contains(&cp) { return false; }
+    if (0xE000..=0xF8FF).contains(&cp) { return false; }
+    // Allow everything else: ASCII printable, Latin/Unicode letters, digits,
+    // punctuation (P* categories), math/currency symbols, whitespace, etc.
+    !c.is_control()
 }
 
 /// Safe text rendering that filters out characters the font can't render

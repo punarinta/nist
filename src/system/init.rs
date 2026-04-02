@@ -191,6 +191,7 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
     ));
     {
         let size = window_logical_size.clone();
+        let tabs_right_edge = tab_bar.tabs_right_edge.clone();
         let phys_tab_bar_height = tab_bar_height as i32;
         // Right-side exclusion zone: 3 buttons * ~button_size + spacing, scaled
         let phys_buttons_width = (200.0 * scale_info.scale_factor) as i32;
@@ -213,7 +214,11 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
                 (_, true, _, _) => HitTestResult::ResizeRight,
                 (_, _, true, _) => HitTestResult::ResizeTop,
                 (_, _, _, true) => HitTestResult::ResizeBottom,
-                _ if y < phys_tab_bar_height && x < w - phys_buttons_width => HitTestResult::Draggable,
+                // Only the empty gap between the last tab and window buttons is draggable.
+                // Tabs themselves must stay Normal so clicks reach the application.
+                _ if y < phys_tab_bar_height
+                    && x >= tabs_right_edge.load(Ordering::Relaxed)
+                    && x < w - phys_buttons_width => HitTestResult::Draggable,
                 _ => HitTestResult::Normal,
             }
         }).map_err(|e| e.to_string())?;

@@ -235,11 +235,9 @@ fn render_pane<'a, T>(
     let gb_cursor_vis = gb.cursor_visible();
     let cursor_x = gb.cursor_x();
     let cursor_y = gb.cursor_y();
-    let cursor_style = gb.cursor_style();
     let reverse_video = gb.reverse_video_mode();
     let scroll_offset = gb.scroll_offset();
     let scrollback_len = gb.scrollback_len();
-    let is_bar_cursor = matches!(cursor_style, CursorStyle::BlinkingBar | CursorStyle::SteadyBar);
     let should_show_cursor = gb_cursor_vis && cursor_visible && is_active && is_at_bottom;
 
     struct CursorCellData {
@@ -250,11 +248,26 @@ fn render_pane<'a, T>(
         strikethrough: bool,
     }
 
-    let cursor_cell = gb.render_with(|ctx| -> Result<Option<CursorCellData>, String> {
+    let (cursor_cell, cursor_style) = gb.render_with(|ctx| -> Result<(Option<CursorCellData>, CursorStyle), String> {
         use libghostty_vt::screen::CellWide;
         use libghostty_vt::style::Underline;
+        use libghostty_vt::render::CursorVisualStyle as CVS;
         let crate::ghostty_buffer::RenderContext { snapshot, row_iter, cell_iter } = ctx;
         let colors = snapshot.colors().map_err(|e| format!("{e:?}"))?;
+
+        // Determine cursor style from the snapshot we already have, avoiding a
+        // second render_state.update() call (which cursor_style() would trigger).
+        let blinking = snapshot.cursor_blinking().unwrap_or(true);
+        let cs = snapshot.cursor_visual_style().unwrap_or(CVS::Block);
+        let cursor_style = match (cs, blinking) {
+            (CVS::Bar, true) => CursorStyle::BlinkingBar,
+            (CVS::Bar, false) => CursorStyle::SteadyBar,
+            (CVS::Block | CVS::BlockHollow, true) => CursorStyle::BlinkingBlock,
+            (CVS::Block | CVS::BlockHollow, false) => CursorStyle::SteadyBlock,
+            (CVS::Underline, true) => CursorStyle::BlinkingUnderline,
+            (CVS::Underline, false) => CursorStyle::SteadyUnderline,
+        };
+        let is_bar_cursor = matches!(cursor_style, CursorStyle::BlinkingBar | CursorStyle::SteadyBar);
 
         let mut saved_cursor: Option<CursorCellData> = None;
 
@@ -401,7 +414,7 @@ fn render_pane<'a, T>(
             row_idx += 1;
         }
 
-        Ok(saved_cursor)
+        Ok((saved_cursor, cursor_style))
     })?;
 
     // Render cursor
@@ -479,9 +492,26 @@ fn render_pane<'a, T>(
         render_scrollback_indicator(canvas, texture_creator, font, rect, gb.scroll_offset(), pane_padding)?;
     }
 
-    let was_dirty = gb.is_dirty();
+    // Render Kitty Graphics Protocol images on top of text content
+    let scrollback_len = gb.scrollback_len();
+    let scroll_offset = gb.scroll_offset();
+    render_kitty_images(
+        canvas,
+        texture_creator,
+        &mut gb.kitty_graphics.placements,
+        rect,
+        pane_padding,
+        char_width,
+        char_height,
+        scrollback_len,
+        scroll_offset,
+    )?;
+
+    let was_dirty = gb.dirty;
     gb.clear_dirty();
-    let still_dirty = gb.is_dirty();
+    // Check if more bytes arrived during this frame without processing them
+    // (avoids an extra process_pending_bytes() call; they'll be picked up next frame).
+    let still_dirty = gb.incoming_bytes.try_lock().map_or(false, |b| !b.is_empty());
 
     drop(gb);
     drop(t);
@@ -524,6 +554,74 @@ fn render_pane<'a, T>(
     }
 
     Ok(was_dirty || still_dirty)
+}
+
+/// Render Kitty Graphics Protocol image placements for a pane.
+fn render_kitty_images<'a, T>(
+    canvas: &mut Canvas<Window>,
+    texture_creator: &'a TextureCreator<T>,
+    placements: &mut Vec<crate::kitty_graphics::KittyPlacement>,
+    rect: Rect,
+    pane_padding: u32,
+    char_width: f32,
+    char_height: f32,
+    scrollback_len: usize,
+    scroll_offset: usize,
+) -> Result<(), String> {
+    use sdl3::pixels::PixelFormat;
+
+    for placement in placements.iter_mut() {
+        // Convert absolute row back to a viewport row accounting for scrollback.
+        // abs_row = scrollback_len_at_placement + viewport_row_at_placement
+        // viewport_row_now = abs_row - scrollback_len_now + scroll_offset_now
+        let viewport_row = placement.abs_row as i64
+            - scrollback_len as i64
+            + scroll_offset as i64;
+
+        let x = rect.x() + pane_padding as i32
+            + (placement.cell_x as f32 * char_width) as i32;
+        let y = rect.y() + pane_padding as i32
+            + (viewport_row as f32 * char_height) as i32;
+
+        // Skip if fully outside the pane vertically
+        let display_h_approx = placement.display_rows
+            .map(|r| (r as f32 * char_height) as i32)
+            .unwrap_or(placement.pixel_height as i32);
+        if y >= rect.y() + rect.height() as i32 || y + display_h_approx <= rect.y() {
+            continue;
+        }
+        if x >= rect.x() + rect.width() as i32 {
+            continue;
+        }
+
+        let display_w = placement
+            .display_cols
+            .map(|c| (c as f32 * char_width) as u32)
+            .unwrap_or(placement.pixel_width);
+        let display_h = placement
+            .display_rows
+            .map(|r| (r as f32 * char_height) as u32)
+            .unwrap_or(placement.pixel_height);
+
+        let pitch = placement.pixel_width * 4;
+        let surface = sdl3::surface::Surface::from_data(
+            &mut placement.rgba_data,
+            placement.pixel_width,
+            placement.pixel_height,
+            pitch,
+            PixelFormat::RGBA32,
+        )
+        .map_err(|e| e.to_string())?;
+
+        let texture = texture_creator
+            .create_texture_from_surface::<&sdl3::surface::Surface>(&surface)
+            .map_err(|e| e.to_string())?;
+
+        canvas
+            .copy(&texture, None, Rect::new(x, y, display_w, display_h))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Render a single glyph with caching
@@ -577,21 +675,25 @@ fn render_glyph<'a, T>(
 
     // Emoji: use emoji font, scale to fit cell
     if is_likely_emoji {
-        let emoji_result = emoji_font.render(text).blended(render_color);
-        if let Ok(surface) = emoji_result {
-            if surface.width() > 0 && surface.height() > 0 {
-                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                    let base_size = cell_width.min(cell_height);
-                    let scale_x = base_size as f32 / surface.width() as f32;
-                    let scale_y = base_size as f32 / surface.height() as f32;
-                    let scale = scale_x.min(scale_y);
-                    let scaled_width = (surface.width() as f32 * scale) as u32;
-                    let scaled_height = (surface.height() as f32 * scale) as u32;
-                    let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
-                    let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
-                    canvas.copy(&texture, None, Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
-                    glyph_cache.insert(cache_key, texture);
-                    return Ok(());
+        let has_emoji_glyph = text.chars().next()
+            .map_or(false, |ch| emoji_font.find_glyph(ch).is_some());
+        if has_emoji_glyph {
+            let emoji_result = emoji_font.render(text).blended(render_color);
+            if let Ok(surface) = emoji_result {
+                if surface.width() > 0 && surface.height() > 0 {
+                    if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
+                        let base_size = cell_width.min(cell_height);
+                        let scale_x = base_size as f32 / surface.width() as f32;
+                        let scale_y = base_size as f32 / surface.height() as f32;
+                        let scale = scale_x.min(scale_y);
+                        let scaled_width = (surface.width() as f32 * scale) as u32;
+                        let scaled_height = (surface.height() as f32 * scale) as u32;
+                        let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
+                        let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
+                        canvas.copy(&texture, None, Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
+                        glyph_cache.insert(cache_key, texture);
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -612,45 +714,57 @@ fn render_glyph<'a, T>(
     }
 
     // Main font
-    let render_result = if text.chars().count() == 1 {
-        font.render_char(text.chars().next().unwrap()).blended(render_color)
-    } else {
-        font.render(text).blended(render_color)
-    };
+    let has_main_glyph = text.chars().next()
+        .map_or(false, |ch| font.find_glyph(ch).is_some());
+    if has_main_glyph {
+        let render_result = if text.chars().count() == 1 {
+            font.render_char(text.chars().next().unwrap()).blended(render_color)
+        } else {
+            font.render(text).blended(render_color)
+        };
 
-    if let Ok(surface) = render_result {
-        if surface.width() > 0 && surface.height() > 0 {
-            if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
-                glyph_cache.insert(cache_key, texture);
-                draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, underline, strikethrough)?;
-                return Ok(());
-            }
-        }
-    }
-
-    // Fallback: emoji font for non-emoji characters
-    if !is_likely_emoji {
-        let emoji_fallback_result = emoji_font.render(text).blended(render_color);
-        if let Ok(surface) = emoji_fallback_result {
+        if let Ok(surface) = render_result {
             if surface.width() > 0 && surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
                     canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
                     glyph_cache.insert(cache_key, texture);
+                    draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, underline, strikethrough)?;
                     return Ok(());
                 }
             }
         }
     }
 
+    // Fallback: emoji font for non-emoji characters
+    if !is_likely_emoji {
+        let has_emoji_fallback_glyph = text.chars().next()
+            .map_or(false, |ch| emoji_font.find_glyph(ch).is_some());
+        if has_emoji_fallback_glyph {
+            let emoji_fallback_result = emoji_font.render(text).blended(render_color);
+            if let Ok(surface) = emoji_fallback_result {
+                if surface.width() > 0 && surface.height() > 0 {
+                    if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
+                        canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
+                        glyph_cache.insert(cache_key, texture);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
     // Fallback: CJK font
-    let cjk_fallback_result = cjk_font.render(text).blended(render_color);
-    if let Ok(surface) = cjk_fallback_result {
-        if surface.width() > 0 && surface.height() > 0 {
-            if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
-                glyph_cache.insert(cache_key, texture);
-                return Ok(());
+    let has_cjk_fallback_glyph = text.chars().next()
+        .map_or(false, |ch| cjk_font.find_glyph(ch).is_some());
+    if has_cjk_fallback_glyph {
+        let cjk_fallback_result = cjk_font.render(text).blended(render_color);
+        if let Ok(surface) = cjk_fallback_result {
+            if surface.width() > 0 && surface.height() > 0 {
+                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
+                    canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
+                    glyph_cache.insert(cache_key, texture);
+                    return Ok(());
+                }
             }
         }
     }
