@@ -1,5 +1,5 @@
+use crate::ghostty_buffer::{CursorStyle, GhosttyBuffer};
 use crate::pane_layout::SplitDirection;
-use crate::screen_buffer::ScreenBuffer;
 use crate::tab_gui::TabBarGui;
 use crate::terminal::{Terminal, TerminalLibrary};
 use serde::{Deserialize, Serialize};
@@ -163,111 +163,152 @@ pub enum TestResponse {
 }
 
 impl ScreenBufferSnapshot {
-    pub fn from_screen_buffer(sb: &ScreenBuffer) -> Self {
-        let mut lines = Vec::new();
-        let mut cells = Vec::new();
+    pub fn from_ghostty_buffer(gb: &mut GhosttyBuffer) -> Self {
+        use libghostty_vt::screen::CellWide;
+        use libghostty_vt::style::Underline;
 
-        for y in 0..sb.height() {
-            let mut line = String::new();
-            let mut row = Vec::new();
+        // Flush any pending bytes from the PTY reader thread before snapshotting
+        gb.process_pending_bytes();
 
-            for x in 0..sb.width() {
-                if let Some(cell) = sb.get_cell_with_scrollback(x, y) {
-                    // Use extended grapheme if present, otherwise use single char
-                    let cell_text = if let Some(ref extended) = cell.extended {
-                        extended.to_string()
-                    } else {
-                        cell.ch.to_string()
-                    };
-                    // Skip continuation cells (width=0) when building the line string
-                    // These are the second cell of double-width characters (CJK, emojis, etc.)
-                    if cell.width > 0 {
-                        line.push_str(&cell_text);
-                    }
-                    row.push(CellSnapshot {
-                        ch: cell_text,
-                        width: cell.width,
-                        fg_r: cell.fg_color.r,
-                        fg_g: cell.fg_color.g,
-                        fg_b: cell.fg_color.b,
-                        bg_r: cell.bg_color.r,
-                        bg_g: cell.bg_color.g,
-                        bg_b: cell.bg_color.b,
-                        bold: cell.bold,
-                        italic: cell.italic,
-                        underline: cell.underline,
-                        strikethrough: cell.strikethrough,
-                        blink: cell.blink,
-                        reverse: cell.reverse,
-                        invisible: cell.invisible,
-                    });
-                } else {
-                    line.push_str(" ");
-                    row.push(CellSnapshot {
-                        ch: " ".to_string(),
-                        width: 1,
-                        fg_r: 255,
-                        fg_g: 255,
-                        fg_b: 255,
-                        bg_r: 0,
-                        bg_g: 0,
-                        bg_b: 0,
-                        bold: false,
-                        italic: false,
-                        underline: false,
-                        strikethrough: false,
-                        blink: false,
-                        reverse: false,
-                        invisible: false,
-                    });
+        let width = gb.width();
+        let height = gb.height();
+        let cursor_x = gb.cursor_x();
+        let cursor_y = gb.cursor_y();
+        let scroll_offset = gb.scroll_offset();
+        let scrollback_len = gb.scrollback_len();
+        let cursor_style_str = format!("{:?}", gb.cursor_style());
+
+        // Build viewport snapshot via render_with
+        let (lines, cells) = gb.render_with(|ctx| {
+            let crate::ghostty_buffer::RenderContext { snapshot, row_iter, cell_iter } = ctx;
+            let colors = snapshot.colors().expect("colors");
+
+            let default_cell = CellSnapshot {
+                ch: " ".to_string(),
+                width: 1,
+                fg_r: 255, fg_g: 255, fg_b: 255,
+                bg_r: 0, bg_g: 0, bg_b: 0,
+                bold: false, italic: false, underline: false,
+                strikethrough: false, blink: false, reverse: false, invisible: false,
+            };
+
+            let mut lines: Vec<String> = Vec::with_capacity(height);
+            let mut cells_out: Vec<Vec<CellSnapshot>> = Vec::with_capacity(height);
+
+            let mut row_iteration = row_iter.update(snapshot).expect("row_iter update");
+            let mut row_idx = 0usize;
+
+            while let Some(row) = row_iteration.next() {
+                if row_idx >= height {
+                    break;
                 }
+
+                let mut line = String::new();
+                let mut row_cells: Vec<CellSnapshot> = Vec::with_capacity(width);
+
+                let mut cell_iteration = cell_iter.update(row).expect("cell_iter update");
+                let mut col_idx = 0usize;
+
+                while let Some(cell) = cell_iteration.next() {
+                    if col_idx >= width {
+                        break;
+                    }
+
+                    let graphemes = cell.graphemes().unwrap_or_default();
+                    let raw = cell.raw_cell().ok();
+                    let cell_w = if let Some(ref raw) = raw {
+                        match raw.wide() {
+                            Ok(CellWide::Wide) => 2u8,
+                            Ok(CellWide::SpacerTail | CellWide::SpacerHead) => 0u8,
+                            _ => 1u8,
+                        }
+                    } else {
+                        1u8
+                    };
+
+                    let ch_str: String = if graphemes.is_empty() {
+                        " ".to_string()
+                    } else {
+                        graphemes.iter().collect()
+                    };
+                    if cell_w > 0 {
+                        line.push_str(&ch_str);
+                    }
+
+                    let style = cell.style().unwrap_or_default();
+                    let fg = cell.fg_color().ok().flatten().unwrap_or(colors.foreground);
+                    let bg = cell.bg_color().ok().flatten().unwrap_or(colors.background);
+                    let has_underline = style.underline != Underline::None;
+
+                    row_cells.push(CellSnapshot {
+                        ch: ch_str,
+                        width: cell_w,
+                        fg_r: fg.r,
+                        fg_g: fg.g,
+                        fg_b: fg.b,
+                        bg_r: bg.r,
+                        bg_g: bg.g,
+                        bg_b: bg.b,
+                        bold: style.bold,
+                        italic: style.italic,
+                        underline: has_underline,
+                        strikethrough: style.strikethrough,
+                        blink: style.blink,
+                        reverse: style.inverse,
+                        invisible: style.invisible,
+                    });
+
+                    col_idx += 1;
+                }
+
+                // Pad row to width if needed
+                while row_cells.len() < width {
+                    line.push(' ');
+                    row_cells.push(default_cell.clone());
+                }
+
+                lines.push(line);
+                cells_out.push(row_cells);
+                row_idx += 1;
             }
 
-            lines.push(line);
-            cells.push(row);
-        }
+            (lines, cells_out)
+        });
 
-        // Capture scrollback buffer
-        let mut scrollback = Vec::new();
-        for scrollback_row in sb.get_scrollback_buffer() {
-            let mut row = Vec::new();
-            for cell in scrollback_row {
-                let cell_text = if let Some(ref extended) = cell.extended {
-                    extended.to_string()
+        // Capture scrollback rows using graphemes_at (no style info available via this path)
+        let mut scrollback_rows: Vec<Vec<CellSnapshot>> = Vec::with_capacity(scrollback_len);
+        for abs_row in 0..scrollback_len {
+            let mut row: Vec<CellSnapshot> = Vec::with_capacity(width);
+            for col in 0..width {
+                let graphemes = gb.graphemes_at(col, abs_row);
+                let cell_w = gb.cell_width_at(col, abs_row);
+                let ch_str: String = if graphemes.is_empty() {
+                    " ".to_string()
                 } else {
-                    cell.ch.to_string()
+                    graphemes.iter().collect()
                 };
                 row.push(CellSnapshot {
-                    ch: cell_text,
-                    width: cell.width,
-                    fg_r: cell.fg_color.r,
-                    fg_g: cell.fg_color.g,
-                    fg_b: cell.fg_color.b,
-                    bg_r: cell.bg_color.r,
-                    bg_g: cell.bg_color.g,
-                    bg_b: cell.bg_color.b,
-                    bold: cell.bold,
-                    italic: cell.italic,
-                    underline: cell.underline,
-                    strikethrough: cell.strikethrough,
-                    blink: cell.blink,
-                    reverse: cell.reverse,
-                    invisible: cell.invisible,
+                    ch: ch_str,
+                    width: cell_w,
+                    fg_r: 255, fg_g: 255, fg_b: 255,
+                    bg_r: 0, bg_g: 0, bg_b: 0,
+                    bold: false, italic: false, underline: false,
+                    strikethrough: false, blink: false, reverse: false, invisible: false,
                 });
             }
-            scrollback.push(row);
+            scrollback_rows.push(row);
         }
 
         ScreenBufferSnapshot {
-            width: sb.width(),
-            height: sb.height(),
-            cursor_x: sb.cursor_x,
-            cursor_y: sb.cursor_y,
+            width,
+            height,
+            cursor_x,
+            cursor_y,
             lines,
             cells,
-            scroll_offset: sb.scroll_offset,
-            scrollback,
-            cursor_style: format!("{:?}", sb.cursor_style),
+            scroll_offset,
+            scrollback: scrollback_rows,
+            cursor_style: cursor_style_str,
         }
     }
 }
@@ -441,8 +482,8 @@ impl TestServer {
                         let active_pane_id = pane_layout.active_pane();
                         if let Some(terminal) = pane_layout.root.find_terminal(active_pane_id) {
                             if let Ok(t) = terminal.lock() {
-                                if let Ok(screen_buffer) = t.screen_buffer.lock() {
-                                    let snapshot = ScreenBufferSnapshot::from_screen_buffer(&screen_buffer);
+                                if let Ok(mut ghostty_buffer) = t.ghostty_buffer.lock() {
+                                    let snapshot = ScreenBufferSnapshot::from_ghostty_buffer(&mut ghostty_buffer);
                                     return TestResponse::Buffer { buffer: snapshot };
                                 }
                             }
@@ -458,7 +499,7 @@ impl TestServer {
                 if let Ok(terminals) = self.terminals.lock() {
                     if let Some(terminal) = terminals.get(active_idx) {
                         if let Ok(mut t) = terminal.lock() {
-                            t.set_size(width, height, false);
+                            t.set_size(width, height);
                             thread::sleep(std::time::Duration::from_millis(100));
                             return TestResponse::Ok;
                         }
@@ -502,7 +543,7 @@ impl TestServer {
                     shell_config,
                     DEFAULT_SCROLLBACK_LINES,
                     start_dir,
-                    crate::screen_buffer::CursorStyle::default(),
+                    CursorStyle::default(),
                 )));
 
                 // Determine tab name
@@ -708,7 +749,7 @@ impl TestServer {
                             if let Ok(mut t) = terminal.lock() {
                                 if t.width != cols || t.height != rows {
                                     eprintln!("[TEST_SERVER] SwitchTab: Resizing terminal from {}x{} to {}x{}", t.width, t.height, cols, rows);
-                                    t.set_size(cols, rows, false);
+                                    t.set_size(cols, rows);
                                 }
                             }
                         }
@@ -857,7 +898,7 @@ impl TestServer {
                             shell_config,
                             DEFAULT_SCROLLBACK_LINES,
                             start_dir,
-                            crate::screen_buffer::CursorStyle::default(),
+                            CursorStyle::default(),
                         )));
 
                         pane_layout.split_active_pane(split_dir, new_terminal.clone());
@@ -887,7 +928,7 @@ impl TestServer {
                                         "[TEST_SERVER] Pane {:?}: {}x{} -> {}x{} (clear={})",
                                         pane_id, t.width, t.height, cols, rows, clear_screen
                                     );
-                                    t.set_size(cols, rows, clear_screen);
+                                    t.set_size(cols, rows);
                                 } else {
                                     eprintln!("[TEST_SERVER] Pane {:?}: already {}x{}", pane_id, cols, rows);
                                 }
@@ -1093,11 +1134,11 @@ impl TestServer {
                 if let Ok(gui) = self.tab_bar_gui.lock() {
                     if let Some(terminal) = gui.get_active_terminal() {
                         if let Ok(t) = terminal.lock() {
-                            let mut screen_buffer = t.screen_buffer.lock().unwrap();
+                            let mut gb = t.ghostty_buffer.lock().unwrap();
                             if lines > 0 {
-                                screen_buffer.scroll_view_up(lines as usize);
+                                gb.scroll_view_up(lines as usize);
                             } else if lines < 0 {
-                                screen_buffer.scroll_view_down((-lines) as usize);
+                                gb.scroll_view_down((-lines) as usize);
                             }
                             return TestResponse::Ok;
                         }
@@ -1124,7 +1165,7 @@ impl TestServer {
                     if let Ok(gui) = self.tab_bar_gui.lock() {
                         if let Some(terminal) = gui.get_active_terminal() {
                             if let Ok(t) = terminal.lock() {
-                                t.screen_buffer.lock().unwrap().reset_view_offset();
+                                t.ghostty_buffer.lock().unwrap().reset_view_offset();
                                 return TestResponse::Ok;
                             }
                         }
@@ -1162,8 +1203,7 @@ impl TestServer {
                                 current_width, current_height, new_width, new_height
                             );
 
-                            // Don't clear screen when resizing due to zoom
-                            t.set_size(new_width, new_height, false);
+                            t.set_size(new_width, new_height);
 
                             return TestResponse::Ok;
                         }

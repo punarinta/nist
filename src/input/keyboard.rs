@@ -170,7 +170,6 @@ pub fn handle_tab_editing_key(keycode: Keycode, tab_bar: &mut TabBar, tab_bar_gu
 pub fn handle_hotkey_action(
     action: HotkeyAction,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
-    scale_factor: f32,
     char_width: f32,
     char_height: f32,
     tab_bar_height: u32,
@@ -258,7 +257,7 @@ pub fn handle_hotkey_action(
                 // Reset scroll position to 0 (go back to the prompt)
                 if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
                     if let Ok(t) = terminal.lock() {
-                        t.screen_buffer.lock().unwrap().reset_view_offset();
+                        t.ghostty_buffer.lock().unwrap().reset_view_offset();
                     }
                 }
                 KeyboardResult::render()
@@ -302,7 +301,6 @@ pub fn handle_hotkey_action(
             // If there's no selection, we'll return None to let Ctrl+C pass through
             let copied = handle_copy_selection(
                 tab_bar_gui,
-                scale_factor,
                 char_width,
                 char_height,
                 tab_bar_height,
@@ -324,7 +322,7 @@ pub fn handle_hotkey_action(
             let should_paste = {
                 if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
                     if let Ok(t) = terminal.lock() {
-                        let mouse_tracking = *t.mouse_tracking_mode.lock().unwrap();
+                        let mouse_tracking = t.ghostty_buffer.lock().unwrap().mouse_tracking_mode();
                         mouse_tracking == crate::terminal::MouseTrackingMode::Disabled
                     } else {
                         false
@@ -347,7 +345,7 @@ pub fn handle_hotkey_action(
             // Alt-G-P: Reset scroll position to 0 (go back to the prompt)
             if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
                 if let Ok(t) = terminal.lock() {
-                    t.screen_buffer.lock().unwrap().reset_view_offset();
+                    t.ghostty_buffer.lock().unwrap().reset_view_offset();
                 }
             }
             KeyboardResult::render()
@@ -495,7 +493,6 @@ fn handle_paste(tab_bar_gui: &Arc<Mutex<TabBarGui>>) {
 #[allow(clippy::too_many_arguments)]
 fn handle_copy_selection(
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
-    _scale_factor: f32,
     char_width: f32,
     char_height: f32,
     tab_bar_height: u32,
@@ -519,10 +516,10 @@ fn handle_copy_selection(
                         let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_w, pane_area_height);
 
                         // Get scroll information to convert absolute positions to screen coordinates
-                        let sb = t.screen_buffer.lock().unwrap();
-                        let scroll_offset = sb.scroll_offset;
-                        let scrollback_len = sb.scrollback_len();
-                        drop(sb);
+                        let (scroll_offset, scrollback_len) = {
+                            let gb = t.ghostty_buffer.lock().unwrap();
+                            (gb.scroll_offset(), gb.scrollback_len())
+                        };
 
                         // Find the active pane rect
                         pane_rects
@@ -612,7 +609,7 @@ pub fn handle_normal_key(keycode: Keycode, tab_bar_gui: &Arc<Mutex<TabBarGui>>) 
             let backspace_key = t.shell_config.keys.backspace.clone();
 
             // Check if application cursor keys mode is enabled
-            let app_cursor_mode = *t.application_cursor_keys.lock().unwrap();
+            let app_cursor_mode = t.ghostty_buffer.lock().unwrap().application_cursor_keys();
 
             match keycode {
                 Keycode::Return => t.send_key(b"\r"),

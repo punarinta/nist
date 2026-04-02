@@ -50,44 +50,36 @@ const PREFERRED_UI_FONTS: &[&str] = &[
 
 /// List of preferred monospace fonts with emoji support, in order of preference
 const PREFERRED_MONOSPACE_FONTS: &[&str] = &[
-    // Noto fonts - excellent emoji support
-    "NotoSansMono-Regular.ttf",
-    "NotoSansMono.ttf",
-    "NotoMono-Regular.ttf",
+    // JetBrains Mono Nerd Font - bundled, excellent Unicode/symbol coverage
+    "JetBrainsMonoNerdFont-Regular.ttf",
+    // JetBrains Mono (system-installed variants)
+    "JetBrainsMono-Regular.ttf",
+    "JetBrainsMonoNL-Regular.ttf",
+    // macOS system fonts
+    "SFNSMono.ttf",
+    "Menlo-Regular.ttf",
+    "Menlo.ttf",
+    "Monaco.ttf",
     // Windows system fonts
     "CascadiaCode.ttf",
     "CascadiaMono.ttf",
     "consola.ttf",
-    "consolab.ttf",
-    "consolai.ttf",
-    "cour.ttf",
-    "courbd.ttf",
-    // macOS system fonts
-    "SFNSMono.ttf",
-    "Menlo.ttf",
-    "Monaco.ttf",
-    "Courier New.ttf",
-    // Hack - clean and readable
+    // Other good monospace fonts
     "Hack-Regular.ttf",
-    // JetBrains Mono - modern, good Unicode support
-    "JetBrainsMono-Regular.ttf",
-    "JetBrainsMonoNL-Regular.ttf",
-    // Fira Code - popular with developers
     "FiraCode-Regular.ttf",
     "FiraMono-Regular.ttf",
-    // IBM Plex Mono - good Unicode coverage
     "IBMPlexMono-Regular.ttf",
-    // Source Code Pro - Adobe's monospace font
     "SourceCodePro-Regular.ttf",
-    // Inconsolata - classic programmer font
     "Inconsolata-Regular.ttf",
-    // Ubuntu Mono - good Unicode support
     "UbuntuMono-Regular.ttf",
-    // Liberation Mono - Red Hat
     "LiberationMono-Regular.ttf",
-    // DejaVu Sans Mono - fallback default (limited emoji support)
+    // Noto fonts - fallback
+    "NotoSansMono-Regular.ttf",
+    "NotoSansMono.ttf",
+    "NotoMono-Regular.ttf",
+    // DejaVu Sans Mono - last resort
     "DejaVuSansMono.ttf",
-    "DejaVuSansMono-Bold.ttf",
+    "cour.ttf",
 ];
 
 /// List of preferred emoji fonts with color emoji support, in order of preference

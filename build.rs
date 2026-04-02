@@ -45,6 +45,14 @@ fn main() {
         handle_windows_sdl3_ttf();
     }
 
+    // Bake RPATH for vendored libghostty-vt so the binary finds its .so at
+    // runtime without needing LD_LIBRARY_PATH.
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let ghostty_prebuilt = PathBuf::from(&manifest_dir).join("third-party/libghostty-prebuilt/lib");
+    if ghostty_prebuilt.exists() {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", ghostty_prebuilt.display());
+    }
+
     // Rerun if git HEAD changes
     println!("cargo:rerun-if-changed=../.git/HEAD");
 }

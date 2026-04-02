@@ -39,6 +39,7 @@ pub struct TabBar {
     pub close_button_rects: Vec<ClickableRect>,
     pub add_button_rect: ClickableRect,
     pub minimize_button_rect: ClickableRect,
+    pub maximize_button_rect: ClickableRect,
     pub close_button_rect: ClickableRect,
     pub cpu_indicator_rect: ClickableRect,
     pub height: u32,
@@ -66,6 +67,7 @@ impl TabBar {
             add_button_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
             sequential_hotkey_state: SequentialHotkeyState::new(),
             minimize_button_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
+            maximize_button_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
             close_button_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
             cpu_indicator_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
             height,
@@ -205,11 +207,11 @@ impl TabBar {
         &mut self,
         canvas: &mut Canvas<Window>,
         font: &Font,
-        _button_font: &Font,
         cpu_font: &Font,
         texture_creator: &TextureCreator<T>,
         window_width: u32,
         cpu_usage: f32,
+        is_maximized: bool,
     ) -> Result<(), String> {
         // Clear tab bar area
         canvas.set_draw_color(BG_DARK);
@@ -365,7 +367,8 @@ impl TabBar {
             }
 
             let close_size = self.height - 12;
-            let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { tab_name };
+            let filtered_tab_name: String = tab_name.chars().filter(|c| c.is_alphabetic()).collect();
+            let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { &filtered_tab_name };
             // Use uniform tab width for all tabs
             let tab_width = uniform_tab_width as u32;
 
@@ -558,7 +561,8 @@ impl TabBar {
                 Color::RGB(40, 40, 40) // Slightly brighter
             };
 
-            let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { &tab_name };
+            let filtered_tab_name: String = tab_name.chars().filter(|c| c.is_alphabetic()).collect();
+            let display_text = if Some(idx) == self.editing_tab { &self.edit_text } else { &filtered_tab_name };
 
             // Calculate available space for text (same as non-dragged tabs)
             let close_size = self.height - 12;
@@ -721,28 +725,20 @@ impl TabBar {
 
         // [DEV MODE] indicator (only in non-production builds)
         #[cfg(not(production))]
-        let _dev_mode_width = {
+        {
             let dev_text = "[DEV MODE]";
             if let Some(dev_surface) = safe_render_text(font, dev_text, Color::RGB(255, 150, 50)) {
                 if let Ok(dev_texture) = texture_creator.create_texture_from_surface(&dev_surface) {
                     let dev_width = dev_surface.width();
                     let dev_height = dev_surface.height();
                     // Position to the left of window controls
-                    let dev_x = window_width as i32 - dev_width as i32 - 225; // 225px from right for window controls
+                    let dev_x = window_width as i32 - dev_width as i32 - 270; // 270px from right for window controls
                     let dev_y = y + ((self.height - 6 - dev_height) / 2) as i32;
                     let dev_rect = Rect::new(dev_x, dev_y, dev_width, dev_height);
                     let _ = canvas.copy(&dev_texture, None, dev_rect);
-                    dev_width + 24 // Return width plus some padding
-                } else {
-                    0
                 }
-            } else {
-                0
             }
-        };
-
-        #[cfg(production)]
-        let _dev_mode_width = 0;
+        }
 
         // Window controls (right side) - larger and vertically centered
         let button_size = (self.height - 12) as i32;
@@ -772,6 +768,28 @@ impl TabBar {
             );
         }
         self.close_button_rect = ClickableRect::new(close_rect);
+        right_x -= button_size + 6;
+
+        // Maximize/restore button
+        let max_rect = Rect::new(right_x, button_y, button_size as u32, button_size as u32);
+        canvas.set_draw_color(TEXT_WHITE);
+        let sq_size = button_size * 5 / 10; // 50% of button size
+        let sq_x = right_x + (button_size - sq_size) / 2;
+        let sq_y = button_y + (button_size - sq_size) / 2;
+        if is_maximized {
+            // Restore icon: two overlapping squares (offset smaller square on top-right)
+            let offset = sq_size / 4;
+            // Back square (bottom-left)
+            let _ = canvas.draw_rect(Rect::new(sq_x, sq_y + offset, (sq_size - offset) as u32, (sq_size - offset) as u32));
+            // Front square (top-right) - fill top line thicker by drawing twice
+            let _ = canvas.draw_rect(Rect::new(sq_x + offset, sq_y, (sq_size - offset) as u32, (sq_size - offset) as u32));
+        } else {
+            // Maximize icon: single square outline with thicker top edge
+            let _ = canvas.draw_rect(Rect::new(sq_x, sq_y, sq_size as u32, sq_size as u32));
+            // Thicker top edge
+            let _ = canvas.draw_line((sq_x, sq_y + 1), (sq_x + sq_size - 1, sq_y + 1));
+        }
+        self.maximize_button_rect = ClickableRect::new(max_rect);
         right_x -= button_size + 6;
 
         // Minimize button - draw a custom horizontal line

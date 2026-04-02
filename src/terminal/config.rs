@@ -13,8 +13,6 @@ pub struct ShellConfig {
 #[derive(Debug, Clone)]
 pub struct KeyMappings {
     pub backspace: Vec<u8>,
-    pub _delete: Vec<u8>,
-    pub _return_key: Vec<u8>,
 }
 
 pub struct TerminalLibrary {
@@ -35,8 +33,6 @@ impl TerminalLibrary {
                 args: vec![],
                 keys: KeyMappings {
                     backspace: vec![127],           // DEL character
-                    _delete: vec![27, 91, 51, 126], // ESC [ 3 ~
-                    _return_key: vec![10],          // LF
                 },
             },
         );
@@ -50,8 +46,6 @@ impl TerminalLibrary {
                 args: vec![],
                 keys: KeyMappings {
                     backspace: vec![127],           // DEL character
-                    _delete: vec![27, 91, 51, 126], // ESC [ 3 ~
-                    _return_key: vec![10],          // LF
                 },
             },
         );
@@ -65,8 +59,6 @@ impl TerminalLibrary {
                 args: vec!["/D".to_string()],
                 keys: KeyMappings {
                     backspace: vec![8],             // BS character
-                    _delete: vec![27, 91, 51, 126], // ESC [ 3 ~
-                    _return_key: vec![13],          // CR (Windows uses CR for enter)
                 },
             },
         );
@@ -80,8 +72,6 @@ impl TerminalLibrary {
                 args: vec!["-NoLogo".to_string(), "-NoProfile".to_string()],
                 keys: KeyMappings {
                     backspace: vec![8],             // BS character
-                    _delete: vec![27, 91, 51, 126], // ESC [ 3 ~
-                    _return_key: vec![13],          // CR
                 },
             },
         );
@@ -95,8 +85,6 @@ impl TerminalLibrary {
                 args: vec!["--no-globalrcs".to_string()],
                 keys: KeyMappings {
                     backspace: vec![127],           // DEL character
-                    _delete: vec![27, 91, 51, 126], // ESC [ 3 ~
-                    _return_key: vec![10],          // LF
                 },
             },
         );

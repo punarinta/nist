@@ -278,7 +278,9 @@ fn transcribe_chunk(samples: Vec<f32>, sample_rate: u32, channels: u16, result_t
         Ok(text) => {
             let trimmed = text.trim().to_string();
             if !trimmed.is_empty() {
-                let _ = result_tx.send(trimmed);
+                // Append a trailing space so consecutive chunks join with a
+                // word boundary when the caller concatenates them.
+                let _ = result_tx.send(format!("{} ", trimmed));
             }
         }
         Err(e) => eprintln!("[VOICE] Transcription error: {}", e),

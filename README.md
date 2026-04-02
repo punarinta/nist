@@ -1,6 +1,6 @@
 Nisdos Terminal
 ===
-A terminal emulator we are now using at Nisdos, open-sourced for community needs. It aims at high performance, while having all modern features. Built on pure Rust & [SDL3](https://www.libsdl.org/).
+A terminal emulator we are now using at Nisdos, open-sourced for community needs. It aims at high performance, while having all modern features. Built on Rust, libghostty and [SDL3](https://www.libsdl.org/).
 
 Features
 ===
@@ -19,15 +19,15 @@ Features
 - AI-assistant to help working with OS (not for coding)
 - error detection
 - clickable URLs (hold Ctrl and hover to see if it is)
+- voice input in any program running in the terminal
 
 Next steps
 ===
 - further expand settings
-- voice input
 - UI themes
 - plugins system
 - ligatures support
-- [Kitty](https://sw.kovidgoyal.net/kitty/graphics-protocol/) protocol support
+- proper [Kitty](https://sw.kovidgoyal.net/kitty/graphics-protocol/) protocol support
 
 State
 ===
@@ -48,7 +48,7 @@ Holding Ctrl key and clicking left mouse button on a terminal pane adds it to th
 Current platform support
 ===
 - Linux — no known bugs
-- macOS — bugs: mouse clicking, zsh environment
+- macOS — bugs: mouse clicking
 - Windows — bugs: some fonts, multiple screen support
 
 The builds included in "releases" directory **may be slightly outdated**. If you want to get the most recent version, please build it from source. I'll add details on that later.

@@ -9,17 +9,19 @@
 use crate::font_discovery;
 use crate::settings;
 use crate::state;
+use crate::ghostty_buffer::CursorStyle;
 use crate::tab_gui::TabBarGui;
 use crate::terminal::{Terminal, TerminalLibrary};
 use arboard::Clipboard;
 use sdl3::render::{Canvas, TextureCreator};
 use sdl3::ttf::Sdl3TtfContext;
-use sdl3::video::{Window, WindowContext};
+use sdl3::video::{HitTestResult, Window, WindowContext};
 use std::collections::HashMap;
 #[cfg(not(target_os = "windows"))]
 use std::sync::mpsc::channel;
 #[cfg(target_os = "linux")]
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use sysinfo::System;
 
@@ -31,8 +33,6 @@ pub struct Fonts<'a> {
     pub font: sdl3::ttf::Font<'a>,
     /// UI font for tabs and menus
     pub tab_font: sdl3::ttf::Font<'a>,
-    /// Font for window control buttons
-    pub button_font: sdl3::ttf::Font<'a>,
     /// Font for CPU indicator
     pub cpu_font: sdl3::ttf::Font<'a>,
     /// Font for context menus
@@ -75,6 +75,7 @@ pub struct InitializedApp<'a> {
     pub ctrl_keys: std::collections::HashMap<sdl3::keyboard::Scancode, u8>,
     pub mouse_state: crate::input::mouse::MouseState,
     pub glyph_cache: HashMap<String, sdl3::render::Texture<'a>>,
+    pub window_logical_size: Arc<(AtomicI32, AtomicI32)>,
     #[cfg(target_os = "linux")]
     pub clipboard_tx: Sender<Clipboard>,
     #[cfg(target_os = "linux")]
@@ -115,7 +116,7 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
     set_window_icon(&mut window);
 
     // Create canvas with VSync
-    let canvas = create_canvas(window)?;
+    let mut canvas = create_canvas(window)?;
 
     // Detect display scaling
     let scale_info = detect_scaling(&canvas);
@@ -161,9 +162,10 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
     let terminal_height = ((drawable_height - tab_bar_height) as f32 / char_dims.height).floor() as u32;
     let terminal_width = (drawable_width as f32 / char_dims.width).floor() as u32;
 
+    let default_cursor = CursorStyle::from_settings_string(&settings.terminal.cursor);
+
     // Initialize tab bar GUI with state loading
-    let cursor_style = crate::screen_buffer::CursorStyle::from_settings_string(&settings.terminal.cursor);
-    let tab_bar_gui = initialize_tab_bar_gui(terminal_width, terminal_height, shell_config, default_scrollback_lines, cursor_style);
+    let tab_bar_gui = initialize_tab_bar_gui(terminal_width, terminal_height, shell_config, default_scrollback_lines, default_cursor);
 
     // Set context menu images
     load_and_set_context_menu_images(&tab_bar_gui);
@@ -179,6 +181,43 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
         drawable_width,
         drawable_height,
     );
+
+    // Set up hit test for borderless window resize/drag support.
+    // SDL hit test receives physical pixel coordinates on HiDPI displays.
+    let (phys_w, phys_h) = canvas.window().size_in_pixels();
+    let window_logical_size = Arc::new((
+        AtomicI32::new(phys_w as i32),
+        AtomicI32::new(phys_h as i32),
+    ));
+    {
+        let size = window_logical_size.clone();
+        let phys_tab_bar_height = tab_bar_height as i32;
+        // Right-side exclusion zone: 3 buttons * ~button_size + spacing, scaled
+        let phys_buttons_width = (200.0 * scale_info.scale_factor) as i32;
+        let resize_border = (8.0 * scale_info.scale_factor) as i32;
+        canvas.window_mut().set_hit_test(move |point| {
+            let w = size.0.load(Ordering::Relaxed);
+            let h = size.1.load(Ordering::Relaxed);
+            let x = point.x();
+            let y = point.y();
+            let at_left = x < resize_border;
+            let at_right = x >= w - resize_border;
+            let at_top = y < resize_border;
+            let at_bottom = y >= h - resize_border;
+            match (at_left, at_right, at_top, at_bottom) {
+                (true, _, true, _) => HitTestResult::ResizeTopLeft,
+                (_, true, true, _) => HitTestResult::ResizeTopRight,
+                (true, _, _, true) => HitTestResult::ResizeBottomLeft,
+                (_, true, _, true) => HitTestResult::ResizeBottomRight,
+                (true, _, _, _) => HitTestResult::ResizeLeft,
+                (_, true, _, _) => HitTestResult::ResizeRight,
+                (_, _, true, _) => HitTestResult::ResizeTop,
+                (_, _, _, true) => HitTestResult::ResizeBottom,
+                _ if y < phys_tab_bar_height && x < w - phys_buttons_width => HitTestResult::Draggable,
+                _ => HitTestResult::Normal,
+            }
+        }).map_err(|e| e.to_string())?;
+    }
 
     // Create control key map
     let ctrl_keys = crate::input::keyboard::create_ctrl_key_map();
@@ -204,6 +243,7 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
         ctrl_keys,
         mouse_state,
         glyph_cache,
+        window_logical_size,
         #[cfg(target_os = "linux")]
         clipboard_tx,
         #[cfg(target_os = "linux")]
@@ -415,11 +455,6 @@ fn load_fonts<'a>(ttf_context: &'a Sdl3TtfContext, settings: &settings::Settings
         .load_font(&ui_font_path, tab_font_size)
         .map_err(|e| format!("Tab font loading failed: {}", e))?;
 
-    let button_font_size = 27.0 * scale_factor;
-    let button_font = ttf_context
-        .load_font(&ui_font_path, button_font_size)
-        .map_err(|e| format!("Button font loading failed: {}", e))?;
-
     let cpu_font_size = 13.0 * scale_factor;
     let cpu_font = ttf_context
         .load_font(&ui_font_path, cpu_font_size)
@@ -467,7 +502,6 @@ fn load_fonts<'a>(ttf_context: &'a Sdl3TtfContext, settings: &settings::Settings
     Ok(Fonts {
         font,
         tab_font,
-        button_font,
         cpu_font,
         context_menu_font,
         emoji_font,
@@ -511,7 +545,7 @@ fn initialize_tab_bar_gui(
     terminal_height: u32,
     shell_config: crate::terminal::ShellConfig,
     default_scrollback_lines: usize,
-    cursor_style: crate::screen_buffer::CursorStyle,
+    default_cursor: CursorStyle,
 ) -> Arc<Mutex<TabBarGui>> {
     let shell_config_clone = shell_config.clone();
     let terminal_factory = move |start_dir: Option<std::path::PathBuf>| {
@@ -521,7 +555,7 @@ fn initialize_tab_bar_gui(
             shell_config_clone.clone(),
             default_scrollback_lines,
             start_dir,
-            cursor_style,
+            default_cursor,
         )))
     };
 
@@ -539,7 +573,7 @@ fn initialize_tab_bar_gui(
                 shell_config,
                 default_scrollback_lines,
                 std::env::current_dir().ok(),
-                cursor_style,
+                default_cursor,
             )));
             tab_bar_new.add_tab(first_terminal, "Tab 1".to_string());
             Arc::new(Mutex::new(tab_bar_new))

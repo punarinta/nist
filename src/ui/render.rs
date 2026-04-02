@@ -14,12 +14,11 @@ use sdl3::video::Window;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::ansi::DEFAULT_BG_COLOR;
-use crate::cell::{is_block_or_box_drawing, is_cjk_grapheme, is_emoji_grapheme, is_special_symbol};
+use crate::ghostty_buffer::{CursorStyle, DEFAULT_BG_COLOR};
+use crate::cell::{is_cjk_grapheme, is_emoji_grapheme};
 use crate::sdl_renderer;
 use crate::tab_gui::TabBarGui;
 use crate::ui::context_menu::ContextMenu;
-use crate::ui::custom_cell;
 
 /// Get the platform-specific pane padding in pixels
 #[inline]
@@ -68,7 +67,6 @@ pub fn render_frame<'a, T>(
     tab_bar: &mut sdl_renderer::TabBar,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
     tab_font: &Font,
-    button_font: &Font,
     cpu_font: &Font,
     terminal_font: &Font,
     emoji_font: &Font,
@@ -77,7 +75,6 @@ pub fn render_frame<'a, T>(
     context_menu_font: &Font,
     cpu_usage: f32,
     tab_bar_height: u32,
-    scale_factor: f32,
     char_width: f32,
     char_height: f32,
     cursor_visible: bool,
@@ -85,6 +82,7 @@ pub fn render_frame<'a, T>(
     mouse_state: &crate::input::mouse::MouseState,
     voice_recording: bool,
     voice_transcribing: bool,
+    voice_anim_t: f32,
 ) -> Result<bool, String> {
     // Clear screen with terminal background color
     canvas.set_draw_color(DEFAULT_BG_COLOR);
@@ -106,7 +104,8 @@ pub fn render_frame<'a, T>(
         tab_bar.edit_text = edit_text;
         tab_bar.edit_cursor_pos = cursor_pos;
     }
-    tab_bar.render(canvas, tab_font, button_font, cpu_font, texture_creator, window_w, cpu_usage)?;
+    let is_maximized = canvas.window().is_maximized();
+    tab_bar.render(canvas, tab_font, cpu_font, texture_creator, window_w, cpu_usage, is_maximized)?;
 
     // Calculate pane area (tab_bar_height is already in physical pixels)
     let pane_area_y = tab_bar_height as i32;
@@ -149,7 +148,6 @@ pub fn render_frame<'a, T>(
             emoji_font,
             unicode_fallback_font,
             cjk_font,
-            tab_font,
             rect,
             terminal.clone(),
             is_active,
@@ -159,7 +157,6 @@ pub fn render_frame<'a, T>(
             char_height,
             cursor_visible,
             glyph_cache,
-            scale_factor,
             mouse_state,
             pane_id,
         )?;
@@ -169,7 +166,7 @@ pub fn render_frame<'a, T>(
     // Render voice input indicator on top of the active pane
     if voice_recording || voice_transcribing {
         if let Some(rect) = active_pane_rect {
-            render_voice_indicator(canvas, rect, voice_transcribing, cursor_visible)?;
+            render_voice_indicator(canvas, rect, voice_transcribing, cursor_visible, voice_anim_t)?;
         }
     }
 
@@ -206,7 +203,6 @@ fn render_pane<'a, T>(
     emoji_font: &Font,
     unicode_fallback_font: &Font,
     cjk_font: &Font,
-    _ui_font: &Font,
     rect: Rect,
     terminal: Arc<Mutex<crate::terminal::Terminal>>,
     is_active: bool,
@@ -216,15 +212,11 @@ fn render_pane<'a, T>(
     char_height: f32,
     cursor_visible: bool,
     glyph_cache: &mut HashMap<String, sdl3::render::Texture<'a>>,
-    scale_factor: f32,
     mouse_state: &crate::input::mouse::MouseState,
     pane_id: crate::pane_layout::PaneId,
 ) -> Result<bool, String> {
     let t = terminal.lock().unwrap();
-    let mut sb = t.screen_buffer.lock().unwrap();
-
-    // No need to clear pane background - terminal cells will paint their own backgrounds
-    // This optimizes rendering by avoiding redundant fills
+    let mut gb = t.ghostty_buffer.lock().unwrap();
 
     // Platform-specific padding
     let pane_padding = get_pane_padding();
@@ -234,201 +226,225 @@ fn render_pane<'a, T>(
     let rect_cols = (usable_width as f32 / char_width).floor() as usize;
     let rect_rows = (usable_height as f32 / char_height).floor() as usize;
 
-    // Render up to the smaller of: what fits in rect, or what's in screen buffer
-    // This prevents rendering outside rect bounds (overflow into other panes)
-    // while also not trying to read beyond screen buffer dimensions
-    let cols = rect_cols.min(sb.width());
-    let rows = rect_rows.min(sb.height());
+    let cols = rect_cols.min(gb.width());
+    let rows = rect_rows.min(gb.height());
 
-    // Get selection for highlighting (cached once per frame to avoid locking in cell loop)
     let selection_snapshot = *t.selection.lock().unwrap();
 
-    // Check if we should show cursor (for skipping cursor cell in main loop)
-    let terminal_cursor_visible_check = t.cursor_visible.lock().unwrap();
-    let terminal_cursor_vis = *terminal_cursor_visible_check;
-    let is_at_bottom = sb.is_at_bottom();
-    let should_show_cursor_check = terminal_cursor_vis && cursor_visible && is_active && is_at_bottom;
-    drop(terminal_cursor_visible_check);
+    let is_at_bottom = gb.is_at_bottom();
+    let gb_cursor_vis = gb.cursor_visible();
+    let cursor_x = gb.cursor_x();
+    let cursor_y = gb.cursor_y();
+    let cursor_style = gb.cursor_style();
+    let reverse_video = gb.reverse_video_mode();
+    let scroll_offset = gb.scroll_offset();
+    let scrollback_len = gb.scrollback_len();
+    let is_bar_cursor = matches!(cursor_style, CursorStyle::BlinkingBar | CursorStyle::SteadyBar);
+    let should_show_cursor = gb_cursor_vis && cursor_visible && is_active && is_at_bottom;
 
-    // Render cells that fit in both the rect and the screen buffer
-    for row in 0..rows {
-        for col in 0..cols {
-            // Skip rendering cursor position if we'll render it as a block cursor later
-            use crate::screen_buffer::CursorStyle;
-            let is_bar_cursor = matches!(sb.cursor_style, CursorStyle::BlinkingBar | CursorStyle::SteadyBar);
-            if should_show_cursor_check && !is_bar_cursor && col == sb.cursor_x && row == sb.cursor_y {
-                continue;
+    struct CursorCellData {
+        text: String,
+        fg: Color,
+        bg: Color,
+        underline: bool,
+        strikethrough: bool,
+    }
+
+    let cursor_cell = gb.render_with(|ctx| -> Result<Option<CursorCellData>, String> {
+        use libghostty_vt::screen::CellWide;
+        use libghostty_vt::style::Underline;
+        let crate::ghostty_buffer::RenderContext { snapshot, row_iter, cell_iter } = ctx;
+        let colors = snapshot.colors().map_err(|e| format!("{e:?}"))?;
+
+        let mut saved_cursor: Option<CursorCellData> = None;
+
+        let mut row_iteration = row_iter.update(snapshot).map_err(|e| format!("{e:?}"))?;
+        let mut row_idx = 0usize;
+
+        while let Some(row) = row_iteration.next() {
+            if row_idx >= rows {
+                break;
             }
 
-            if let Some(cell) = sb.get_cell_with_scrollback(col, row) {
-                // Skip continuation cells (used by double-width emojis)
-                if cell.width == 0 || cell.ch == '\0' {
+            let mut cell_iteration = cell_iter.update(row).map_err(|e| format!("{e:?}"))?;
+            let mut col_idx = 0usize;
+
+            while let Some(cell) = cell_iteration.next() {
+                if col_idx >= cols {
+                    break;
+                }
+
+                let raw = cell.raw_cell().ok();
+                let cell_w = if let Some(ref raw) = raw {
+                    match raw.wide() {
+                        Ok(CellWide::Wide) => 2usize,
+                        Ok(CellWide::SpacerTail | CellWide::SpacerHead) => 0usize,
+                        _ => 1usize,
+                    }
+                } else {
+                    1usize
+                };
+
+                if cell_w == 0 {
+                    col_idx += 1;
                     continue;
                 }
 
-                let x = rect.x() + pane_padding as i32 + (col as f32 * char_width) as i32;
-                let y = rect.y() + pane_padding as i32 + (row as f32 * char_height) as i32;
+                let graphemes = cell.graphemes().unwrap_or_default();
+                let style = cell.style().unwrap_or_default();
+                let fg_rgb = cell.fg_color().ok().flatten().unwrap_or(colors.foreground);
+                let bg_rgb_opt = cell.bg_color().ok().flatten();
 
-                // Calculate actual width for this character (1 or 2 cells)
-                let actual_cell_width = char_width * cell.width as f32;
+                let raw_fg = Color::RGB(fg_rgb.r, fg_rgb.g, fg_rgb.b);
+                let raw_bg = bg_rgb_opt
+                    .map(|c| Color::RGB(c.r, c.g, c.b))
+                    .unwrap_or_else(|| Color::RGB(colors.background.r, colors.background.g, colors.background.b));
 
-                // Check if cell is selected
-                let is_selected = if let Some(ref sel) = selection_snapshot {
-                    sel.contains(col, row, sb.scroll_offset, sb.scrollback_len())
+                let (cell_fg, cell_bg) = if reverse_video {
+                    (raw_bg, raw_fg)
+                } else {
+                    (raw_fg, raw_bg)
+                };
+                let actual_bg = if style.inverse { cell_fg } else { cell_bg };
+
+                // Block cursor: skip cell, save data for cursor rendering
+                if should_show_cursor && !is_bar_cursor && col_idx == cursor_x && row_idx == cursor_y {
+                    let text: String = if graphemes.is_empty() {
+                        " ".to_string()
+                    } else {
+                        graphemes.iter().collect()
+                    };
+                    saved_cursor = Some(CursorCellData {
+                        text,
+                        fg: cell_fg,
+                        bg: cell_bg,
+                        underline: style.underline != Underline::None,
+                        strikethrough: style.strikethrough,
+                    });
+                    col_idx += 1;
+                    continue;
+                }
+
+                let x = rect.x() + pane_padding as i32 + (col_idx as f32 * char_width) as i32;
+                let y = rect.y() + pane_padding as i32 + (row_idx as f32 * char_height) as i32;
+                let actual_cell_width = char_width * cell_w as f32;
+
+                let cell_selected = if let Some(ref sel) = selection_snapshot {
+                    sel.contains(col_idx, row_idx, scroll_offset, scrollback_len)
                 } else {
                     false
                 };
 
-                // Apply reverse video mode if enabled (swap fg/bg globally)
-                let (cell_fg, cell_bg) = if sb.reverse_video_mode {
-                    (cell.bg_color, cell.fg_color)
-                } else {
-                    (cell.fg_color, cell.bg_color)
-                };
-
-                // Render background (selection highlight or cell background)
-                // Need to consider reverse attribute when determining the actual background color
-                let actual_bg = if cell.reverse {
-                    // When reverse is true, foreground becomes background
-                    cell_fg
-                } else {
-                    cell_bg
-                };
-
-                if is_selected {
+                // Render background
+                if cell_selected {
                     canvas.set_draw_color(Color::RGB(70, 130, 180));
-                    let cell_rect = Rect::new(x, y, actual_cell_width as u32, char_height as u32);
-                    canvas.fill_rect(cell_rect).map_err(|e| e.to_string())?;
-                } else if actual_bg.r != crate::ansi::DEFAULT_BG_COLOR.r
-                    || actual_bg.g != crate::ansi::DEFAULT_BG_COLOR.g
-                    || actual_bg.b != crate::ansi::DEFAULT_BG_COLOR.b
-                // || cell.reverse
+                    canvas
+                        .fill_rect(Rect::new(x, y, actual_cell_width as u32, char_height as u32))
+                        .map_err(|e| e.to_string())?;
+                } else if actual_bg.r != DEFAULT_BG_COLOR.r
+                    || actual_bg.g != DEFAULT_BG_COLOR.g
+                    || actual_bg.b != DEFAULT_BG_COLOR.b
                 {
-                    // Draw background only if it differs from the default that we already filled
-                    // This optimizes rendering and prevents artifacts from stale reverse video attributes
-                    canvas.set_draw_color(Color::RGB(actual_bg.r, actual_bg.g, actual_bg.b));
-                    let cell_rect = Rect::new(x, y, actual_cell_width as u32, char_height as u32);
-                    canvas.fill_rect(cell_rect).map_err(|e| e.to_string())?;
+                    canvas.set_draw_color(actual_bg);
+                    canvas
+                        .fill_rect(Rect::new(x, y, actual_cell_width as u32, char_height as u32))
+                        .map_err(|e| e.to_string())?;
                 }
 
-                // OPTIMIZATION: Render character if not space (skip spaces with default bg) and not invisible
-                if cell.ch != ' ' && !cell.invisible {
-                    // Use extended grapheme if present, otherwise use single char
-                    let char_str;
-                    let text = if let Some(ref extended) = cell.extended {
-                        extended.as_ref()
-                    } else {
-                        char_str = cell.ch.to_string();
-                        char_str.as_str()
-                    };
+                // Render text
+                if !graphemes.is_empty() && !style.invisible {
+                    let text: String = graphemes.iter().collect();
+                    if text != " " {
+                        let is_hovered_url = mouse_state.ctrl_pressed
+                            && mouse_state.hovered_url.as_ref().map_or(false, |url| {
+                                url.row == row_idx
+                                    && col_idx >= url.col_start
+                                    && col_idx <= url.col_end
+                                    && url.pane_id == pane_id
+                            });
 
-                    // Handle reverse video attribute (per-cell reverse, applied after global reverse)
-                    // Note: background was already drawn above (lines 280-298) using actual_bg
-                    let (fg_r, fg_g, fg_b) = if cell.reverse {
-                        (cell_bg.r, cell_bg.g, cell_bg.b)
-                    } else {
-                        (cell_fg.r, cell_fg.g, cell_fg.b)
-                    };
+                        let (fg_r, fg_g, fg_b) = if is_hovered_url {
+                            (70u8, 130u8, 255u8)
+                        } else if style.inverse {
+                            (cell_bg.r, cell_bg.g, cell_bg.b)
+                        } else {
+                            (cell_fg.r, cell_fg.g, cell_fg.b)
+                        };
 
-                    // Check if this cell is part of a hovered URL (Ctrl+hover feature)
-                    // Also check that the URL belongs to THIS pane to avoid highlighting in wrong pane
-                    let is_hovered_url = mouse_state.ctrl_pressed
-                        && mouse_state.hovered_url.as_ref().map_or(false, |url| {
-                            url.row == row && col >= url.col_start && col <= url.col_end && url.pane_id == pane_id
-                        });
+                        let should_underline = style.underline != Underline::None || is_hovered_url;
 
-                    // Override color to blue for hovered URLs
-                    let (fg_r, fg_g, fg_b) = if is_hovered_url {
-                        (70, 130, 255) // Blue color for clickable URLs
-                    } else {
-                        (fg_r, fg_g, fg_b)
-                    };
-
-                    // Apply underline if cell has underline attribute OR if it's part of a hovered URL
-                    let should_underline = cell.underline || is_hovered_url;
-
-                    render_glyph(
-                        canvas,
-                        texture_creator,
-                        font,
-                        emoji_font,
-                        unicode_fallback_font,
-                        cjk_font,
-                        glyph_cache,
-                        text,
-                        x,
-                        y,
-                        fg_r,
-                        fg_g,
-                        fg_b,
-                        actual_cell_width as u32,
-                        char_height as u32,
-                        scale_factor,
-                        cell.bold,
-                        should_underline,
-                        cell.strikethrough,
-                    )?;
+                        render_glyph(
+                            canvas,
+                            texture_creator,
+                            font,
+                            emoji_font,
+                            unicode_fallback_font,
+                            cjk_font,
+                            glyph_cache,
+                            &text,
+                            x,
+                            y,
+                            fg_r,
+                            fg_g,
+                            fg_b,
+                            actual_cell_width as u32,
+                            char_height as u32,
+                            should_underline,
+                            style.strikethrough,
+                        )?;
+                    }
                 }
+
+                col_idx += 1;
             }
+
+            row_idx += 1;
         }
-    }
 
-    // Render cursor if active pane, visible (blink state), and enabled by terminal (ANSI code)
-    if should_show_cursor_check {
-        let cursor_x = rect.x() + pane_padding as i32 + (sb.cursor_x as f32 * char_width) as i32;
-        let cursor_y = rect.y() + pane_padding as i32 + (sb.cursor_y as f32 * char_height) as i32;
+        Ok(saved_cursor)
+    })?;
 
-        // Cursor style from DECSCUSR control codes
-        use crate::screen_buffer::CursorStyle;
-        match sb.cursor_style {
+    // Render cursor
+    if should_show_cursor {
+        let cx = rect.x() + pane_padding as i32 + (cursor_x as f32 * char_width) as i32;
+        let cy = rect.y() + pane_padding as i32 + (cursor_y as f32 * char_height) as i32;
+
+        match cursor_style {
             CursorStyle::BlinkingBar | CursorStyle::SteadyBar => {
-                // Bar cursor: thin vertical line
                 canvas.set_draw_color(Color::RGB(200, 200, 200));
-                let cursor_rect = Rect::new(cursor_x, cursor_y, 2, char_height as u32);
-                canvas.fill_rect(cursor_rect).map_err(|e| e.to_string())?;
+                canvas
+                    .fill_rect(Rect::new(cx, cy, 2, char_height as u32))
+                    .map_err(|e| e.to_string())?;
             }
             CursorStyle::BlinkingUnderline | CursorStyle::SteadyUnderline => {
-                // Underline cursor: horizontal line at bottom
                 canvas.set_draw_color(Color::RGB(200, 200, 200));
-                let underline_height = (char_height * 0.15).max(2.0) as u32; // 15% of char height, minimum 2px
-                let cursor_rect = Rect::new(
-                    cursor_x,
-                    cursor_y + char_height as i32 - underline_height as i32,
-                    char_width as u32,
-                    underline_height,
-                );
-                canvas.fill_rect(cursor_rect).map_err(|e| e.to_string())?;
+                let underline_height = (char_height * 0.15).max(2.0) as u32;
+                canvas
+                    .fill_rect(Rect::new(
+                        cx,
+                        cy + char_height as i32 - underline_height as i32,
+                        char_width as u32,
+                        underline_height,
+                    ))
+                    .map_err(|e| e.to_string())?;
             }
             CursorStyle::BlinkingBlock | CursorStyle::SteadyBlock => {
-                // Block cursor: use reverse video (invert fg/bg colors)
-                if let Some(cell) = sb.get_cell_with_scrollback(sb.cursor_x, sb.cursor_y) {
-                    // Draw background with inverted color (use foreground color, or white if fg is default)
-                    let cursor_bg = if cell.fg_color.r == 255 && cell.fg_color.g == 255 && cell.fg_color.b == 255 {
-                        Color::RGB(255, 255, 255) // Use white for cursor background
+                if let Some(cd) = cursor_cell {
+                    let cursor_bg = if cd.fg.r == 255 && cd.fg.g == 255 && cd.fg.b == 255 {
+                        Color::RGB(255, 255, 255)
                     } else {
-                        cell.fg_color
+                        cd.fg
                     };
                     canvas.set_draw_color(cursor_bg);
-                    let cursor_rect = Rect::new(cursor_x, cursor_y, char_width as u32, char_height as u32);
-                    canvas.fill_rect(cursor_rect).map_err(|e| e.to_string())?;
+                    canvas
+                        .fill_rect(Rect::new(cx, cy, char_width as u32, char_height as u32))
+                        .map_err(|e| e.to_string())?;
 
-                    // Always render the character with inverted color (use background color)
-                    // If background is black/dark, render text in black so it shows on white cursor
-                    let char_str;
-                    let text = if let Some(ref extended) = cell.extended {
-                        extended.as_ref()
+                    let text_color = if cd.bg.r == 0 && cd.bg.g == 0 && cd.bg.b == 0 {
+                        Color::RGB(50, 50, 50)
                     } else {
-                        char_str = cell.ch.to_string();
-                        char_str.as_str()
+                        cd.bg
                     };
-
-                    // Use background color for text, or dark gray if bg is default black
-                    let text_color = if cell.bg_color.r == 0 && cell.bg_color.g == 0 && cell.bg_color.b == 0 {
-                        Color::RGB(50, 50, 50) // Dark gray text on white cursor background
-                    } else {
-                        cell.bg_color
-                    };
-
                     render_glyph(
                         canvas,
                         texture_creator,
@@ -437,42 +453,37 @@ fn render_pane<'a, T>(
                         unicode_fallback_font,
                         cjk_font,
                         glyph_cache,
-                        text,
-                        cursor_x,
-                        cursor_y,
+                        &cd.text,
+                        cx,
+                        cy,
                         text_color.r,
                         text_color.g,
                         text_color.b,
                         char_width as u32,
                         char_height as u32,
-                        scale_factor,
-                        cell.bold,
-                        cell.underline,
-                        cell.strikethrough,
+                        cd.underline,
+                        cd.strikethrough,
                     )?;
                 } else {
-                    // Fallback if cell doesn't exist
                     canvas.set_draw_color(Color::RGB(200, 200, 200));
-                    let cursor_rect = Rect::new(cursor_x, cursor_y, char_width as u32, char_height as u32);
-                    canvas.fill_rect(cursor_rect).map_err(|e| e.to_string())?;
+                    canvas
+                        .fill_rect(Rect::new(cx, cy, char_width as u32, char_height as u32))
+                        .map_err(|e| e.to_string())?;
                 }
             }
         }
     }
 
     // Show scroll position indicator when viewing scrollback
-    if !sb.is_at_bottom() {
-        render_scrollback_indicator(canvas, texture_creator, font, rect, sb.scroll_offset, pane_padding)?;
+    if !gb.is_at_bottom() {
+        render_scrollback_indicator(canvas, texture_creator, font, rect, gb.scroll_offset(), pane_padding)?;
     }
 
-    let was_dirty = sb.is_dirty();
-    sb.clear_dirty();
+    let was_dirty = gb.is_dirty();
+    gb.clear_dirty();
+    let still_dirty = gb.is_dirty();
 
-    // Check if dirty flag was set again during render (race condition)
-    let still_dirty = sb.is_dirty();
-
-    // Release locks
-    drop(sb);
+    drop(gb);
     drop(t);
 
     // Draw border for selected panes (green) or active pane (blue)
@@ -532,207 +543,67 @@ fn render_glyph<'a, T>(
     b: u8,
     cell_width: u32,
     cell_height: u32,
-    scale_factor: f32,
-    bold: bool,
     underline: bool,
     strikethrough: bool,
 ) -> Result<(), String> {
     let cache_key = text.to_string();
-
-    // Try custom rendering for specific problematic block characters
-    if text.chars().count() == 1 {
-        if let Some(ch) = text.chars().next() {
-            if custom_cell::can_render_custom(ch) {
-                custom_cell::render_custom_cell(canvas, ch, x, y, cell_width, cell_height, r, g, b)?;
-                // Draw decorations (underline, strikethrough) for custom-rendered glyphs
-                draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, bold, underline, strikethrough)?;
-                return Ok(());
-            }
-        }
-    }
+    let is_likely_emoji = is_emoji_grapheme(text);
 
     // Check cache first
     if let Some(cached_texture) = glyph_cache.get_mut(&cache_key) {
-        // Apply color modulation to the white texture
         cached_texture.set_color_mod(r, g, b);
         let query = cached_texture.query();
 
-        // Check if this is an emoji - if so, scale it to fit in cell
-        let is_likely_emoji = is_emoji_grapheme(text);
-
-        // Check if this is a special symbol that needs scaling
-        let is_special_missing_symbol = text.chars().count() == 1 && text.chars().next().map_or(false, is_special_symbol);
-
-        // Check if this is a block/box drawing character that needs cell-filling
-        let is_block_box_char = text.chars().count() == 1 && text.chars().next().map_or(false, is_block_or_box_drawing);
-
-        if is_block_box_char {
-            // Stretch block/box drawing characters to fill the entire cell for ASCII art
-            // No aspect ratio preservation - these characters are designed to be stretched
-            let char_rect = Rect::new(x, y, cell_width, cell_height);
-            canvas.copy(cached_texture, None, char_rect).map_err(|e| e.to_string())?;
-        } else if is_likely_emoji {
-            // Scale emoji to fill available space (double-width emojis get 2x cell_width)
-            // Use the smaller of width or height to maintain square aspect ratio
-            // Symbol-range emojis (e.g. ❌ U+274C) get 1.5x scale to match symbol rendering
+        if is_likely_emoji {
             let base_size = cell_width.min(cell_height);
-            let target_size = if is_special_missing_symbol {
-                (base_size as f32 * scale_factor) as u32
-            } else {
-                base_size
-            };
-
-            let emoji_width = query.width;
-            let emoji_height = query.height;
-
-            // Calculate scaling to fit the target size while maintaining aspect ratio
-            let scale_x = target_size as f32 / emoji_width as f32;
-            let scale_y = target_size as f32 / emoji_height as f32;
+            let scale_x = base_size as f32 / query.width as f32;
+            let scale_y = base_size as f32 / query.height as f32;
             let scale = scale_x.min(scale_y);
-
-            let scaled_width = (emoji_width as f32 * scale) as u32;
-            let scaled_height = (emoji_height as f32 * scale) as u32;
-
-            // Center the emoji in the cell (horizontally and vertically)
+            let scaled_width = (query.width as f32 * scale) as u32;
+            let scaled_height = (query.height as f32 * scale) as u32;
             let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
             let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
-
-            let char_rect = Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height);
-            canvas.copy(cached_texture, None, char_rect).map_err(|e| e.to_string())?;
-        } else if is_special_missing_symbol {
-            let target_size = (cell_width.min(cell_height) as f32 * scale_factor) as u32;
-
-            let symbol_width = query.width;
-            let symbol_height = query.height;
-
-            // Calculate scaling to fit the target size while maintaining aspect ratio
-            let scale_x = target_size as f32 / symbol_width as f32;
-            let scale_y = target_size as f32 / symbol_height as f32;
-            let scale = scale_x.min(scale_y);
-
-            let scaled_width = (symbol_width as f32 * scale) as u32;
-            let scaled_height = (symbol_height as f32 * scale) as u32;
-
-            // Center the symbol in the cell
-            let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
-            let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
-
-            let char_rect = Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height);
-            canvas.copy(cached_texture, None, char_rect).map_err(|e| e.to_string())?;
+            canvas.copy(cached_texture, None, Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
         } else {
-            // Regular character - use original size
-            let char_rect = Rect::new(x, y, query.width, query.height);
-            canvas.copy(cached_texture, None, char_rect).map_err(|e| e.to_string())?;
+            canvas.copy(cached_texture, None, Rect::new(x, y, query.width, query.height)).map_err(|e| e.to_string())?;
         }
 
-        // Draw decorations (underline, strikethrough) for cached glyphs
-        draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, bold, underline, strikethrough)?;
-
+        draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, underline, strikethrough)?;
         return Ok(());
     }
 
-    // Render all glyphs in white for color modulation
     let render_color = Color::RGB(255, 255, 255);
-
-    // Check if this is an emoji character - if so, try emoji font FIRST
-    let is_likely_emoji = is_emoji_grapheme(text);
-
-    // Check if this is a CJK character - if so, try CJK font FIRST
     let is_likely_cjk = is_cjk_grapheme(text);
 
-    // Check if this is a special symbol (used for scaling decisions below)
-    let is_special_missing_symbol = text.chars().count() == 1 && text.chars().next().map_or(false, is_special_symbol);
-
+    // Emoji: use emoji font, scale to fit cell
     if is_likely_emoji {
-        // Try emoji font first for emoji characters
         let emoji_result = emoji_font.render(text).blended(render_color);
         if let Ok(surface) = emoji_result {
             if surface.width() > 0 && surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                    // Scale emoji to fill available space (double-width emojis get 2x cell_width)
-                    // Use the smaller of width or height to maintain square aspect ratio
-                    // Symbol-range emojis (e.g. ❌ U+274C) get 1.5x scale to match symbol rendering
                     let base_size = cell_width.min(cell_height);
-                    let target_size = if is_special_missing_symbol {
-                        (base_size as f32 * scale_factor) as u32
-                    } else {
-                        base_size
-                    };
-
-                    let emoji_width = surface.width();
-                    let emoji_height = surface.height();
-
-                    // Calculate scaling to fit the target size while maintaining aspect ratio
-                    let scale_x = target_size as f32 / emoji_width as f32;
-                    let scale_y = target_size as f32 / emoji_height as f32;
+                    let scale_x = base_size as f32 / surface.width() as f32;
+                    let scale_y = base_size as f32 / surface.height() as f32;
                     let scale = scale_x.min(scale_y);
-
-                    let scaled_width = (emoji_width as f32 * scale) as u32;
-                    let scaled_height = (emoji_height as f32 * scale) as u32;
-
-                    // Center the emoji in the cell (horizontally and vertically)
+                    let scaled_width = (surface.width() as f32 * scale) as u32;
+                    let scaled_height = (surface.height() as f32 * scale) as u32;
                     let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
                     let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
-
-                    let char_rect = Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height);
-                    // Note: Emojis already rendered in white, color mod applied to cache lookup above
-                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
-                    // Cache the texture for next frame
-                    glyph_cache.insert(cache_key.clone(), texture);
+                    canvas.copy(&texture, None, Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
+                    glyph_cache.insert(cache_key, texture);
                     return Ok(());
                 }
             }
         }
     }
 
-    // Try CJK font first for CJK characters (Chinese, Japanese, Korean)
+    // CJK: use CJK font at native size
     if is_likely_cjk {
         let cjk_result = cjk_font.render(text).blended(render_color);
         if let Ok(surface) = cjk_result {
             if surface.width() > 0 && surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                    let char_rect = Rect::new(x, y, surface.width(), surface.height());
-                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
-                    glyph_cache.insert(cache_key.clone(), texture);
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    // Check if this is a block/box drawing character that needs cell-filling
-    let is_block_box_char = text.chars().count() == 1 && text.chars().next().map_or(false, is_block_or_box_drawing);
-
-    // For special symbols that are often missing from terminal fonts, try unicode fallback font first.
-    // Use find_glyph to verify the font actually has the glyph before rendering, because SDL_ttf
-    // renders a .notdef box (with width > 0) for missing characters, causing false positives.
-    let symbol_font_has_glyph = is_special_missing_symbol && !is_likely_emoji
-        && text.chars().next().map_or(false, |ch| unicode_fallback_font.find_glyph(ch).is_some());
-
-    if symbol_font_has_glyph {
-        let unicode_fallback_result = unicode_fallback_font.render(text).blended(render_color);
-        if let Ok(unicode_surface) = unicode_fallback_result {
-            if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
-                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
-                    let target_size = (cell_width.min(cell_height) as f32 * scale_factor) as u32;
-
-                    let symbol_width = unicode_surface.width();
-                    let symbol_height = unicode_surface.height();
-
-                    // Calculate scaling to fit the target size while maintaining aspect ratio
-                    let scale_x = target_size as f32 / symbol_width as f32;
-                    let scale_y = target_size as f32 / symbol_height as f32;
-                    let scale = scale_x.min(scale_y);
-
-                    let scaled_width = (symbol_width as f32 * scale) as u32;
-                    let scaled_height = (symbol_height as f32 * scale) as u32;
-
-                    // Center the symbol in the cell
-                    let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
-                    let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
-
-                    let char_rect = Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height);
-                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+                    canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
                     glyph_cache.insert(cache_key, texture);
                     return Ok(());
                 }
@@ -740,53 +611,31 @@ fn render_glyph<'a, T>(
         }
     }
 
-    // Not in cache, render and cache it (try main font for non-emoji or if emoji font failed)
-    // For single characters use render_char, for grapheme clusters use render
-    // Use solid rendering for block/box characters to eliminate padding/gaps
-    let render_result = if is_block_box_char {
-        if text.chars().count() == 1 {
-            font.render_char(text.chars().next().unwrap()).solid(render_color)
-        } else {
-            font.render(text).solid(render_color)
-        }
-    } else if text.chars().count() == 1 {
+    // Main font
+    let render_result = if text.chars().count() == 1 {
         font.render_char(text.chars().next().unwrap()).blended(render_color)
     } else {
         font.render(text).blended(render_color)
     };
 
-    // Try main font first
     if let Ok(surface) = render_result {
         if surface.width() > 0 && surface.height() > 0 {
             if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                // If this is a block/box drawing character, stretch to fill entire cell
-                if is_block_box_char {
-                    // Stretch to fill the entire cell for ASCII art
-                    // No aspect ratio preservation - these characters are designed to be stretched
-                    let char_rect = Rect::new(x, y, cell_width, cell_height);
-                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
-                    glyph_cache.insert(cache_key, texture);
-                    return Ok(());
-                } else {
-                    let char_rect = Rect::new(x, y, surface.width(), surface.height());
-                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
-                    // Cache the texture for next frame
-                    glyph_cache.insert(cache_key, texture);
-                    return Ok(());
-                }
+                canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
+                glyph_cache.insert(cache_key, texture);
+                draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, underline, strikethrough)?;
+                return Ok(());
             }
         }
     }
 
-    // Main font failed (Err) or produced empty surface - try fallback fonts
+    // Fallback: emoji font for non-emoji characters
     if !is_likely_emoji {
-        // Try emoji font for non-emoji characters (might be symbols with emoji variants)
         let emoji_fallback_result = emoji_font.render(text).blended(render_color);
-        if let Ok(emoji_surface) = emoji_fallback_result {
-            if emoji_surface.width() > 0 && emoji_surface.height() > 0 {
-                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&emoji_surface) {
-                    let char_rect = Rect::new(x, y, emoji_surface.width(), emoji_surface.height());
-                    canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+        if let Ok(surface) = emoji_fallback_result {
+            if surface.width() > 0 && surface.height() > 0 {
+                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
+                    canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
                     glyph_cache.insert(cache_key, texture);
                     return Ok(());
                 }
@@ -794,72 +643,49 @@ fn render_glyph<'a, T>(
         }
     }
 
-    // Try CJK font for CJK characters (Chinese, Japanese, Korean)
+    // Fallback: CJK font
     let cjk_fallback_result = cjk_font.render(text).blended(render_color);
-    if let Ok(cjk_surface) = cjk_fallback_result {
-        if cjk_surface.width() > 0 && cjk_surface.height() > 0 {
-            if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&cjk_surface) {
-                let char_rect = Rect::new(x, y, cjk_surface.width(), cjk_surface.height());
-                canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+    if let Ok(surface) = cjk_fallback_result {
+        if surface.width() > 0 && surface.height() > 0 {
+            if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
+                canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
                 glyph_cache.insert(cache_key, texture);
                 return Ok(());
             }
         }
     }
 
-    // Try Unicode fallback font (for all characters that failed emoji/main/CJK fonts)
-    // Skip if we already successfully used it above for special symbols.
-    // Also use find_glyph to avoid rendering .notdef boxes for unsupported characters.
-    if !symbol_font_has_glyph {
-        let has_glyph = text.chars().next()
-            .map_or(false, |ch| unicode_fallback_font.find_glyph(ch).is_some());
-        if has_glyph {
-            let unicode_fallback_result = if is_block_box_char {
-                unicode_fallback_font.render(text).solid(render_color)
-            } else {
-                unicode_fallback_font.render(text).blended(render_color)
-            };
-            if let Ok(unicode_surface) = unicode_fallback_result {
-                if unicode_surface.width() > 0 && unicode_surface.height() > 0 {
-                    if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&unicode_surface) {
-                        // If this is a block/box drawing character, stretch to fill entire cell
-                        if is_block_box_char {
-                            let char_rect = Rect::new(x, y, cell_width, cell_height);
-                            canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
-                            glyph_cache.insert(cache_key, texture);
-                            return Ok(());
-                        } else {
-                            let char_rect = Rect::new(x, y, unicode_surface.width(), unicode_surface.height());
-                            canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
-                            glyph_cache.insert(cache_key, texture);
-                            return Ok(());
-                        }
-                    }
+    // Fallback: unicode symbol font
+    let has_glyph = text.chars().next()
+        .map_or(false, |ch| unicode_fallback_font.find_glyph(ch).is_some());
+    if has_glyph {
+        if let Ok(surface) = unicode_fallback_font.render(text).blended(render_color) {
+            if surface.width() > 0 && surface.height() > 0 {
+                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
+                    canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
+                    glyph_cache.insert(cache_key, texture);
+                    return Ok(());
                 }
             }
         }
     }
 
-    // Character not supported in any font, try fallback '□'
+    // Last resort: replacement box '□'
     let fallback_key = "□".to_string();
     if let Some(cached_fallback) = glyph_cache.get_mut(&fallback_key) {
         cached_fallback.set_color_mod(r, g, b);
         let query = cached_fallback.query();
-        let char_rect = Rect::new(x, y, query.width, query.height);
-        canvas.copy(cached_fallback, None, char_rect).map_err(|e| e.to_string())?;
-    } else if let Ok(fallback_surface) = font.render_char('□').blended(render_color) {
-        if fallback_surface.width() > 0 && fallback_surface.height() > 0 {
-            if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&fallback_surface) {
-                let char_rect = Rect::new(x, y, fallback_surface.width(), fallback_surface.height());
-                canvas.copy(&texture, None, char_rect).map_err(|e| e.to_string())?;
+        canvas.copy(cached_fallback, None, Rect::new(x, y, query.width, query.height)).map_err(|e| e.to_string())?;
+    } else if let Ok(surface) = font.render_char('□').blended(render_color) {
+        if surface.width() > 0 && surface.height() > 0 {
+            if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
+                canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
                 glyph_cache.insert(fallback_key, texture);
             }
         }
     }
 
-    // Draw decorations for non-cached glyphs
-    draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, bold, underline, strikethrough)?;
-
+    draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, underline, strikethrough)?;
     Ok(())
 }
 
@@ -873,7 +699,6 @@ fn draw_text_decorations(
     r: u8,
     g: u8,
     b: u8,
-    _bold: bool,
     underline: bool,
     strikethrough: bool,
 ) -> Result<(), String> {
@@ -964,65 +789,78 @@ fn render_voice_indicator(
     pane_rect: Rect,
     is_transcribing: bool,
     cursor_visible: bool,
+    voice_anim_t: f32,
 ) -> Result<(), String> {
-    // All sizes are intentionally large so the icon is clearly visible
-    const BG_SIZE: u32 = 48;
+    // Size pulse: ±25% over a 0.8-second period
+    let pulse = 1.0_f32 + 0.25 * (voice_anim_t * std::f32::consts::TAU / 0.8).sin();
+
+    // Base sizes (all intentionally large so the icon is clearly visible)
+    const BG_SIZE_BASE: f32 = 48.0;
     const MARGIN: i32 = 8;
 
-    let bx = pane_rect.right() - MARGIN - BG_SIZE as i32;
-    let by = pane_rect.top() + MARGIN;
-    let cx = bx + BG_SIZE as i32 / 2; // horizontal centre
+    let bg_size = (BG_SIZE_BASE * pulse) as u32;
+
+    // Anchor the centre of the pill to a fixed point in the top-right corner
+    let center_x = pane_rect.right() - MARGIN - (BG_SIZE_BASE / 2.0) as i32;
+    let center_y = pane_rect.top() + MARGIN + (BG_SIZE_BASE / 2.0) as i32;
+
+    let bx = center_x - bg_size as i32 / 2;
+    let by = center_y - bg_size as i32 / 2;
 
     // ── dark semi-transparent background pill ────────────────────────────────
     canvas.set_blend_mode(BlendMode::Blend);
     canvas.set_draw_color(Color::RGBA(18, 18, 18, 210));
-    canvas.fill_rect(Rect::new(bx, by, BG_SIZE, BG_SIZE))
+    canvas.fill_rect(Rect::new(bx, by, bg_size, bg_size))
         .map_err(|e| e.to_string())?;
     canvas.set_blend_mode(BlendMode::None);
 
     // ── icon colour ──────────────────────────────────────────────────────────
     let color = if is_transcribing {
         if cursor_visible { Color::RGB(230, 190, 0) } else { Color::RGB(110, 90, 0) }
-    } else if cursor_visible {
-        Color::RGB(0, 220, 60)
     } else {
-        Color::RGB(0, 130, 40)
+        Color::RGB(0, 220, 60)
     };
     canvas.set_draw_color(color);
 
-    // ── mic capsule head (14 px wide × 22 px tall, centred, rounded top) ───────
-    const HEAD_W: u32 = 14;
-    const HEAD_H: u32 = 22;
-    let head_x = cx - HEAD_W as i32 / 2;
-    let head_y = by + 4;
+    // Scale all icon elements by the same pulse factor
+    let head_w = (14.0 * pulse) as i32;
+    let head_h = (22.0 * pulse) as i32;
+    let head_x = center_x - head_w / 2;
+    let head_y = by + (4.0 * pulse) as i32;
+
+    // ── mic capsule head (scaled, centred, rounded top) ──────────────────────
     // body
-    canvas.fill_rect(Rect::new(head_x, head_y + 2, HEAD_W, HEAD_H - 2))
+    canvas.fill_rect(Rect::new(head_x, head_y + (2.0 * pulse) as i32,
+                               head_w as u32, (head_h - (2.0 * pulse) as i32) as u32))
         .map_err(|e| e.to_string())?;
     // rounded top: row 1 — 1 px inset each side
-    canvas.fill_rect(Rect::new(head_x + 1, head_y + 1, HEAD_W - 2, 1))
+    canvas.fill_rect(Rect::new(head_x + 1, head_y + 1, (head_w - 2) as u32, 1))
         .map_err(|e| e.to_string())?;
     // rounded top: row 0 — 2 px inset each side
-    canvas.fill_rect(Rect::new(head_x + 2, head_y, HEAD_W - 4, 1))
+    canvas.fill_rect(Rect::new(head_x + 2, head_y, (head_w - 4) as u32, 1))
         .map_err(|e| e.to_string())?;
 
-    // ── stand arms: two small rects that suggest the curved bottom ───────────
-    //   left arm
-    canvas.fill_rect(Rect::new(head_x - 6, head_y + HEAD_H as i32 - 4, 6, 3))
+    // ── stand arms ───────────────────────────────────────────────────────────
+    let arm_w = (6.0 * pulse) as u32;
+    let arm_h = (3.0 * pulse).max(1.0) as u32;
+    let arm_y = head_y + head_h - (4.0 * pulse) as i32;
+    canvas.fill_rect(Rect::new(head_x - arm_w as i32, arm_y, arm_w, arm_h))
         .map_err(|e| e.to_string())?;
-    //   right arm
-    canvas.fill_rect(Rect::new(head_x + HEAD_W as i32, head_y + HEAD_H as i32 - 4, 6, 3))
+    canvas.fill_rect(Rect::new(head_x + head_w, arm_y, arm_w, arm_h))
         .map_err(|e| e.to_string())?;
 
     // ── stand pole ───────────────────────────────────────────────────────────
-    const POLE_W: u32 = 4;
-    const POLE_H: u32 = 8;
-    canvas.fill_rect(Rect::new(cx - POLE_W as i32 / 2, head_y + HEAD_H as i32 - 1, POLE_W, POLE_H))
+    let pole_w = (4.0 * pulse).max(1.0) as u32;
+    let pole_h = (8.0 * pulse).max(1.0) as u32;
+    canvas.fill_rect(Rect::new(center_x - pole_w as i32 / 2,
+                               head_y + head_h - 1, pole_w, pole_h))
         .map_err(|e| e.to_string())?;
 
     // ── base bar ─────────────────────────────────────────────────────────────
-    const BASE_W: u32 = 20;
-    const BASE_H: u32 = 3;
-    canvas.fill_rect(Rect::new(cx - BASE_W as i32 / 2, head_y + HEAD_H as i32 + POLE_H as i32 - 1, BASE_W, BASE_H))
+    let base_w = (20.0 * pulse).max(1.0) as u32;
+    let base_h = (3.0 * pulse).max(1.0) as u32;
+    canvas.fill_rect(Rect::new(center_x - base_w as i32 / 2,
+                               head_y + head_h + pole_h as i32 - 1, base_w, base_h))
         .map_err(|e| e.to_string())?;
 
     Ok(())

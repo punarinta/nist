@@ -334,9 +334,6 @@ pub fn get_modifiers(keymod: sdl3::keyboard::Mod) -> (bool, bool, bool) {
 /// This function checks hardcoded sequential hotkey patterns.
 pub fn match_sequential_hotkey(
     keycode: Keycode,
-    _is_ctrl: bool,
-    _is_shift: bool,
-    _is_alt: bool,
     sequential_state: &SequentialHotkeyState,
 ) -> Option<HotkeyAction> {
     // Get the first key from the sequential state

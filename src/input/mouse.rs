@@ -19,6 +19,7 @@ pub enum MouseAction {
     NewTab,
     CloseWindow,
     MinimizeWindow,
+    MaximizeRestoreWindow,
     CloseTab(usize),
     CloseTabWithConfirm(usize),
     SwitchTab(usize),
@@ -249,7 +250,7 @@ pub fn handle_mouse_button_down(
                         let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_width, pane_area_height);
                         for (pane_id, rect, _, _, _) in pane_rects {
                             if rect.contains_point((mouse_x, mouse_y)) {
-                                pane_layout.open_context_menu(pane_id, mouse_x, mouse_y);
+                                pane_layout.open_context_menu(pane_id, mouse_x, mouse_y, window_width as i32, window_height as i32);
                                 break;
                             }
                         }
@@ -513,6 +514,8 @@ fn handle_tab_bar_click(mouse_x: i32, mouse_y: i32, clicks: u8, tab_bar: &mut Ta
         return MouseResult::with_action(MouseAction::CloseWindow);
     } else if tab_bar.minimize_button_rect.contains_point(mouse_x, mouse_y) {
         return MouseResult::with_action(MouseAction::MinimizeWindow);
+    } else if tab_bar.maximize_button_rect.contains_point(mouse_x, mouse_y) {
+        return MouseResult::with_action(MouseAction::MaximizeRestoreWindow);
     } else if tab_bar.add_button_rect.contains_point(mouse_x, mouse_y) {
         return MouseResult::with_action(MouseAction::NewTab);
     } else if let Some(close_idx) = tab_bar.get_clicked_close_button(mouse_x, mouse_y) {
@@ -797,8 +800,8 @@ pub fn handle_mouse_motion(
                             let row = ((mouse_y - rect.y() - pane_padding as i32) as f32 / char_height).floor() as usize;
 
                             // Detect URL at this position
-                            let new_url = if let Ok(sb) = t.screen_buffer.lock() {
-                                detect_url_at_position(&sb, row, col, pane_id)
+                            let new_url = if let Ok(gb) = t.ghostty_buffer.lock() {
+                                detect_url_at_position(&gb, row, col, pane_id)
                             } else {
                                 None
                             };
@@ -955,10 +958,10 @@ pub fn handle_mouse_wheel(
 
             if wheel_y > 0 {
                 // Scroll up (backward) through scrollback
-                t.screen_buffer.lock().unwrap().scroll_view_up(lines_to_scroll);
+                t.ghostty_buffer.lock().unwrap().scroll_view_up(lines_to_scroll);
             } else {
                 // Scroll down (forward) toward live view
-                t.screen_buffer.lock().unwrap().scroll_view_down(lines_to_scroll);
+                t.ghostty_buffer.lock().unwrap().scroll_view_down(lines_to_scroll);
             }
             needs_render = true;
         }

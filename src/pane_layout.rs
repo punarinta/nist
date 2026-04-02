@@ -595,7 +595,7 @@ impl PaneLayout {
     }
 
     /// Open context menu at the specified position for a pane
-    pub fn open_context_menu(&mut self, pane_id: PaneId, x: i32, y: i32) {
+    pub fn open_context_menu(&mut self, pane_id: PaneId, x: i32, y: i32, window_width: i32, window_height: i32) {
         use crate::ui::context_menu::{ContextMenu, ContextMenuItem};
 
         self.context_menu_open = Some((pane_id, x, y));
@@ -609,7 +609,11 @@ impl PaneLayout {
                 ContextMenuItem::with_enabled(menu_images.expand_into_tab, "Turn into a tab", "to_tab".to_string(), pane_count > 1),
                 ContextMenuItem::new(menu_images.kill_shell, "Kill terminal", "kill_shell".to_string()),
             ];
-            self.context_menu = Some(ContextMenu::new(items, (x, y)));
+            let menu = ContextMenu::new(items, (x, y));
+            let menu_rect = menu.get_rect();
+            let clamped_x = x.min(window_width - menu_rect.width() as i32).max(0);
+            let clamped_y = y.min(window_height - menu_rect.height() as i32).max(0);
+            self.context_menu = Some(ContextMenu::new(menu.items, (clamped_x, clamped_y)));
         }
 
         eprintln!("[PANE_LAYOUT] Context menu opened for pane {:?} at ({}, {})", pane_id, x, y);

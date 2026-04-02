@@ -1,11 +1,10 @@
 mod ai;
-mod ansi;
 mod cell;
 mod font_discovery;
+mod ghostty_buffer;
 mod history;
 mod input;
 mod pane_layout;
-mod screen_buffer;
 mod sdl_renderer;
 mod settings;
 mod state;
@@ -18,6 +17,7 @@ mod url_detection;
 #[cfg(feature = "test-server")]
 mod test_server;
 
+use crate::ghostty_buffer::CursorStyle;
 use crate::tab_gui::TabBarGui;
 use crate::terminal::{Terminal, TerminalLibrary};
 
@@ -53,7 +53,7 @@ fn resize_terminals_to_panes(
                 if let Ok(mut t) = terminal.lock() {
                     // Only resize if dimensions have changed
                     if t.width != cols || t.height != rows {
-                        t.set_size(cols, rows, false);
+                        t.set_size(cols, rows);
                     }
                 }
             }
@@ -101,7 +101,7 @@ fn resize_terminals_after_split(
                             "[RESIZE] Pane {:?}: {}x{} -> {}x{} (clear={})",
                             pane_id, t.width, t.height, cols, rows, clear_screen
                         );
-                        t.set_size(cols, rows, clear_screen);
+                        t.set_size(cols, rows);
                     } else {
                         eprintln!("[RESIZE] Pane {:?}: already {}x{}", pane_id, cols, rows);
                     }
@@ -138,7 +138,6 @@ fn main() -> Result<(), String> {
     let mut event_pump = app.event_pump;
     let mut font = app.fonts.font;
     let tab_font = app.fonts.tab_font;
-    let button_font = app.fonts.button_font;
     let cpu_font = app.fonts.cpu_font;
     let context_menu_font = app.fonts.context_menu_font;
     let emoji_font = app.fonts.emoji_font;
@@ -152,10 +151,12 @@ fn main() -> Result<(), String> {
     let mut tab_bar = app.tab_bar;
     let tab_bar_gui = app.tab_bar_gui;
     let mut settings = app.settings;
+    let default_cursor = CursorStyle::from_settings_string(&settings.terminal.cursor);
     let mut sys = app.sys;
     let ctrl_keys = app.ctrl_keys;
     let mut mouse_state = app.mouse_state;
     let mut glyph_cache = app.glyph_cache;
+    let window_logical_size = app.window_logical_size;
 
     #[cfg(target_os = "linux")]
     let clipboard_tx = app.clipboard_tx;
@@ -190,6 +191,10 @@ fn main() -> Result<(), String> {
     let mut pending_pane_split: Option<crate::pane_layout::SplitDirection> = None;
     let mut pending_new_tab = false;
     let mut last_cache_clear = Instant::now();
+
+    // Animation clock (monotonic, used for voice indicator pulse etc.)
+    let app_start = Instant::now();
+    let mut last_voice_anim = Instant::now();
 
     // Store font path for reloading when font size changes
     let font_path = if settings.terminal.font_family == "auto" {
@@ -237,8 +242,8 @@ fn main() -> Result<(), String> {
                     let terminals = gui.get_active_tab_terminals();
                     let dirty = terminals.iter().any(|term| {
                         if let Ok(t) = term.try_lock() {
-                            if let Ok(sb) = t.screen_buffer.try_lock() {
-                                sb.is_dirty()
+                            if let Ok(mut gb) = t.ghostty_buffer.try_lock() {
+                                gb.is_dirty()
                             } else {
                                 true // Assume dirty if can't check
                             }
@@ -339,8 +344,8 @@ fn main() -> Result<(), String> {
                         let terminals = gui.get_active_tab_terminals();
                         terminals.iter().any(|term| {
                             if let Ok(t) = term.try_lock() {
-                                if let Ok(sb) = t.screen_buffer.try_lock() {
-                                    sb.is_dirty()
+                                if let Ok(mut gb) = t.ghostty_buffer.try_lock() {
+                                    gb.is_dirty()
                                 } else {
                                     true // Assume dirty if mutex is locked (PTY thread likely processing)
                                 }
@@ -356,6 +361,12 @@ fn main() -> Result<(), String> {
             if late_dirty_content {
                 needs_render = true;
             }
+        }
+
+        // Drive voice indicator pulse animation at ~30 fps while voice is active
+        if voice_manager.is_active() && last_voice_anim.elapsed().as_millis() >= 33 {
+            last_voice_anim = Instant::now();
+            needs_render = true;
         }
 
         // Only render if needed
@@ -533,8 +544,17 @@ fn main() -> Result<(), String> {
                     input::events::EventAction::MinimizeWindow => {
                         canvas.window_mut().minimize();
                     }
+                    input::events::EventAction::MaximizeRestoreWindow => {
+                        if canvas.window().is_maximized() {
+                            canvas.window_mut().restore();
+                        } else {
+                            canvas.window_mut().maximize();
+                        }
+                    }
                     input::events::EventAction::Resize => {
                         let (new_width, new_height) = canvas.window().size_in_pixels();
+                        window_logical_size.0.store(new_width as i32, std::sync::atomic::Ordering::Relaxed);
+                        window_logical_size.1.store(new_height as i32, std::sync::atomic::Ordering::Relaxed);
                         eprintln!("[MAIN] Window resized to {}x{}", new_width, new_height);
                         // Resize all terminals to match their pane dimensions
                         resize_terminals_to_panes(&tab_bar_gui, char_width, char_height, tab_bar_height, new_width, new_height);
@@ -862,14 +882,13 @@ fn main() -> Result<(), String> {
                         let term_height = ((h - tab_bar_height) as f32 / char_height).floor() as u32;
                         let term_width = (w as f32 / char_width).floor() as u32;
 
-                        let cursor_style = crate::screen_buffer::CursorStyle::from_settings_string(&settings.terminal.cursor);
                         let new_terminal = Arc::new(Mutex::new(Terminal::new_with_scrollback(
                             term_width,
                             term_height,
                             shell_config.clone(),
                             DEFAULT_SCROLLBACK_LINES,
                             std::env::current_dir().ok(),
-                            cursor_style,
+                            default_cursor,
                         )));
 
                         let mut gui = tab_bar_gui.lock().unwrap();
@@ -967,14 +986,13 @@ fn main() -> Result<(), String> {
                     gui.get_active_terminal().and_then(|t| t.lock().unwrap().get_cwd())
                 };
 
-                let cursor_style = crate::screen_buffer::CursorStyle::from_settings_string(&settings.terminal.cursor);
                 let new_terminal = Arc::new(Mutex::new(Terminal::new_with_scrollback(
                     term_width,
                     term_height,
                     shell_config.clone(),
                     DEFAULT_SCROLLBACK_LINES,
                     start_dir,
-                    cursor_style,
+                    default_cursor,
                 )));
 
                 let mut gui = tab_bar_gui.lock().unwrap();
@@ -1052,14 +1070,13 @@ fn main() -> Result<(), String> {
                         gui.get_active_terminal().and_then(|t| t.lock().unwrap().get_cwd())
                     };
 
-                    let cursor_style = crate::screen_buffer::CursorStyle::from_settings_string(&settings.terminal.cursor);
                     let new_terminal = Arc::new(Mutex::new(Terminal::new_with_scrollback(
                         term_width,
                         term_height,
                         shell_config.clone(),
                         DEFAULT_SCROLLBACK_LINES,
                         start_dir,
-                        cursor_style,
+                        default_cursor,
                     )));
 
                     let mut gui = tab_bar_gui.lock().unwrap();
@@ -1120,7 +1137,6 @@ fn main() -> Result<(), String> {
                 &mut tab_bar,
                 &tab_bar_gui,
                 &tab_font,
-                &button_font,
                 &cpu_font,
                 &font,
                 &emoji_font,
@@ -1129,7 +1145,6 @@ fn main() -> Result<(), String> {
                 &context_menu_font,
                 cpu_usage,
                 tab_bar_height,
-                scale_factor,
                 char_width,
                 char_height,
                 cursor_visible,
@@ -1137,6 +1152,7 @@ fn main() -> Result<(), String> {
                 &mouse_state,
                 voice_manager.is_recording(),
                 voice_manager.is_transcribing(),
+                app_start.elapsed().as_secs_f32(),
             )?;
 
             if any_dirty {

@@ -26,6 +26,7 @@ pub enum EventAction {
     TabReordered,
     PaneClosed,
     MinimizeWindow,
+    MaximizeRestoreWindow,
     Resize,
     StartTextInput,
     StopTextInput,
@@ -166,7 +167,6 @@ pub fn handle_event(
             tab_bar,
             tab_bar_gui,
             ctrl_keys,
-            scale_factor,
             char_width,
             char_height,
             tab_bar_height,
@@ -231,6 +231,7 @@ fn handle_mouse_button_down_event(
     let event_action = match result.action {
         MouseAction::CloseWindow => EventAction::Quit,
         MouseAction::MinimizeWindow => EventAction::MinimizeWindow,
+        MouseAction::MaximizeRestoreWindow => EventAction::MaximizeRestoreWindow,
         MouseAction::NewTab => EventAction::NewTab,
         MouseAction::CloseTab(idx) => EventAction::CloseTab(idx),
         MouseAction::CloseTabWithConfirm(idx) => EventAction::CloseTabWithConfirm(idx),
@@ -406,7 +407,6 @@ fn handle_key_down_event(
     tab_bar: &mut TabBar,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
     ctrl_keys: &std::collections::HashMap<sdl3::keyboard::Scancode, u8>,
-    scale_factor: f32,
     char_width: f32,
     char_height: f32,
     tab_bar_height: u32,
@@ -456,7 +456,6 @@ fn handle_key_down_event(
         let result = super::keyboard::handle_hotkey_action(
             super::hotkeys::HotkeyAction::Navigation(nav_action),
             tab_bar_gui,
-            scale_factor,
             char_width,
             char_height,
             tab_bar_height,
@@ -473,7 +472,7 @@ fn handle_key_down_event(
     }
 
     // Check for sequential hotkey completion (second key in a sequence like Alt-G-P)
-    if let Some(action) = super::hotkeys::match_sequential_hotkey(keycode, is_ctrl_pressed, is_shift_pressed, is_alt_pressed, &tab_bar.sequential_hotkey_state)
+    if let Some(action) = super::hotkeys::match_sequential_hotkey(keycode, &tab_bar.sequential_hotkey_state)
     {
         // Clear the sequential state since we found a match
         tab_bar.sequential_hotkey_state.clear();
@@ -481,7 +480,6 @@ fn handle_key_down_event(
         let result = super::keyboard::handle_hotkey_action(
             action,
             tab_bar_gui,
-            scale_factor,
             char_width,
             char_height,
             tab_bar_height,
@@ -572,7 +570,6 @@ fn handle_key_down_event(
             let result = super::keyboard::handle_hotkey_action(
                 super::hotkeys::HotkeyAction::Navigation(nav_action.clone()),
                 tab_bar_gui,
-                scale_factor,
                 char_width,
                 char_height,
                 tab_bar_height,
@@ -615,7 +612,6 @@ fn handle_key_down_event(
             let result = super::keyboard::handle_hotkey_action(
                 action,
                 tab_bar_gui,
-                scale_factor,
                 char_width,
                 char_height,
                 tab_bar_height,
