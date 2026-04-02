@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::channel;
 #[cfg(target_os = "linux")]
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use sysinfo::System;
 
@@ -76,6 +76,7 @@ pub struct InitializedApp<'a> {
     pub mouse_state: crate::input::mouse::MouseState,
     pub glyph_cache: HashMap<String, sdl3::render::Texture>,
     pub window_logical_size: Arc<(AtomicI32, AtomicI32)>,
+    pub is_window_maximized: Arc<AtomicBool>,
     #[cfg(target_os = "linux")]
     pub clipboard_tx: Sender<Clipboard>,
     #[cfg(target_os = "linux")]
@@ -202,14 +203,20 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
         log_buttons_width,
         log_resize_border,
     );
+    let is_window_maximized = Arc::new(AtomicBool::new(canvas.window().is_maximized()));
     {
         let size = window_logical_size.clone();
         let tabs_right_edge = tab_bar.tabs_right_edge.clone();
+        let maximized = is_window_maximized.clone();
         canvas.window_mut().set_hit_test(move |point| {
             let w = size.0.load(Ordering::Relaxed);
             let h = size.1.load(Ordering::Relaxed);
             let x = point.x();
             let y = point.y();
+            // When maximized, disable all resize/drag hit tests
+            if maximized.load(Ordering::Relaxed) {
+                return HitTestResult::Normal;
+            }
             let at_left   = x < log_resize_border;
             let at_right  = x >= w - log_resize_border;
             let at_top    = y < log_resize_border;
@@ -258,6 +265,7 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
         mouse_state,
         glyph_cache,
         window_logical_size,
+        is_window_maximized,
         #[cfg(target_os = "linux")]
         clipboard_tx,
         #[cfg(target_os = "linux")]

@@ -164,6 +164,7 @@ fn main() -> Result<(), String> {
     let mut glyph_cache = app.glyph_cache;
     let mut pane_cache: HashMap<crate::pane_layout::PaneId, render::PaneCacheEntry> = HashMap::new();
     let window_logical_size = app.window_logical_size;
+    let is_window_maximized = app.is_window_maximized;
 
     #[cfg(target_os = "linux")]
     let clipboard_tx = app.clipboard_tx;
@@ -557,12 +558,14 @@ fn main() -> Result<(), String> {
                         } else {
                             canvas.window_mut().maximize();
                         }
+                        is_window_maximized.store(canvas.window().is_maximized(), std::sync::atomic::Ordering::Relaxed);
                     }
                     input::events::EventAction::Resize => {
                         let (new_width, new_height) = canvas.window().size_in_pixels();
                         let (new_log_w, new_log_h) = canvas.window().size();
                         window_logical_size.0.store(new_log_w as i32, std::sync::atomic::Ordering::Relaxed);
                         window_logical_size.1.store(new_log_h as i32, std::sync::atomic::Ordering::Relaxed);
+                        is_window_maximized.store(canvas.window().is_maximized(), std::sync::atomic::Ordering::Relaxed);
                         eprintln!("[MAIN] Window resized to {}x{}", new_width, new_height);
                         pane_cache.clear();
                         // Resize all terminals to match their pane dimensions

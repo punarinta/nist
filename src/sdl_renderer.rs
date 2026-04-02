@@ -383,8 +383,7 @@ impl TabBar {
                 dragged_tab_data = Some((idx, tab_name.clone(), x, tab_width));
 
                 // Still need to advance x and store rect for drop position calculation
-                let tab_rect = Rect::new(x, y, tab_width, self.height - 6);
-                self.tab_rects.push(ClickableRect::new(tab_rect));
+                self.tab_rects.push(ClickableRect::new(Rect::new(x, 0, tab_width, self.height)));
                 let close_x = x + tab_width as i32 - (close_size as i32) - 6;
                 let close_y = y + 6;
                 let close_rect = Rect::new(close_x, close_y, close_size, close_size);
@@ -401,8 +400,7 @@ impl TabBar {
 
             if tab_out_of_view || (needs_scrolling && (tab_clipped_left || tab_clipped_right)) {
                 // Still need to store rect and advance x for proper positioning
-                let tab_rect = Rect::new(x, y, tab_width, self.height - 6);
-                self.tab_rects.push(ClickableRect::new(tab_rect));
+                self.tab_rects.push(ClickableRect::new(Rect::new(x, 0, tab_width, self.height)));
                 let close_x = x + tab_width as i32 - (close_size as i32) - 6;
                 let close_y = y + 6;
                 let close_rect = Rect::new(close_x, close_y, close_size, close_size);
@@ -511,9 +509,8 @@ impl TabBar {
                 let _ = canvas.fill_rect(Rect::new(cursor_x, cursor_y, 2, cursor_height));
             }
 
-            // Store clickable areas first
-            let tab_clickable = ClickableRect::new(tab_rect);
-            self.tab_rects.push(tab_clickable);
+            // Store clickable areas first (full height so entire tab bar row is clickable)
+            self.tab_rects.push(ClickableRect::new(Rect::new(x, 0, tab_width, self.height)));
 
             // Draw close button (only visible on hover, but always reserve space)
             let close_x = x + tab_width as i32 - (close_size as i32) - 6;
