@@ -9,8 +9,11 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-// Default scrollback buffer size for test terminals
-const DEFAULT_SCROLLBACK_LINES: usize = 10000;
+// Scrollback buffer size for test terminals.
+// Kept small (500) to avoid excessive memory use when tests create many terminals
+// (e.g. 5 tabs × 3 panes = 15 terminals).  Tests rarely need more than ~200 lines
+// of history, so 500 gives a comfortable margin without the 10 000-line overhead.
+const DEFAULT_SCROLLBACK_LINES: usize = 500;
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type")]

@@ -64,6 +64,8 @@ pub struct InitializedApp<'a> {
     pub canvas: Canvas<Window>,
     pub texture_creator: TextureCreator<WindowContext>,
     pub event_pump: sdl3::EventPump,
+    /// Kept alive so the SDL event subsystem stays initialised for the process lifetime.
+    pub event_subsystem: sdl3::EventSubsystem,
     pub fonts: Fonts<'a>,
     pub char_dims: CharDimensions,
     pub scale_info: ScaleInfo,
@@ -143,6 +145,12 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
     // Set up rendering components
     let texture_creator = canvas.texture_creator();
     let event_pump = sdl_context.event_pump().map_err(|e| e.to_string())?;
+
+    // Initialise PTY waker: lets PTY reader threads push a User event to unblock
+    // wait_event_timeout when terminal output arrives.
+    let event_subsystem = sdl_context.event().map_err(|e| e.to_string())?;
+    let pty_event_type = unsafe { event_subsystem.register_event().unwrap_or(0) };
+    crate::pty_waker::init(event_subsystem.event_sender(), pty_event_type);
 
     // Enable text input for terminal typing
     canvas.window().subsystem().text_input().start(canvas.window());
@@ -253,6 +261,7 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
         canvas,
         texture_creator,
         event_pump,
+        event_subsystem,
         fonts,
         char_dims,
         scale_info,

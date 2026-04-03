@@ -6,6 +6,7 @@ mod history;
 mod input;
 mod kitty_graphics;
 mod pane_layout;
+mod pty_waker;
 mod sdl_renderer;
 mod settings;
 mod state;
@@ -32,6 +33,7 @@ use ui::render;
 const BUILD_DATE: &str = env!("BUILD_DATE");
 const GIT_HASH: &str = env!("GIT_HASH");
 const DEFAULT_SCROLLBACK_LINES: usize = 10000;
+const TEST_SCROLLBACK_LINES: usize = 500;
 
 /// Resize all terminals in the active tab to match their pane dimensions
 fn resize_terminals_to_panes(
@@ -135,13 +137,22 @@ fn main() -> Result<(), String> {
     // Initialize TTF context (must outlive fonts)
     let ttf_context = sdl3::ttf::init().map_err(|e| e.to_string())?;
 
+    // Use a smaller scrollback buffer in test mode to avoid excessive memory usage
+    // when tests create many terminals (tabs × panes).
+    let scrollback_lines = if cli_args.test_port.is_some() {
+        TEST_SCROLLBACK_LINES
+    } else {
+        DEFAULT_SCROLLBACK_LINES
+    };
+
     // Initialize all components (SDL, fonts, terminals, etc.)
-    let app = system::init::initialize(&ttf_context, cli_args.test_port, DEFAULT_SCROLLBACK_LINES)?;
+    let app = system::init::initialize(&ttf_context, cli_args.test_port, scrollback_lines)?;
 
     // Destructure for easier access
     let mut canvas = app.canvas;
     let texture_creator = app.texture_creator;
     let mut event_pump = app.event_pump;
+    let _event_subsystem = app.event_subsystem; // keep SDL event subsystem alive
     let mut font = app.fonts.font;
     let tab_font = app.fonts.tab_font;
     let cpu_font = app.fonts.cpu_font;
@@ -198,7 +209,9 @@ fn main() -> Result<(), String> {
     // Pending operations
     let mut pending_pane_split: Option<crate::pane_layout::SplitDirection> = None;
     let mut pending_new_tab = false;
-    let mut last_cache_clear = Instant::now();
+    let mut last_render = Instant::now();
+    let input_render_interval = std::time::Duration::from_millis(33); // ~30 fps on interaction
+    let pty_render_interval   = std::time::Duration::from_millis(66); // ~15 fps for PTY output
 
     // Animation clock (monotonic, used for voice indicator pulse etc.)
     let app_start = Instant::now();
@@ -243,27 +256,30 @@ fn main() -> Result<(), String> {
             }
         }
 
-        // Check for dirty terminals that need rendering
+        // Check for dirty terminals that need rendering.
+        // Use has_pending_bytes() — does NOT call vt_write/process_pending_bytes.
+        // Bytes are processed in bulk right before render_frame to avoid
+        // calling the expensive ANSI parser more often than we render.
         let has_dirty_content = {
             match tab_bar_gui.try_lock() {
                 Ok(gui) => {
                     let terminals = gui.get_active_tab_terminals();
                     let dirty = terminals.iter().any(|term| {
                         if let Ok(t) = term.try_lock() {
-                            if let Ok(mut gb) = t.ghostty_buffer.try_lock() {
-                                gb.is_dirty()
+                            if let Ok(gb) = t.ghostty_buffer.try_lock() {
+                                gb.has_pending_bytes()
                             } else {
-                                true // Assume dirty if can't check
+                                false // Lock busy: PTY thread is processing, we'll catch it next tick
                             }
                         } else {
-                            true // Assume dirty if can't check
+                            false // Lock busy: we'll catch it next tick
                         }
                     });
 
                     dirty
                 }
                 Err(_) => {
-                    true // Assume dirty if can't acquire lock
+                    false // Lock busy: skip this tick, check next time
                 }
             }
         };
@@ -296,20 +312,21 @@ fn main() -> Result<(), String> {
             last_cpu_update = Instant::now();
         }
 
-        // Calculate adaptive timeout based on cursor blink and dirty state
-        let timeout_ms = if needs_render || has_dirty_content {
-            // If we need to render or have dirty content, wake up soon for responsive updates
-            16 // ~60 FPS for active rendering
-        } else {
-            // Calculate time until next cursor blink
+        // Calculate adaptive timeout: sleep until the soonest of (next render due, cursor blink).
+        // When work is pending but rendering is rate-limited we sleep until the render window
+        // opens rather than spinning at 60 Hz doing nothing.
+        let timeout_ms = {
             let time_until_blink = cursor_blink_interval.saturating_sub(last_cursor_blink.elapsed());
             let in_debounce_period = last_keyboard_input.elapsed() < cursor_debounce_duration;
 
             if in_debounce_period {
-                // During debounce, check more frequently to reset blink
                 100
+            } else if needs_render || has_dirty_content {
+                // Sleep until next render is due (not longer than cursor blink deadline).
+                let time_until_render = pty_render_interval.saturating_sub(last_render.elapsed());
+                time_until_render.min(time_until_blink).as_millis().min(50) as u32
             } else {
-                // Use time until blink, capped at 500ms for general responsiveness
+                // Nothing pending: sleep until cursor blink, capped at 500ms.
                 time_until_blink.as_millis().min(500) as u32
             }
         };
@@ -324,6 +341,9 @@ fn main() -> Result<(), String> {
         for event in event_pump.poll_iter() {
             events.push(event);
         }
+
+        // Allow next PTY write to push another wake event.
+        crate::pty_waker::acknowledge();
 
         // Update cursor blink state
         // If we're within the debounce period after keyboard input, keep cursor visible
@@ -343,8 +363,8 @@ fn main() -> Result<(), String> {
             }
         }
 
-        // Late dirty check: PTY data may have arrived during event wait
-        // This catches screen updates that happened after the initial dirty check
+        // Late dirty check: PTY data may have arrived during event wait.
+        // Cheap check only — no byte processing.
         if !needs_render {
             let late_dirty_content = {
                 match tab_bar_gui.try_lock() {
@@ -352,17 +372,17 @@ fn main() -> Result<(), String> {
                         let terminals = gui.get_active_tab_terminals();
                         terminals.iter().any(|term| {
                             if let Ok(t) = term.try_lock() {
-                                if let Ok(mut gb) = t.ghostty_buffer.try_lock() {
-                                    gb.is_dirty()
+                                if let Ok(gb) = t.ghostty_buffer.try_lock() {
+                                    gb.has_pending_bytes()
                                 } else {
-                                    true // Assume dirty if mutex is locked (PTY thread likely processing)
+                                    false // Lock busy: we'll catch it next tick
                                 }
                             } else {
-                                true // Assume dirty if terminal is locked
+                                false // Lock busy: we'll catch it next tick
                             }
                         })
                     }
-                    Err(_) => true, // Assume dirty if GUI is locked
+                    Err(_) => false, // Lock busy: skip, check next tick
                 }
             };
 
@@ -899,7 +919,7 @@ fn main() -> Result<(), String> {
                             term_width,
                             term_height,
                             shell_config.clone(),
-                            DEFAULT_SCROLLBACK_LINES,
+                            scrollback_lines,
                             std::env::current_dir().ok(),
                             default_cursor,
                         )));
@@ -1004,7 +1024,7 @@ fn main() -> Result<(), String> {
                     term_width,
                     term_height,
                     shell_config.clone(),
-                    DEFAULT_SCROLLBACK_LINES,
+                    scrollback_lines,
                     start_dir,
                     default_cursor,
                 )));
@@ -1088,7 +1108,7 @@ fn main() -> Result<(), String> {
                         term_width,
                         term_height,
                         shell_config.clone(),
-                        DEFAULT_SCROLLBACK_LINES,
+                        scrollback_lines,
                         start_dir,
                         default_cursor,
                     )));
@@ -1144,41 +1164,86 @@ fn main() -> Result<(), String> {
                 }
             }
 
-            // Render everything using optimized render module
-            // This only renders the active tab and visible content
-            let any_dirty = render::render_frame(
-                &mut canvas,
-                &texture_creator,
-                &mut tab_bar,
-                &tab_bar_gui,
-                &tab_font,
-                &cpu_font,
-                &font,
-                &emoji_font,
-                &unicode_fallback_font,
-                &cjk_font,
-                &context_menu_font,
-                cpu_usage,
-                tab_bar_height,
-                char_width,
-                char_height,
-                cursor_visible,
-                &mut glyph_cache,
-                &mut pane_cache,
-                &mouse_state,
-                voice_manager.is_recording(),
-                voice_manager.is_transcribing(),
-                app_start.elapsed().as_secs_f32(),
-            )?;
+            // Rate-limit rendering to ~30 fps to avoid burning CPU on heavy PTY output.
+            // Input events are already processed above; this only throttles the visual redraw.
+            let has_user_event = events.iter().any(|e| matches!(e,
+                Event::KeyDown { .. } | Event::TextInput { .. } |
+                Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
+            ));
+            // Interactive events (mouse motion, keyboard, clicks) require the active pane
+            // to be fully re-rendered so URL highlights and selection visuals stay correct.
+            let force_active_redraw = events.iter().any(|e| matches!(e,
+                Event::KeyDown { .. } | Event::TextInput { .. } |
+                Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. } |
+                Event::MouseMotion { .. }
+            ));
+            let effective_interval = if has_user_event { input_render_interval } else { pty_render_interval };
+            if last_render.elapsed() >= effective_interval {
+                // Process pending bytes for all active terminals right before rendering.
+                // Drain all pending bytes for every active terminal before rendering.
+                // This is the ONLY place we call vt_write() (via process_pending_bytes),
+                // so the ANSI parser runs at render rate (~15-30 fps) rather than at
+                // PTY read rate (potentially 100+ calls/sec), which was the main CPU hotspot.
+                // We loop per-terminal until its buffer is empty so that fast producers
+                // (bundlers, claude-code) don't accumulate a growing lag debt.
+                if let Ok(gui) = tab_bar_gui.try_lock() {
+                    for term in gui.get_active_tab_terminals() {
+                        if let Ok(t) = term.try_lock() {
+                            if let Ok(mut gb) = t.ghostty_buffer.try_lock() {
+                                // Drain fully but bail after 20ms to avoid blocking the render thread.
+                                let deadline = std::time::Instant::now()
+                                    + std::time::Duration::from_millis(20);
+                                loop {
+                                    gb.process_pending_bytes();
+                                    let has_more = gb.incoming_bytes
+                                        .try_lock()
+                                        .map_or(false, |b| !b.is_empty());
+                                    if !has_more || std::time::Instant::now() >= deadline {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
-            if any_dirty {
-                needs_render = true;
-            }
+                last_render = Instant::now();
+                let any_dirty = render::render_frame(
+                    &mut canvas,
+                    &texture_creator,
+                    &mut tab_bar,
+                    &tab_bar_gui,
+                    &tab_font,
+                    &cpu_font,
+                    &font,
+                    &emoji_font,
+                    &unicode_fallback_font,
+                    &cjk_font,
+                    &context_menu_font,
+                    cpu_usage,
+                    tab_bar_height,
+                    char_width,
+                    char_height,
+                    cursor_visible,
+                    &mut glyph_cache,
+                    &mut pane_cache,
+                    &mouse_state,
+                    voice_manager.is_recording(),
+                    voice_manager.is_transcribing(),
+                    app_start.elapsed().as_secs_f32(),
+                    force_active_redraw,
+                    is_window_maximized.load(std::sync::atomic::Ordering::Relaxed),
+                )?;
 
-            // Periodically clear glyph cache to prevent unlimited memory growth
-            if last_cache_clear.elapsed().as_secs() > 60 {
-                glyph_cache.clear();
-                last_cache_clear = Instant::now();
+                if any_dirty {
+                    needs_render = true;
+                }
+
+                // Glyph cache size is bounded inside render_glyph (MAX_GLYPH_CACHE entries).
+                // No periodic full clear needed — that caused multi-hundred ms freezes
+                // when all glyphs had to be re-rendered at once.
+            } else {
+                needs_render = true; // too soon — stay dirty, render next iteration
             }
         } else {
             skip_render_count += 1;

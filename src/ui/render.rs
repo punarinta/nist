@@ -23,12 +23,37 @@ use crate::ui::context_menu::ContextMenu;
 
 /// Cached per-pane render texture.
 /// Inactive panes are only re-rendered when `gb.dirty` is set.
+/// The texture is cursor-free; the cursor is drawn as a canvas overlay after blitting.
 pub struct PaneCacheEntry {
     pub texture: sdl3::render::Texture,
     pub width: u32,
     pub height: u32,
     pub last_is_selected: bool,
     pub last_is_active: bool,
+    /// Cursor style from the last render, used for non-redrawn blink frames.
+    pub last_cursor_style: CursorStyle,
+}
+
+/// Character data saved from the cell under the cursor (used for block cursor overlay).
+pub struct CursorCellChar {
+    pub text: String,
+    pub fg: Color,
+    pub bg: Color,
+    pub underline: bool,
+    pub strikethrough: bool,
+}
+
+/// Cursor rendering data returned by `render_pane` for the caller to draw as a
+/// lightweight canvas overlay — completely separate from the pane texture so that
+/// cursor blinks do NOT invalidate and re-render the full pane.
+pub struct CursorOverlay {
+    /// Cursor column in terminal cell coordinates.
+    pub col: usize,
+    /// Cursor row in terminal cell coordinates.
+    pub row: usize,
+    pub style: CursorStyle,
+    /// Cell data for block cursors (None for bar/underline).
+    pub cell: Option<CursorCellChar>,
 }
 
 /// Get the platform-specific pane padding in pixels
@@ -72,6 +97,10 @@ pub fn adjust_mouse_coords_for_padding(mouse_x: i32, mouse_y: i32, rect_x: i32, 
 
 /// Render the entire frame including tab bar and active tab's panes
 /// Returns true if any terminal content was dirty and needed re-rendering
+///
+/// `force_active_redraw`: set when interactive events (mouse, keyboard) occurred
+/// this frame — forces the active pane to re-render even if content hasn't changed,
+/// so URL highlights and other pointer-driven visuals stay correct.
 pub fn render_frame<T>(
     canvas: &mut Canvas<Window>,
     texture_creator: &TextureCreator<T>,
@@ -95,6 +124,8 @@ pub fn render_frame<T>(
     voice_recording: bool,
     voice_transcribing: bool,
     voice_anim_t: f32,
+    force_active_redraw: bool,
+    is_maximized: bool,
 ) -> Result<bool, String> {
     // Clear screen with terminal background color
     canvas.set_draw_color(DEFAULT_BG_COLOR);
@@ -116,7 +147,6 @@ pub fn render_frame<T>(
         tab_bar.edit_text = edit_text;
         tab_bar.edit_cursor_pos = cursor_pos;
     }
-    let is_maximized = canvas.window().is_maximized();
     tab_bar.render(canvas, tab_font, cpu_font, texture_creator, window_w, cpu_usage, is_maximized)?;
 
     // Calculate pane area (tab_bar_height is already in physical pixels)
@@ -147,7 +177,7 @@ pub fn render_frame<T>(
     };
 
     // Render each pane using per-pane texture cache.
-    // Active pane: always re-render (cursor blink, selection, URL hover).
+    // Active pane: re-render when dirty, cursor blink changes, or interactive events occurred.
     // Inactive pane: only re-render when gb.dirty (new bytes or scroll).
     let mut any_dirty = false;
     let mut active_pane_rect: Option<Rect> = None;
@@ -159,7 +189,9 @@ pub fn render_frame<T>(
         let pane_w = rect.width();
         let pane_h = rect.height();
 
-        // Peek at dirty + selection state before rendering (without clearing dirty yet)
+        // Peek at dirty + selection state before rendering (without clearing dirty yet).
+        // cursor_visible is NOT checked here — the cursor is drawn as a canvas overlay
+        // after blitting, so cursor blinks never invalidate the pane texture.
         let (gb_dirty, size_changed, selection_changed, active_changed) = {
             let t = terminal.lock().unwrap();
             let gb = t.ghostty_buffer.lock().unwrap();
@@ -173,8 +205,13 @@ pub fn render_frame<T>(
             (dirty, size_chg, sel_chg, act_chg)
         };
 
-        let needs_redraw = is_active || gb_dirty || size_changed || selection_changed || active_changed
-            || !pane_cache.contains_key(&pane_id);
+        // Active pane: only re-render when something actually changed.
+        // force_active_redraw covers interactive events (mouse/keyboard) that affect
+        // URL highlights or selection visuals without setting gb.dirty.
+        // Cursor blink is intentionally excluded — it is drawn as an overlay.
+        let needs_redraw = gb_dirty || size_changed || selection_changed || active_changed
+            || !pane_cache.contains_key(&pane_id)
+            || (is_active && force_active_redraw);
 
         // Create or recreate target texture when size changes or first use
         if size_changed || !pane_cache.contains_key(&pane_id) {
@@ -186,26 +223,35 @@ pub fn render_frame<T>(
                         height: pane_h,
                         last_is_selected: is_selected,
                         last_is_active: is_active,
+                        last_cursor_style: CursorStyle::default(),
                     });
                 }
                 Err(e) => {
                     // No cache available — fall back to direct rendering
                     eprintln!("[RENDER] Failed to create pane texture: {e}");
-                    let was_dirty = render_pane(
+                    let (was_dirty, cursor_overlay) = render_pane(
                         canvas, texture_creator, terminal_font, emoji_font,
                         unicode_fallback_font, cjk_font, rect, terminal.clone(),
                         is_active, is_selected, pane_count, char_width, char_height,
-                        cursor_visible, glyph_cache, mouse_state, pane_id,
+                        glyph_cache, mouse_state, pane_id,
                     )?;
                     any_dirty = any_dirty || was_dirty;
+                    if is_active && cursor_visible {
+                        if let Some(ref ov) = cursor_overlay {
+                            draw_cursor_overlay(canvas, texture_creator, terminal_font,
+                                emoji_font, unicode_fallback_font, cjk_font, glyph_cache,
+                                rect, char_width, char_height, ov)?;
+                        }
+                    }
                     continue;
                 }
             }
         }
 
-        // Re-render into the cached texture when needed
+        // Re-render into the cursor-free cached texture when content changed.
+        let mut cursor_overlay: Option<CursorOverlay> = None;
         if needs_redraw {
-            let mut render_result: Result<bool, String> = Ok(false);
+            let mut render_result: Result<(bool, Option<CursorOverlay>), String> = Ok((false, None));
             {
                 let entry = pane_cache.get_mut(&pane_id).unwrap();
                 entry.last_is_selected = is_selected;
@@ -218,16 +264,54 @@ pub fn render_frame<T>(
                         tc, texture_creator, terminal_font, emoji_font,
                         unicode_fallback_font, cjk_font, texture_rect, terminal.clone(),
                         is_active, is_selected, pane_count, char_width, char_height,
-                        cursor_visible, glyph_cache, mouse_state, pane_id,
+                        glyph_cache, mouse_state, pane_id,
                     );
                 }).map_err(|e| e.to_string())?;
             }
-            any_dirty = any_dirty || render_result?;
+            let (was_dirty, ov) = render_result?;
+            any_dirty = any_dirty || was_dirty;
+            // Cache the cursor style so non-redrawn blink frames use the correct shape.
+            if let Some(ref o) = ov {
+                if let Some(entry) = pane_cache.get_mut(&pane_id) {
+                    entry.last_cursor_style = o.style;
+                }
+            }
+            cursor_overlay = ov;
+        } else if is_active {
+            // Content unchanged but we still need cursor overlay data for the blit below.
+            // Read position cheaply; style comes from the last render (cached in PaneCacheEntry).
+            if let Ok(t) = terminal.try_lock() {
+                if let Ok(gb) = t.ghostty_buffer.try_lock() {
+                    if gb.cursor_visible() && gb.is_at_bottom() {
+                        let style = pane_cache.get(&pane_id)
+                            .map(|e| e.last_cursor_style)
+                            .unwrap_or_default();
+                        cursor_overlay = Some(CursorOverlay {
+                            col: gb.cursor_x(),
+                            row: gb.cursor_y(),
+                            style,
+                            // No cell data without re-rendering: block cursor draws a plain block.
+                            // Character rendering is refreshed whenever content changes (gb_dirty).
+                            cell: None,
+                        });
+                    }
+                }
+            }
         }
 
-        // Blit cached texture to the window at the pane's screen position
+        // Blit cursor-free cached texture to the window.
         let entry = pane_cache.get(&pane_id).unwrap();
         canvas.copy(&entry.texture, None, rect).map_err(|e| e.to_string())?;
+
+        // Draw cursor as a lightweight canvas overlay — never touches the pane texture.
+        // This is the key fix: cursor blinks cost ~3 SDL calls instead of 10,000+.
+        if is_active && cursor_visible {
+            if let Some(ref ov) = cursor_overlay {
+                draw_cursor_overlay(canvas, texture_creator, terminal_font,
+                    emoji_font, unicode_fallback_font, cjk_font, glyph_cache,
+                    rect, char_width, char_height, ov)?;
+            }
+        }
     }
 
     // Render voice input indicator on top of the active pane
@@ -256,13 +340,13 @@ pub fn render_frame<T>(
     Ok(any_dirty)
 }
 
-/// Render a single pane's terminal content
-/// Optimizations:
-/// - Only renders visible rows (no off-screen content)
-/// - Uses glyph caching
-/// - Skips rendering of spaces with default background
+/// Render a single pane's terminal content into a cursor-free texture.
+/// The cursor is NOT drawn here; the caller draws it as a canvas overlay after blitting.
+/// This means cursor blinks never trigger a full pane re-render.
 ///
-/// Returns true if the terminal content was dirty
+/// Returns `(was_dirty, cursor_overlay)`.  `cursor_overlay` is `Some` only for the
+/// active pane at the live bottom; the caller decides whether to actually draw it
+/// based on the current `cursor_visible` blink state.
 fn render_pane<T>(
     canvas: &mut Canvas<Window>,
     texture_creator: &TextureCreator<T>,
@@ -277,11 +361,10 @@ fn render_pane<T>(
     pane_count: usize,
     char_width: f32,
     char_height: f32,
-    cursor_visible: bool,
     glyph_cache: &mut HashMap<String, sdl3::render::Texture>,
     mouse_state: &crate::input::mouse::MouseState,
     pane_id: crate::pane_layout::PaneId,
-) -> Result<bool, String> {
+) -> Result<(bool, Option<CursorOverlay>), String> {
     let t = terminal.lock().unwrap();
     let mut gb = t.ghostty_buffer.lock().unwrap();
 
@@ -305,17 +388,11 @@ fn render_pane<T>(
     let reverse_video = gb.reverse_video_mode();
     let scroll_offset = gb.scroll_offset();
     let scrollback_len = gb.scrollback_len();
-    let should_show_cursor = gb_cursor_vis && cursor_visible && is_active && is_at_bottom;
+    // Whether to collect cursor overlay data (position + cell char under cursor).
+    // cursor_visible is NOT checked here — the caller controls blink visibility.
+    let collect_cursor = gb_cursor_vis && is_active && is_at_bottom;
 
-    struct CursorCellData {
-        text: String,
-        fg: Color,
-        bg: Color,
-        underline: bool,
-        strikethrough: bool,
-    }
-
-    let (cursor_cell, cursor_style) = gb.render_with(|ctx| -> Result<(Option<CursorCellData>, CursorStyle), String> {
+    let (cursor_overlay_data, cursor_style) = gb.render_with(|ctx| -> Result<(Option<CursorCellChar>, CursorStyle), String> {
         use libghostty_vt::screen::CellWide;
         use libghostty_vt::style::Underline;
         use libghostty_vt::render::CursorVisualStyle as CVS;
@@ -336,7 +413,7 @@ fn render_pane<T>(
         };
         let is_bar_cursor = matches!(cursor_style, CursorStyle::BlinkingBar | CursorStyle::SteadyBar);
 
-        let mut saved_cursor: Option<CursorCellData> = None;
+        let mut saved_cursor: Option<CursorCellChar> = None;
 
         let mut row_iteration = row_iter.update(snapshot).map_err(|e| format!("{e:?}"))?;
         let mut row_idx = 0usize;
@@ -387,22 +464,22 @@ fn render_pane<T>(
                 };
                 let actual_bg = if style.inverse { cell_fg } else { cell_bg };
 
-                // Block cursor: skip cell, save data for cursor rendering
-                if should_show_cursor && !is_bar_cursor && col_idx == cursor_x && row_idx == cursor_y {
+                // Collect cursor cell data for the overlay (block cursors only).
+                // The cell is still rendered normally — the overlay will draw on top.
+                if collect_cursor && !is_bar_cursor && col_idx == cursor_x && row_idx == cursor_y {
                     let text: String = if graphemes.is_empty() {
                         " ".to_string()
                     } else {
                         graphemes.iter().collect()
                     };
-                    saved_cursor = Some(CursorCellData {
+                    saved_cursor = Some(CursorCellChar {
                         text,
                         fg: cell_fg,
                         bg: cell_bg,
                         underline: style.underline != Underline::None,
                         strikethrough: style.strikethrough,
                     });
-                    col_idx += 1;
-                    continue;
+                    // No `continue` — render the cell normally; the cursor overlay covers it.
                 }
 
                 let x = rect.x() + pane_padding as i32 + (col_idx as f32 * char_width) as i32;
@@ -484,76 +561,6 @@ fn render_pane<T>(
         Ok((saved_cursor, cursor_style))
     })?;
 
-    // Render cursor
-    if should_show_cursor {
-        let cx = rect.x() + pane_padding as i32 + (cursor_x as f32 * char_width) as i32;
-        let cy = rect.y() + pane_padding as i32 + (cursor_y as f32 * char_height) as i32;
-
-        match cursor_style {
-            CursorStyle::BlinkingBar | CursorStyle::SteadyBar => {
-                canvas.set_draw_color(Color::RGB(200, 200, 200));
-                canvas
-                    .fill_rect(Rect::new(cx, cy, 2, char_height as u32))
-                    .map_err(|e| e.to_string())?;
-            }
-            CursorStyle::BlinkingUnderline | CursorStyle::SteadyUnderline => {
-                canvas.set_draw_color(Color::RGB(200, 200, 200));
-                let underline_height = (char_height * 0.15).max(2.0) as u32;
-                canvas
-                    .fill_rect(Rect::new(
-                        cx,
-                        cy + char_height as i32 - underline_height as i32,
-                        char_width as u32,
-                        underline_height,
-                    ))
-                    .map_err(|e| e.to_string())?;
-            }
-            CursorStyle::BlinkingBlock | CursorStyle::SteadyBlock => {
-                if let Some(cd) = cursor_cell {
-                    let cursor_bg = if cd.fg.r == 255 && cd.fg.g == 255 && cd.fg.b == 255 {
-                        Color::RGB(255, 255, 255)
-                    } else {
-                        cd.fg
-                    };
-                    canvas.set_draw_color(cursor_bg);
-                    canvas
-                        .fill_rect(Rect::new(cx, cy, char_width as u32, char_height as u32))
-                        .map_err(|e| e.to_string())?;
-
-                    let text_color = if cd.bg.r == 0 && cd.bg.g == 0 && cd.bg.b == 0 {
-                        Color::RGB(50, 50, 50)
-                    } else {
-                        cd.bg
-                    };
-                    render_glyph(
-                        canvas,
-                        texture_creator,
-                        font,
-                        emoji_font,
-                        unicode_fallback_font,
-                        cjk_font,
-                        glyph_cache,
-                        &cd.text,
-                        cx,
-                        cy,
-                        text_color.r,
-                        text_color.g,
-                        text_color.b,
-                        char_width as u32,
-                        char_height as u32,
-                        cd.underline,
-                        cd.strikethrough,
-                    )?;
-                } else {
-                    canvas.set_draw_color(Color::RGB(200, 200, 200));
-                    canvas
-                        .fill_rect(Rect::new(cx, cy, char_width as u32, char_height as u32))
-                        .map_err(|e| e.to_string())?;
-                }
-            }
-        }
-    }
-
     // Show scroll position indicator when viewing scrollback
     if !gb.is_at_bottom() {
         render_scrollback_indicator(canvas, texture_creator, font, rect, gb.scroll_offset(), pane_padding)?;
@@ -576,9 +583,20 @@ fn render_pane<T>(
 
     let was_dirty = gb.dirty;
     gb.clear_dirty();
-    // Check if more bytes arrived during this frame without processing them
-    // (avoids an extra process_pending_bytes() call; they'll be picked up next frame).
+    // Check if more bytes arrived during this frame without processing them.
     let still_dirty = gb.incoming_bytes.try_lock().map_or(false, |b| !b.is_empty());
+
+    // Build cursor overlay data for the caller (drawn on canvas, not in texture).
+    let cursor_overlay = if collect_cursor {
+        Some(CursorOverlay {
+            col: cursor_x,
+            row: cursor_y,
+            style: cursor_style,
+            cell: cursor_overlay_data,
+        })
+    } else {
+        None
+    };
 
     drop(gb);
     drop(t);
@@ -620,7 +638,77 @@ fn render_pane<T>(
         canvas.draw_rect(rect).map_err(|e| e.to_string())?;
     }
 
-    Ok(was_dirty || still_dirty)
+    Ok((was_dirty || still_dirty, cursor_overlay))
+}
+
+/// Draw the cursor as a lightweight canvas overlay after the pane texture has been blitted.
+/// This runs instead of re-rendering the full pane on every cursor blink tick.
+fn draw_cursor_overlay<T>(
+    canvas: &mut Canvas<Window>,
+    texture_creator: &TextureCreator<T>,
+    font: &Font,
+    emoji_font: &Font,
+    unicode_fallback_font: &Font,
+    cjk_font: &Font,
+    glyph_cache: &mut HashMap<String, sdl3::render::Texture>,
+    pane_rect: Rect,
+    char_width: f32,
+    char_height: f32,
+    overlay: &CursorOverlay,
+) -> Result<(), String> {
+    let padding = get_pane_padding() as i32;
+    let cx = pane_rect.x() + padding + (overlay.col as f32 * char_width) as i32;
+    let cy = pane_rect.y() + padding + (overlay.row as f32 * char_height) as i32;
+
+    match overlay.style {
+        CursorStyle::BlinkingBar | CursorStyle::SteadyBar => {
+            canvas.set_draw_color(Color::RGB(200, 200, 200));
+            canvas.fill_rect(Rect::new(cx, cy, 2, char_height as u32))
+                .map_err(|e| e.to_string())?;
+        }
+        CursorStyle::BlinkingUnderline | CursorStyle::SteadyUnderline => {
+            canvas.set_draw_color(Color::RGB(200, 200, 200));
+            let underline_height = (char_height * 0.15).max(2.0) as u32;
+            canvas.fill_rect(Rect::new(
+                cx,
+                cy + char_height as i32 - underline_height as i32,
+                char_width as u32,
+                underline_height,
+            )).map_err(|e| e.to_string())?;
+        }
+        CursorStyle::BlinkingBlock | CursorStyle::SteadyBlock => {
+            if let Some(ref cd) = overlay.cell {
+                let cursor_bg = if cd.fg.r == 255 && cd.fg.g == 255 && cd.fg.b == 255 {
+                    Color::RGB(255, 255, 255)
+                } else {
+                    cd.fg
+                };
+                canvas.set_draw_color(cursor_bg);
+                canvas.fill_rect(Rect::new(cx, cy, char_width as u32, char_height as u32))
+                    .map_err(|e| e.to_string())?;
+
+                let text_color = if cd.bg.r == 0 && cd.bg.g == 0 && cd.bg.b == 0 {
+                    Color::RGB(50, 50, 50)
+                } else {
+                    cd.bg
+                };
+                render_glyph(
+                    canvas, texture_creator, font, emoji_font,
+                    unicode_fallback_font, cjk_font, glyph_cache,
+                    &cd.text, cx, cy,
+                    text_color.r, text_color.g, text_color.b,
+                    char_width as u32, char_height as u32,
+                    cd.underline, cd.strikethrough,
+                )?;
+            } else {
+                // No cell data available (non-redrawn frame) — draw a plain block
+                canvas.set_draw_color(Color::RGB(200, 200, 200));
+                canvas.fill_rect(Rect::new(cx, cy, char_width as u32, char_height as u32))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Render Kitty Graphics Protocol image placements for a pane.
@@ -711,6 +799,11 @@ fn render_glyph<T>(
     underline: bool,
     strikethrough: bool,
 ) -> Result<(), String> {
+    // Cap the glyph cache to avoid unbounded growth without ever nuking it all at once.
+    // Entries beyond this limit are rendered on demand but not stored.
+    const MAX_GLYPH_CACHE: usize = 2000;
+    let can_cache = glyph_cache.len() < MAX_GLYPH_CACHE;
+
     let cache_key = text.to_string();
     let is_likely_emoji = is_emoji_grapheme(text);
 
@@ -763,7 +856,7 @@ fn render_glyph<T>(
                         let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
                         let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
                         canvas.copy(&texture, None, Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
-                        glyph_cache.insert(cache_key, texture);
+                        if can_cache { glyph_cache.insert(cache_key, texture); }
                         return Ok(());
                     }
                 }
@@ -778,7 +871,7 @@ fn render_glyph<T>(
             if surface.width() > 0 && surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
                     canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
-                    glyph_cache.insert(cache_key, texture);
+                    if can_cache { glyph_cache.insert(cache_key, texture); }
                     return Ok(());
                 }
             }
@@ -799,7 +892,7 @@ fn render_glyph<T>(
             if surface.width() > 0 && surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
                     canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
-                    glyph_cache.insert(cache_key, texture);
+                    if can_cache { glyph_cache.insert(cache_key, texture); }
                     draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, underline, strikethrough)?;
                     return Ok(());
                 }
@@ -817,7 +910,7 @@ fn render_glyph<T>(
                 if surface.width() > 0 && surface.height() > 0 {
                     if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
                         canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
-                        glyph_cache.insert(cache_key, texture);
+                        if can_cache { glyph_cache.insert(cache_key, texture); }
                         return Ok(());
                     }
                 }
@@ -834,7 +927,7 @@ fn render_glyph<T>(
             if surface.width() > 0 && surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
                     canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
-                    glyph_cache.insert(cache_key, texture);
+                    if can_cache { glyph_cache.insert(cache_key, texture); }
                     return Ok(());
                 }
             }
@@ -852,7 +945,7 @@ fn render_glyph<T>(
                     let scaled_width = (surface.width() as f32 * scale) as u32;
                     let scaled_height = (surface.height() as f32 * scale) as u32;
                     canvas.copy(&texture, None, Rect::new(x, y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
-                    glyph_cache.insert(cache_key, texture);
+                    if can_cache { glyph_cache.insert(cache_key, texture); }
                     return Ok(());
                 }
             }

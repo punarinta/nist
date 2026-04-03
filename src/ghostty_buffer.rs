@@ -3,8 +3,7 @@ use libghostty_vt::style::RgbColor;
 use libghostty_vt::terminal::{Mode, PointCoordinate, ScrollViewport};
 use libghostty_vt::{RenderState, Terminal, TerminalOptions};
 use sdl3::pixels::Color;
-use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 
 use crate::kitty_graphics::KittyGraphicsState;
 
@@ -93,8 +92,9 @@ pub struct GhosttyBuffer {
     /// Shared size state read by the XTWINOPS size callback.
     /// Tuple: (rows, cols, cell_width_px, cell_height_px).
     size_state: Arc<Mutex<(u16, u16, u32, u32)>>,
-    /// PTY writer for sending Kitty protocol responses.
-    pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Non-blocking channel for sending responses back to the PTY.
+    /// The dedicated writer thread drains this and does the actual write_all.
+    pty_write_tx: mpsc::SyncSender<Vec<u8>>,
     /// Kitty Graphics Protocol state.
     pub kitty_graphics: KittyGraphicsState,
 }
@@ -109,7 +109,7 @@ impl GhosttyBuffer {
         initial_cols: u16,
         initial_rows: u16,
         max_scrollback: usize,
-        writer: Arc<Mutex<Box<dyn Write + Send>>>,
+        pty_write_tx: mpsc::SyncSender<Vec<u8>>,
         default_cursor: CursorStyle,
     ) -> (Self, Arc<Mutex<Vec<u8>>>) {
         let mut terminal = Box::new(
@@ -125,13 +125,13 @@ impl GhosttyBuffer {
         // IMPORTANT: terminal must be heap-allocated (Box) before registering
         // callbacks: on_pty_write stores &self.vtable as a raw C pointer, so the
         // Terminal must not be moved after registration or the pointer dangles.
-        let writer_clone = Arc::clone(&writer);
+        //
+        // Use try_send (non-blocking) so vt_write() can never stall the main thread
+        // even if the slave process is not reading its stdin right now.
+        let tx_clone = pty_write_tx.clone();
         terminal
             .on_pty_write(move |data| {
-                if let Ok(mut w) = writer_clone.lock() {
-                    let _ = w.write_all(data);
-                    let _ = w.flush();
-                }
+                let _ = tx_clone.try_send(data.to_vec());
             })
             .expect("GhosttyBuffer: on_pty_write failed");
 
@@ -185,7 +185,7 @@ impl GhosttyBuffer {
             cell_width_px: 0,
             cell_height_px: 0,
             size_state,
-            pty_writer: writer,
+            pty_write_tx,
             kitty_graphics: KittyGraphicsState::new(),
         };
 
@@ -236,10 +236,8 @@ impl GhosttyBuffer {
                 if let Some(response) = self.kitty_graphics.process_raw_sequence(
                     &bytes[seq_start..seq_end], cx, cy, scrollback_len,
                 ) {
-                    if let Ok(mut w) = self.pty_writer.lock() {
-                        let _ = w.write_all(&response);
-                        let _ = w.flush();
-                    }
+                    // Non-blocking send — never stalls the main thread.
+                    let _ = self.pty_write_tx.try_send(response);
                 }
                 // Also pass to libghostty so it can manage virtual placeholder
                 // cells, cursor advancement, and scrollback.
@@ -407,6 +405,18 @@ impl GhosttyBuffer {
     pub fn is_dirty(&mut self) -> bool {
         self.process_pending_bytes();
         self.dirty
+    }
+
+    /// Returns `true` if there is unprocessed work (either unprocessed bytes or
+    /// the dirty flag is set) WITHOUT consuming any bytes.  This is cheap to call
+    /// on every event-loop iteration; use `is_dirty()` / `process_pending_bytes()`
+    /// only when you are actually going to render.
+    pub fn has_pending_bytes(&self) -> bool {
+        self.dirty
+            || self
+                .incoming_bytes
+                .try_lock()
+                .map_or(true, |b| !b.is_empty())
     }
 
     pub fn clear_dirty(&mut self) {

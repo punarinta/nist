@@ -172,11 +172,25 @@ impl Terminal {
             .expect("Failed to get PTY writer");
         let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(writer));
 
+        // Bounded channel for PTY response writes (terminal query replies, kitty acks, etc.).
+        // The on_pty_write callback uses try_send (non-blocking) so vt_write() can never
+        // stall the main thread.  This dedicated thread does the actual write_all/flush.
+        let (pty_write_tx, pty_write_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
+        let writer_for_pty_thread = Arc::clone(&writer);
+        thread::spawn(move || {
+            while let Ok(data) = pty_write_rx.recv() {
+                if let Ok(mut w) = writer_for_pty_thread.lock() {
+                    let _ = w.write_all(&data);
+                    let _ = w.flush();
+                }
+            }
+        });
+
         let (ghostty_buf, incoming_bytes_clone) = GhosttyBuffer::new(
             initial_width as u16,
             initial_height as u16,
             scrollback_limit,
-            Arc::clone(&writer),
+            pty_write_tx,
             default_cursor,
         );
 
@@ -201,6 +215,7 @@ impl Terminal {
                         if let Ok(mut incoming) = incoming_bytes_clone.lock() {
                             incoming.extend_from_slice(&buffer[..n]);
                         }
+                        crate::pty_waker::wake();
                     }
                     Err(err) => {
                         eprintln!("[TERMINAL] Error reading from PTY: {}", err);
