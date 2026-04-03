@@ -98,6 +98,14 @@ pub enum TestCommand {
     /// "ResizeRight", "ResizeTopLeft", "ResizeTopRight", "ResizeBottomLeft", "ResizeBottomRight".
     #[serde(rename = "check_hit_test")]
     CheckHitTest { x: i32, y: i32 },
+    /// Inject raw bytes directly into the active terminal's incoming buffer,
+    /// as if they arrived from the PTY (i.e. terminal output, not keyboard input).
+    /// Useful for testing escape-sequence parsing without needing a real PTY echo.
+    #[serde(rename = "inject_bytes")]
+    InjectBytes { bytes: Vec<u8> },
+    /// Return the number of decoded Kitty Graphics placements held by the active terminal.
+    #[serde(rename = "get_kitty_placements_count")]
+    GetKittyPlacementsCount,
 }
 
 #[derive(Serialize, Debug)]
@@ -172,6 +180,8 @@ pub enum TestResponse {
     Selection { text: Option<String> },
     #[serde(rename = "hit_test")]
     HitTest { result: String },
+    #[serde(rename = "kitty_placements_count")]
+    KittyPlacementsCount { count: usize },
 }
 
 impl ScreenBufferSnapshot {
@@ -1277,6 +1287,38 @@ impl TestServer {
                 };
                 eprintln!("[TEST_SERVER] check_hit_test ({},{}) w={} -> {}", x, y, w, result);
                 TestResponse::HitTest { result: result.to_string() }
+            }
+            TestCommand::InjectBytes { bytes } => {
+                if let Ok(gui) = self.tab_bar_gui.lock() {
+                    if let Some(terminal) = gui.get_active_terminal() {
+                        if let Ok(t) = terminal.lock() {
+                            if let Ok(mut incoming) = t.ghostty_buffer.lock().unwrap().incoming_bytes.lock() {
+                                incoming.extend_from_slice(&bytes);
+                                return TestResponse::Ok;
+                            }
+                        }
+                    }
+                }
+                TestResponse::Error {
+                    message: "Failed to inject bytes".to_string(),
+                }
+            }
+            TestCommand::GetKittyPlacementsCount => {
+                if let Ok(gui) = self.tab_bar_gui.lock() {
+                    if let Some(terminal) = gui.get_active_terminal() {
+                        if let Ok(t) = terminal.lock() {
+                            if let Ok(mut gb) = t.ghostty_buffer.lock() {
+                                // Process any pending bytes first so the count is current.
+                                gb.process_pending_bytes();
+                                let count = gb.kitty_graphics.placements.len();
+                                return TestResponse::KittyPlacementsCount { count };
+                            }
+                        }
+                    }
+                }
+                TestResponse::Error {
+                    message: "Failed to get kitty placements count".to_string(),
+                }
             }
         }
     }

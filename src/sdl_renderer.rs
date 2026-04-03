@@ -243,6 +243,7 @@ impl TabBar {
         let text_y = y + ((self.height - 6 - surface.height()) / 2) as i32;
         let text_rect = Rect::new(x + 12, text_y, surface.width(), surface.height()); // Increased left padding
         canvas.copy(&texture, None, text_rect).map_err(|e| e.to_string())?;
+        unsafe { texture.destroy() };
 
         x += cpu_width as i32 + 12;
 
@@ -489,6 +490,7 @@ impl TabBar {
                 let clipped_width = text_width.min(max_text_width);
                 let text_rect = Rect::new(text_x, text_y, clipped_width, text_height);
                 let _ = canvas.copy(&texture, None, text_rect);
+                unsafe { texture.destroy() };
             }
 
             // Draw cursor if editing this tab
@@ -650,6 +652,7 @@ impl TabBar {
                 let clipped_width = text_width.min(max_text_width);
                 let text_rect = Rect::new(text_x, text_y, clipped_width, text_height);
                 let _ = canvas.copy(&texture, None, text_rect);
+                unsafe { texture.destroy() };
             }
 
             // Draw cursor if editing
@@ -746,6 +749,7 @@ impl TabBar {
                     let dev_y = y + ((self.height - 6 - dev_height) / 2) as i32;
                     let dev_rect = Rect::new(dev_x, dev_y, dev_width, dev_height);
                     let _ = canvas.copy(&dev_texture, None, dev_rect);
+                    unsafe { dev_texture.destroy() };
                 }
             }
         }

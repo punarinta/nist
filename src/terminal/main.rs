@@ -713,26 +713,15 @@ impl Terminal {
             {
                 let proc_path = format!("/proc/{}/cwd", pid);
                 if let Ok(cwd) = std::fs::read_link(&proc_path) {
-                    eprintln!(
-                        "[TERMINAL] get_cwd: PID {} has CWD {:?} (from /proc)",
-                        pid, cwd
-                    );
                     return Some(cwd);
-                } else {
-                    eprintln!("[TERMINAL] get_cwd: failed to read /proc/{}/cwd", pid);
                 }
             }
 
             #[cfg(target_os = "macos")]
             {
                 if let Some(cwd) = macos_get_proc_cwd(pid) {
-                    eprintln!(
-                        "[TERMINAL] get_cwd: PID {} has CWD {:?} (from proc_pidinfo)",
-                        pid, cwd
-                    );
                     return Some(cwd);
                 }
-                eprintln!("[TERMINAL] get_cwd: proc_pidinfo failed for PID {}", pid);
             }
 
             #[cfg(not(target_os = "macos"))]
@@ -744,18 +733,9 @@ impl Terminal {
                     false,
                 );
                 if let Some(process) = system.process(Pid::from_u32(pid)) {
-                    let cwd = process.cwd().map(|p| p.to_path_buf());
-                    eprintln!(
-                        "[TERMINAL] get_cwd: PID {} has CWD {:?} (from sysinfo)",
-                        pid, cwd
-                    );
-                    return cwd;
-                } else {
-                    eprintln!("[TERMINAL] get_cwd: process not found for PID {}", pid);
+                    return process.cwd().map(|p| p.to_path_buf());
                 }
             }
-        } else {
-            eprintln!("[TERMINAL] get_cwd: no PID available");
         }
         None
     }

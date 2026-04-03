@@ -1,5 +1,7 @@
+use crate::history;
 use crate::pane_layout::{PaneNode, SplitDirection};
 use crate::tab_gui::{TabBarGui, TabState};
+use crate::terminal::utils::MAX_COMMAND_HISTORY;
 use crate::terminal::Terminal;
 use directories::ProjectDirs;
 use std::collections::HashMap;
@@ -33,8 +35,9 @@ struct TerminalHistory {
 }
 
 impl SerializablePaneNode {
-    /// Convert a PaneNode to a serializable structure (without terminals)
-    fn from_pane_node(node: &PaneNode) -> Self {
+    /// Convert a PaneNode to a serializable structure (without terminals).
+    /// `command_history` is pre-read once by the caller to avoid redundant disk I/O.
+    fn from_pane_node(node: &PaneNode, command_history: &[String]) -> Self {
         match node {
             PaneNode::Leaf { terminal, .. } => {
                 // Extract current working directory from terminal
@@ -49,11 +52,10 @@ impl SerializablePaneNode {
                     t.capture_output_history();
                 }
 
-                // Extract command and output history
+                // Extract output history; reuse the pre-read command_history
                 let history = terminal.lock().ok().map(|t| {
-                    let input = t.get_command_history();
                     let output = t.get_output_history();
-                    TerminalHistory { input, output }
+                    TerminalHistory { input: command_history.to_vec(), output }
                 });
 
                 SerializablePaneNode::Leaf { working_directory, history }
@@ -70,8 +72,8 @@ impl SerializablePaneNode {
                     SplitDirection::Vertical => "vertical".to_string(),
                 },
                 ratio: *ratio as f64,
-                first: Box::new(SerializablePaneNode::from_pane_node(first)),
-                second: Box::new(SerializablePaneNode::from_pane_node(second)),
+                first: Box::new(SerializablePaneNode::from_pane_node(first, command_history)),
+                second: Box::new(SerializablePaneNode::from_pane_node(second, command_history)),
             },
         }
     }
@@ -255,6 +257,9 @@ pub fn save_state(tab_bar: &TabBarGui) -> Result<(), String> {
     // Save active tab index
     layout_map.insert("active_tab".to_string(), JsonValue::Number(tab_bar.active_tab as f64));
 
+    // Read shell history once for all terminals to avoid redundant disk I/O
+    let command_history = history::read_shell_history(MAX_COMMAND_HISTORY);
+
     // Save tabs
     let mut tabs_array = Vec::new();
     for tab_state in &tab_bar.tab_states {
@@ -262,7 +267,7 @@ pub fn save_state(tab_bar: &TabBarGui) -> Result<(), String> {
         tab_map.insert("name".to_string(), JsonValue::String(tab_state.name.clone()));
 
         // Serialize pane layout
-        let serializable_layout = SerializablePaneNode::from_pane_node(&tab_state.pane_layout.root);
+        let serializable_layout = SerializablePaneNode::from_pane_node(&tab_state.pane_layout.root, &command_history);
         tab_map.insert("pane_layout".to_string(), serializable_layout.to_json());
 
         // Save active pane index (we'll just save 0 for now since we can't easily serialize the PaneId)

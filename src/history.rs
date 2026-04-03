@@ -15,7 +15,6 @@ pub fn read_shell_history(max_entries: usize) -> Vec<String> {
     });
 
     let shell_name = Path::new(&shell).file_name().and_then(|s| s.to_str()).unwrap_or("bash");
-    eprintln!("[HISTORY] Reading history for shell: {} (from $SHELL={})", shell_name, shell);
 
     match shell_name {
         "bash" => read_bash_history(max_entries),

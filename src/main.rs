@@ -227,8 +227,27 @@ fn main() -> Result<(), String> {
     let mut needs_render = true;
     let mut skip_render_count = 0;
 
+    // Track last mouse cell position to avoid forcing full pane re-renders
+    // on every pixel movement (only redraw when the cell changes, since URL
+    // highlighting is cell-based, not pixel-based).
+    let mut last_mouse_cell: (i32, i32) = (-1, -1);
+
     // Voice input manager
     let mut voice_manager = input::voice::VoiceInputManager::new();
+
+    // Telemetry: track loop iteration rate and render reasons.
+    // Prints a summary to stderr every 5 seconds so we can spot
+    // what is keeping the loop busy (high CPU) without flooding the log.
+    let mut perf_window_start = Instant::now();
+    let mut perf_iters: u64 = 0;
+    let mut perf_renders: u64 = 0;
+    // Reason counters for needs_render = true
+    let mut reason_dirty: u64 = 0;
+    let mut reason_anim: u64 = 0;
+    let mut reason_cursor: u64 = 0;
+    let mut reason_render_dirty: u64 = 0;  // any_dirty returned from render_frame
+    let mut reason_rate_limited: u64 = 0;  // too-soon-to-render path
+    let mut reason_voice: u64 = 0;
 
     'running: loop {
         // Check for termination signals (SIGTERM, SIGINT, SIGHUP from OS)
@@ -286,6 +305,7 @@ fn main() -> Result<(), String> {
 
         if has_dirty_content {
             needs_render = true;
+            reason_dirty += 1;
         }
 
         // Check for completed animations and clean them up
@@ -296,9 +316,11 @@ fn main() -> Result<(), String> {
                         if animation.is_complete() {
                             pane_layout.copy_animation = None;
                             needs_render = true;
+                            reason_anim += 1;
                         } else {
                             // Animation is still running, keep rendering
                             needs_render = true;
+                            reason_anim += 1;
                         }
                     }
                 }
@@ -352,6 +374,7 @@ fn main() -> Result<(), String> {
             if !cursor_visible {
                 cursor_visible = true;
                 needs_render = true;
+                reason_cursor += 1;
             }
             last_cursor_blink = Instant::now(); // Reset blink timer
         } else {
@@ -360,6 +383,7 @@ fn main() -> Result<(), String> {
                 cursor_visible = !cursor_visible;
                 last_cursor_blink = Instant::now();
                 needs_render = true;
+                reason_cursor += 1;
             }
         }
 
@@ -395,6 +419,7 @@ fn main() -> Result<(), String> {
         if voice_manager.is_active() && last_voice_anim.elapsed().as_millis() >= 33 {
             last_voice_anim = Instant::now();
             needs_render = true;
+            reason_voice += 1;
         }
 
         // Only render if needed
@@ -587,7 +612,7 @@ fn main() -> Result<(), String> {
                         window_logical_size.1.store(new_log_h as i32, std::sync::atomic::Ordering::Relaxed);
                         is_window_maximized.store(canvas.window().is_maximized(), std::sync::atomic::Ordering::Relaxed);
                         eprintln!("[MAIN] Window resized to {}x{}", new_width, new_height);
-                        pane_cache.clear();
+                        for (_, entry) in pane_cache.drain() { entry.destroy_textures(); }
                         // Resize all terminals to match their pane dimensions
                         resize_terminals_to_panes(&tab_bar_gui, char_width, char_height, tab_bar_height, new_width, new_height);
                     }
@@ -730,8 +755,8 @@ fn main() -> Result<(), String> {
                                     eprintln!("[MAIN] New character dimensions: {:.2}x{:.2} pixels", char_width, char_height);
 
                                     // Clear glyph cache - old glyphs are wrong size
-                                    glyph_cache.clear();
-                                    pane_cache.clear();
+                                    for (_, tex) in glyph_cache.drain() { unsafe { tex.destroy() }; }
+                                    for (_, entry) in pane_cache.drain() { entry.destroy_textures(); }
                                     eprintln!("[MAIN] Glyph cache cleared");
                                 } else {
                                     eprintln!("[MAIN] Failed to measure character dimensions after font reload");
@@ -960,7 +985,7 @@ fn main() -> Result<(), String> {
             // Resize terminals if panes were closed
             if need_resize {
                 let (w, h) = canvas.window().size_in_pixels();
-                pane_cache.clear();
+                for (_, entry) in pane_cache.drain() { entry.destroy_textures(); }
                 resize_terminals_to_panes(&tab_bar_gui, char_width, char_height, tab_bar_height, w, h);
             }
 
@@ -1124,7 +1149,7 @@ fn main() -> Result<(), String> {
 
                     // Resize all terminals to match their new pane dimensions
                     let (w, h) = canvas.window().size_in_pixels();
-                    pane_cache.clear();
+                    for (_, entry) in pane_cache.drain() { entry.destroy_textures(); }
                     resize_terminals_after_split(&tab_bar_gui, char_width, char_height, tab_bar_height, w, h, new_pane_id);
 
                     // Save state after pane split
@@ -1170,13 +1195,38 @@ fn main() -> Result<(), String> {
                 Event::KeyDown { .. } | Event::TextInput { .. } |
                 Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
             ));
-            // Interactive events (mouse motion, keyboard, clicks) require the active pane
-            // to be fully re-rendered so URL highlights and selection visuals stay correct.
+            // Interactive events (keyboard, clicks, cell-level mouse movement) require
+            // the active pane to be fully re-rendered so URL highlights and selection
+            // visuals stay correct.
+            // Mouse motion: only force a redraw when the cursor moves to a different
+            // terminal cell — URL highlighting is cell-based, not pixel-based, so
+            // sub-cell motion produces no visible change and we skip the expensive
+            // full pane re-render (~5 ms on a large HiDPI terminal).
+            let mouse_moved_cell = events.iter().any(|e| {
+                if let Event::MouseMotion { x, y, .. } = e {
+                    let new_cell = (
+                        (*x as f32 / char_width) as i32,
+                        ((*y as f32 - tab_bar_height as f32) / char_height) as i32,
+                    );
+                    new_cell != last_mouse_cell
+                } else {
+                    false
+                }
+            });
+            // Update the cached cell whenever the mouse moved.
+            if mouse_moved_cell {
+                if let Some(Event::MouseMotion { x, y, .. }) = events.iter().rev().find(|e| matches!(e, Event::MouseMotion { .. })) {
+                    last_mouse_cell = (
+                        (*x as f32 / char_width) as i32,
+                        ((*y as f32 - tab_bar_height as f32) / char_height) as i32,
+                    );
+                }
+            }
             let force_active_redraw = events.iter().any(|e| matches!(e,
                 Event::KeyDown { .. } | Event::TextInput { .. } |
-                Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. } |
-                Event::MouseMotion { .. }
-            ));
+                Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
+            )) || mouse_moved_cell
+                || (mouse_state.mouse_down_for_selection && mouse_state.selection_started);
             let effective_interval = if has_user_event { input_render_interval } else { pty_render_interval };
             if last_render.elapsed() >= effective_interval {
                 // Process pending bytes for all active terminals right before rendering.
@@ -1208,6 +1258,8 @@ fn main() -> Result<(), String> {
                 }
 
                 last_render = Instant::now();
+                perf_renders += 1;
+                let render_start = Instant::now();
                 let any_dirty = render::render_frame(
                     &mut canvas,
                     &texture_creator,
@@ -1234,9 +1286,14 @@ fn main() -> Result<(), String> {
                     force_active_redraw,
                     is_window_maximized.load(std::sync::atomic::Ordering::Relaxed),
                 )?;
+                let render_ms = render_start.elapsed().as_millis();
+                if render_ms > 20 {
+                    eprintln!("[PERF] slow render {}ms glyph_cache={}", render_ms, glyph_cache.len());
+                }
 
                 if any_dirty {
                     needs_render = true;
+                    reason_render_dirty += 1;
                 }
 
                 // Glyph cache size is bounded inside render_glyph (MAX_GLYPH_CACHE entries).
@@ -1244,10 +1301,28 @@ fn main() -> Result<(), String> {
                 // when all glyphs had to be re-rendered at once.
             } else {
                 needs_render = true; // too soon — stay dirty, render next iteration
+                reason_rate_limited += 1;
             }
         } else {
             skip_render_count += 1;
-            // Print skip message every 100 iterations or on first skip
+        }
+
+        // Telemetry: print loop-rate summary every 5 seconds.
+        perf_iters += 1;
+        if perf_window_start.elapsed().as_secs() >= 5 {
+            let elapsed = perf_window_start.elapsed().as_secs_f64();
+            eprintln!(
+                "[PERF] {:.1}s: iters/s={:.1} renders/s={:.1} | dirty={} anim={} cursor={} render_dirty={} rate_lim={} voice={}",
+                app_start.elapsed().as_secs_f64(),
+                perf_iters as f64 / elapsed,
+                perf_renders as f64 / elapsed,
+                reason_dirty, reason_anim, reason_cursor,
+                reason_render_dirty, reason_rate_limited, reason_voice,
+            );
+            perf_iters = 0; perf_renders = 0;
+            reason_dirty = 0; reason_anim = 0; reason_cursor = 0;
+            reason_render_dirty = 0; reason_rate_limited = 0; reason_voice = 0;
+            perf_window_start = Instant::now();
         }
 
         // Handle test server

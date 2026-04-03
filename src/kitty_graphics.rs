@@ -10,6 +10,14 @@ use std::collections::HashMap;
 
 use base64::Engine as _;
 
+/// Maximum number of decoded image placements kept in memory per terminal.
+/// Oldest placements are evicted when this limit is exceeded.
+pub const MAX_KITTY_PLACEMENTS: usize = 20;
+
+/// Maximum number of in-progress (multi-chunk) image transmissions buffered
+/// per terminal.  Incomplete transfers beyond this limit are silently dropped.
+const MAX_PENDING_IMAGES: usize = 50;
+
 /// A decoded, positioned image placement ready for rendering.
 pub struct KittyPlacement {
     /// Raw RGBA pixels (R, G, B, A bytes, row-major).
@@ -134,20 +142,25 @@ impl KittyGraphicsState {
                 let abs_row = scrollback_len + cursor_y as usize;
 
                 if more {
-                    // Accumulate chunk
-                    let pending = self.pending.entry(actual_id).or_insert_with(|| PendingImage {
-                        format,
-                        src_w,
-                        src_h,
-                        raw_data: Vec::new(),
-                        cell_x: cursor_x,
-                        abs_row,
-                        display_cols,
-                        display_rows,
-                        action,
-                        transmission,
-                    });
-                    pending.raw_data.extend_from_slice(&decoded);
+                    // Accumulate chunk — but cap pending transmissions to avoid
+                    // unbounded memory growth from clients that never finalise.
+                    if self.pending.len() < MAX_PENDING_IMAGES
+                        || self.pending.contains_key(&actual_id)
+                    {
+                        let pending = self.pending.entry(actual_id).or_insert_with(|| PendingImage {
+                            format,
+                            src_w,
+                            src_h,
+                            raw_data: Vec::new(),
+                            cell_x: cursor_x,
+                            abs_row,
+                            display_cols,
+                            display_rows,
+                            action,
+                            transmission,
+                        });
+                        pending.raw_data.extend_from_slice(&decoded);
+                    }
                     // Don't respond until complete
                     return None;
                 }
@@ -191,6 +204,11 @@ impl KittyGraphicsState {
                 ) {
                     if final_action == b'T' {
                         self.placements.push(placement);
+                        // Evict oldest placements to keep memory bounded.
+                        if self.placements.len() > MAX_KITTY_PLACEMENTS {
+                            let excess = self.placements.len() - MAX_KITTY_PLACEMENTS;
+                            self.placements.drain(..excess);
+                        }
                     }
                     // 't' = transmit only; could store for later `p` action
                 }

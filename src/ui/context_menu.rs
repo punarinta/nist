@@ -231,6 +231,7 @@ impl<A: Clone> ContextMenu<A> {
                         let icon_y = item_y + ((self.item_height as i32 - icon_size as i32).max(0) / 2);
                         let icon_rect = Rect::new(self.position.0 + 10, icon_y, icon_size, icon_size);
                         canvas.copy(&icon_texture, None, icon_rect).map_err(|e| e.to_string())?;
+                        unsafe { icon_texture.destroy() };
                     }
                 }
             }
@@ -247,6 +248,7 @@ impl<A: Clone> ContextMenu<A> {
                     let text_y = item_y + ((self.item_height as i32 - surface.height() as i32).max(0) / 2);
                     let text_rect = Rect::new(self.position.0 + 52, text_y, surface.width(), surface.height());
                     canvas.copy(&texture, None, text_rect).map_err(|e| e.to_string())?;
+                    unsafe { texture.destroy() };
                 }
             }
         }

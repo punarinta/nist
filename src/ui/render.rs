@@ -32,6 +32,21 @@ pub struct PaneCacheEntry {
     pub last_is_active: bool,
     /// Cursor style from the last render, used for non-redrawn blink frames.
     pub last_cursor_style: CursorStyle,
+    /// Per-pane Kitty Graphics texture cache.  Keyed by image_id; entries are
+    /// evicted when the corresponding placement is deleted from KittyGraphicsState.
+    /// Survives pane texture rebuilds (even on resize) to avoid redundant GPU uploads.
+    pub kitty_texture_cache: HashMap<u32, sdl3::render::Texture>,
+}
+
+impl PaneCacheEntry {
+    /// Explicitly destroy all GPU textures held by this entry.
+    /// Required because `unsafe_textures` disables automatic Drop for SDL textures.
+    pub fn destroy_textures(self) {
+        unsafe { self.texture.destroy() };
+        for (_, tex) in self.kitty_texture_cache {
+            unsafe { tex.destroy() };
+        }
+    }
 }
 
 /// Character data saved from the cell under the cursor (used for block cursor overlay).
@@ -217,6 +232,10 @@ pub fn render_frame<T>(
         if size_changed || !pane_cache.contains_key(&pane_id) {
             match texture_creator.create_texture_target(None, pane_w, pane_h) {
                 Ok(texture) => {
+                    // Preserve kitty texture cache across resizes to avoid redundant GPU uploads.
+                    let kitty_texture_cache = pane_cache.remove(&pane_id)
+                        .map(|e| e.kitty_texture_cache)
+                        .unwrap_or_default();
                     pane_cache.insert(pane_id, PaneCacheEntry {
                         texture,
                         width: pane_w,
@@ -224,16 +243,18 @@ pub fn render_frame<T>(
                         last_is_selected: is_selected,
                         last_is_active: is_active,
                         last_cursor_style: CursorStyle::default(),
+                        kitty_texture_cache,
                     });
                 }
                 Err(e) => {
                     // No cache available — fall back to direct rendering
                     eprintln!("[RENDER] Failed to create pane texture: {e}");
+                    let mut tmp_kitty_cache = HashMap::new();
                     let (was_dirty, cursor_overlay) = render_pane(
                         canvas, texture_creator, terminal_font, emoji_font,
                         unicode_fallback_font, cjk_font, rect, terminal.clone(),
                         is_active, is_selected, pane_count, char_width, char_height,
-                        glyph_cache, mouse_state, pane_id,
+                        glyph_cache, &mut tmp_kitty_cache, mouse_state, pane_id,
                     )?;
                     any_dirty = any_dirty || was_dirty;
                     if is_active && cursor_visible {
@@ -257,14 +278,17 @@ pub fn render_frame<T>(
                 entry.last_is_selected = is_selected;
                 entry.last_is_active = is_active;
                 let texture_rect = Rect::new(0, 0, pane_w, pane_h);
-                canvas.with_texture_canvas(&mut entry.texture, |tc| {
+                // Split-borrow entry so we can pass kitty_texture_cache into the closure
+                // while with_texture_canvas holds &mut entry.texture.
+                let PaneCacheEntry { texture, kitty_texture_cache, .. } = entry;
+                canvas.with_texture_canvas(texture, |tc| {
                     tc.set_draw_color(DEFAULT_BG_COLOR);
                     tc.clear();
                     render_result = render_pane(
                         tc, texture_creator, terminal_font, emoji_font,
                         unicode_fallback_font, cjk_font, texture_rect, terminal.clone(),
                         is_active, is_selected, pane_count, char_width, char_height,
-                        glyph_cache, mouse_state, pane_id,
+                        glyph_cache, kitty_texture_cache, mouse_state, pane_id,
                     );
                 }).map_err(|e| e.to_string())?;
             }
@@ -362,6 +386,7 @@ fn render_pane<T>(
     char_width: f32,
     char_height: f32,
     glyph_cache: &mut HashMap<String, sdl3::render::Texture>,
+    kitty_texture_cache: &mut HashMap<u32, sdl3::render::Texture>,
     mouse_state: &crate::input::mouse::MouseState,
     pane_id: crate::pane_layout::PaneId,
 ) -> Result<(bool, Option<CursorOverlay>), String> {
@@ -573,6 +598,7 @@ fn render_pane<T>(
         canvas,
         texture_creator,
         &mut gb.kitty_graphics.placements,
+        kitty_texture_cache,
         rect,
         pane_padding,
         char_width,
@@ -716,6 +742,7 @@ fn render_kitty_images<T>(
     canvas: &mut Canvas<Window>,
     texture_creator: &TextureCreator<T>,
     placements: &mut Vec<crate::kitty_graphics::KittyPlacement>,
+    kitty_texture_cache: &mut HashMap<u32, sdl3::render::Texture>,
     rect: Rect,
     pane_padding: u32,
     char_width: f32,
@@ -724,6 +751,11 @@ fn render_kitty_images<T>(
     scroll_offset: usize,
 ) -> Result<(), String> {
     use sdl3::pixels::PixelFormat;
+
+    // Evict cached textures whose placements were deleted or evicted.
+    let valid_ids: std::collections::HashSet<u32> =
+        placements.iter().map(|p| p.image_id).collect();
+    kitty_texture_cache.retain(|id, _| valid_ids.contains(id));
 
     for placement in placements.iter_mut() {
         // Convert absolute row back to a viewport row accounting for scrollback.
@@ -758,22 +790,26 @@ fn render_kitty_images<T>(
             .map(|r| (r as f32 * char_height) as u32)
             .unwrap_or(placement.pixel_height);
 
-        let pitch = placement.pixel_width * 4;
-        let surface = sdl3::surface::Surface::from_data(
-            &mut placement.rgba_data,
-            placement.pixel_width,
-            placement.pixel_height,
-            pitch,
-            PixelFormat::RGBA32,
-        )
-        .map_err(|e| e.to_string())?;
-
-        let texture = texture_creator
-            .create_texture_from_surface::<&sdl3::surface::Surface>(&surface)
+        // Upload to GPU only if not already cached.
+        if !kitty_texture_cache.contains_key(&placement.image_id) {
+            let pitch = placement.pixel_width * 4;
+            let surface = sdl3::surface::Surface::from_data(
+                &mut placement.rgba_data,
+                placement.pixel_width,
+                placement.pixel_height,
+                pitch,
+                PixelFormat::RGBA32,
+            )
             .map_err(|e| e.to_string())?;
+            let texture = texture_creator
+                .create_texture_from_surface::<&sdl3::surface::Surface>(&surface)
+                .map_err(|e| e.to_string())?;
+            kitty_texture_cache.insert(placement.image_id, texture);
+        }
 
+        let texture = kitty_texture_cache.get(&placement.image_id).unwrap();
         canvas
-            .copy(&texture, None, Rect::new(x, y, display_w, display_h))
+            .copy(texture, None, Rect::new(x, y, display_w, display_h))
             .map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -856,7 +892,7 @@ fn render_glyph<T>(
                         let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
                         let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
                         canvas.copy(&texture, None, Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
-                        if can_cache { glyph_cache.insert(cache_key, texture); }
+                        if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
                         return Ok(());
                     }
                 }
@@ -871,7 +907,7 @@ fn render_glyph<T>(
             if surface.width() > 0 && surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
                     canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
-                    if can_cache { glyph_cache.insert(cache_key, texture); }
+                    if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
                     return Ok(());
                 }
             }
@@ -892,7 +928,7 @@ fn render_glyph<T>(
             if surface.width() > 0 && surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
                     canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
-                    if can_cache { glyph_cache.insert(cache_key, texture); }
+                    if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
                     draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, underline, strikethrough)?;
                     return Ok(());
                 }
@@ -910,7 +946,7 @@ fn render_glyph<T>(
                 if surface.width() > 0 && surface.height() > 0 {
                     if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
                         canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
-                        if can_cache { glyph_cache.insert(cache_key, texture); }
+                        if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
                         return Ok(());
                     }
                 }
@@ -927,7 +963,7 @@ fn render_glyph<T>(
             if surface.width() > 0 && surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
                     canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
-                    if can_cache { glyph_cache.insert(cache_key, texture); }
+                    if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
                     return Ok(());
                 }
             }
@@ -945,7 +981,7 @@ fn render_glyph<T>(
                     let scaled_width = (surface.width() as f32 * scale) as u32;
                     let scaled_height = (surface.height() as f32 * scale) as u32;
                     canvas.copy(&texture, None, Rect::new(x, y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
-                    if can_cache { glyph_cache.insert(cache_key, texture); }
+                    if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
                     return Ok(());
                 }
             }
@@ -1045,6 +1081,7 @@ fn render_scrollback_indicator<T>(
 
             let text_rect = Rect::new(indicator_x, indicator_y, text_width, text_height);
             canvas.copy(&texture, None, text_rect).map_err(|e| e.to_string())?;
+            unsafe { texture.destroy() };
         }
     }
 

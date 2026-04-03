@@ -226,6 +226,7 @@ impl TextInput {
                     let text_rect = Rect::new(text_x, text_y, text_width, surface.height());
                     let src_rect = FRect::new(0.0, 0.0, text_width as f32, surface.height() as f32);
                     let _ = canvas.copy(&texture, Some(src_rect), text_rect);
+                    unsafe { texture.destroy() };
                 }
             }
         }

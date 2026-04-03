@@ -212,6 +212,7 @@ pub fn show_confirmation_dialog(canvas: &mut Canvas<Window>, event_pump: &mut Ev
                 let title_y = dialog_y + padding;
                 let title_rect = Rect::new(title_x, title_y, title_width, title_height);
                 let _ = canvas.copy(&title_texture, None, title_rect);
+                unsafe { title_texture.destroy() };
             }
         }
 
@@ -222,6 +223,7 @@ pub fn show_confirmation_dialog(canvas: &mut Canvas<Window>, event_pump: &mut Ev
                 let msg_y = dialog_y + padding + title_block_height;
                 let msg_rect = Rect::new(msg_x, msg_y, message_width, message_height);
                 let _ = canvas.copy(&msg_texture, None, msg_rect);
+                unsafe { msg_texture.destroy() };
             }
         }
 
@@ -240,6 +242,7 @@ pub fn show_confirmation_dialog(canvas: &mut Canvas<Window>, event_pump: &mut Ev
                 let text_y = no_button_rect.y() + (button_height as i32 - text_height as i32) / 2;
                 let text_rect = Rect::new(text_x, text_y, text_width, text_height);
                 let _ = canvas.copy(&no_texture, None, text_rect);
+                unsafe { no_texture.destroy() };
             }
         }
 
@@ -258,12 +261,14 @@ pub fn show_confirmation_dialog(canvas: &mut Canvas<Window>, event_pump: &mut Ev
                 let text_y = yes_button_rect.y() + (button_height as i32 - text_height as i32) / 2;
                 let text_rect = Rect::new(text_x, text_y, text_width, text_height);
                 let _ = canvas.copy(&yes_texture, None, text_rect);
+                unsafe { yes_texture.destroy() };
             }
         }
 
         canvas.present();
     }
 
+    if let Some(bg) = background_texture { unsafe { bg.destroy() }; }
     result.unwrap_or(false)
 }
 
@@ -450,6 +455,7 @@ pub fn terminal_history_search_dialog(
         canvas.present();
     }
 
+    if let Some(bg) = background_texture { unsafe { bg.destroy() }; }
     result.unwrap_or_else(|| Err("Dialog closed".to_string()))
 }
 
@@ -708,6 +714,7 @@ pub fn ai_command_dialog(
 
                         let text_rect = Rect::new(text_x, text_y, query.width, query.height);
                         let _ = canvas.copy(&texture, None, text_rect);
+                        unsafe { texture.destroy() };
                     }
                 }
             }
@@ -721,6 +728,7 @@ pub fn ai_command_dialog(
                         let text_x = dialog_x as i32 + padding;
                         let text_rect = Rect::new(text_x, loading_y, query.width, query.height);
                         let _ = canvas.copy(&texture, None, text_rect);
+                        unsafe { texture.destroy() };
                     }
                 }
             }
@@ -741,6 +749,7 @@ pub fn ai_command_dialog(
                             let text_y = error_y + (i as i32 * line_height);
                             let text_rect = Rect::new(text_x, text_y, query.width, query.height);
                             let _ = canvas.copy(&texture, None, text_rect);
+                            unsafe { texture.destroy() };
                         }
                     }
                 }
@@ -754,6 +763,7 @@ pub fn ai_command_dialog(
                         let text_x = dialog_x as i32 + padding;
                         let text_rect = Rect::new(text_x, hint_y, query.width, query.height);
                         let _ = canvas.copy(&texture, None, text_rect);
+                        unsafe { texture.destroy() };
                     }
                 }
             }
@@ -787,6 +797,7 @@ pub fn ai_command_dialog(
                             let text_y = text_y_start + (i as i32 * line_height);
                             let text_rect = Rect::new(text_x, text_y, query.width, query.height);
                             let _ = canvas.copy(&texture, None, text_rect);
+                            unsafe { texture.destroy() };
                         }
                     }
                 }
@@ -807,6 +818,7 @@ pub fn ai_command_dialog(
                         let text_y = button_y as i32 + (button_height as i32 - query.height as i32) / 2;
                         let text_rect = Rect::new(text_x, text_y, query.width, query.height);
                         let _ = canvas.copy(&texture, None, text_rect);
+                        unsafe { texture.destroy() };
                     }
                 }
 
@@ -826,6 +838,7 @@ pub fn ai_command_dialog(
                         let text_y = button_y as i32 + (button_height as i32 - query.height as i32) / 2;
                         let text_rect = Rect::new(text_x, text_y, query.width, query.height);
                         let _ = canvas.copy(&texture, None, text_rect);
+                        unsafe { texture.destroy() };
                     }
                 }
             }
@@ -833,4 +846,6 @@ pub fn ai_command_dialog(
 
         canvas.present();
     }
+    if let Some(bg) = background_texture { unsafe { bg.destroy() }; }
+    Ok(())
 }
