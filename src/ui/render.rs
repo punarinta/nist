@@ -755,7 +755,15 @@ fn render_kitty_images<T>(
     // Evict cached textures whose placements were deleted or evicted.
     let valid_ids: std::collections::HashSet<u32> =
         placements.iter().map(|p| p.image_id).collect();
-    kitty_texture_cache.retain(|id, _| valid_ids.contains(id));
+    let evicted: Vec<u32> = kitty_texture_cache.keys()
+        .filter(|id| !valid_ids.contains(id))
+        .copied()
+        .collect();
+    for id in evicted {
+        if let Some(tex) = kitty_texture_cache.remove(&id) {
+            unsafe { tex.destroy() };
+        }
+    }
 
     for placement in placements.iter_mut() {
         // Convert absolute row back to a viewport row accounting for scrollback.
