@@ -209,6 +209,7 @@ fn main() -> Result<(), String> {
     // Pending operations
     let mut pending_pane_split: Option<crate::pane_layout::SplitDirection> = None;
     let mut pending_new_tab = false;
+    let mut tab_switched = false; // persists until the next render to force pane redraw
     let mut last_render = Instant::now();
     let input_render_interval = std::time::Duration::from_millis(33); // ~30 fps on interaction
     let pty_render_interval   = std::time::Duration::from_millis(66); // ~15 fps for PTY output
@@ -583,6 +584,9 @@ fn main() -> Result<(), String> {
 
                     input::events::EventAction::SwitchTab(tab_idx) => {
                         if let Ok(mut gui) = tab_bar_gui.try_lock() {
+                            if gui.active_tab != tab_idx {
+                                tab_switched = true;
+                            }
                             gui.set_active_tab(tab_idx);
                             if let Err(e) = state::save_state(&gui) {
                                 eprintln!("[STATE] Failed to save state on tab switch: {}", e);
@@ -1226,7 +1230,8 @@ fn main() -> Result<(), String> {
                 Event::KeyDown { .. } | Event::TextInput { .. } |
                 Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
             )) || mouse_moved_cell
-                || (mouse_state.mouse_down_for_selection && mouse_state.selection_started);
+                || (mouse_state.mouse_down_for_selection && mouse_state.selection_started)
+                || tab_switched;
             let effective_interval = if has_user_event { input_render_interval } else { pty_render_interval };
             if last_render.elapsed() >= effective_interval {
                 // Process pending bytes for all active terminals right before rendering.
@@ -1290,6 +1295,8 @@ fn main() -> Result<(), String> {
                 if render_ms > 20 {
                     eprintln!("[PERF] slow render {}ms glyph_cache={}", render_ms, glyph_cache.len());
                 }
+
+                tab_switched = false; // Tab switch was reflected in this frame
 
                 if any_dirty {
                     needs_render = true;
