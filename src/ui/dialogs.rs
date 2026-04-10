@@ -519,7 +519,7 @@ pub fn ai_command_dialog(
     let mut mouse_x = 0.0_f32;
     let mut mouse_y = 0.0_f32;
 
-    loop {
+    let result: Result<(), String> = 'ai_dialog_loop: loop {
         // Check for async results
         if let Some(ref rx) = receiver {
             match rx.try_recv() {
@@ -548,13 +548,13 @@ pub fn ai_command_dialog(
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. } => {
-                    return Err("Quit requested".to_string());
+                    break 'ai_dialog_loop Err("Quit requested".to_string());
                 }
                 Event::KeyDown {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => {
-                    return Err("Cancelled".to_string());
+                    break 'ai_dialog_loop Err("Cancelled".to_string());
                 }
                 Event::KeyDown {
                     keycode: Some(Keycode::Return),
@@ -610,7 +610,7 @@ pub fn ai_command_dialog(
                                     eprintln!("[AI_DIALOG] Command sent via Enter key");
                                 }
                             }
-                            return Ok(());
+                            break 'ai_dialog_loop Ok(());
                         }
                         _ => {}
                     }
@@ -636,7 +636,7 @@ pub fn ai_command_dialog(
                                     eprintln!("[AI_DIALOG] Command sent");
                                 }
                             }
-                            return Ok(());
+                            break 'ai_dialog_loop Ok(());
                         }
 
                         // Check Cancel button
@@ -845,7 +845,7 @@ pub fn ai_command_dialog(
         }
 
         canvas.present();
-    }
+    };
     if let Some(bg) = background_texture { unsafe { bg.destroy() }; }
-    Ok(())
+    result
 }

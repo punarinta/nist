@@ -400,13 +400,6 @@ impl GhosttyBuffer {
 
     // ── dirty tracking ───────────────────────────────────────────────────────
 
-    /// Returns `true` if the buffer has changed since the last `clear_dirty`.
-    /// Also processes any pending bytes from the reader thread.
-    pub fn is_dirty(&mut self) -> bool {
-        self.process_pending_bytes();
-        self.dirty
-    }
-
     /// Returns `true` if there is unprocessed work (either unprocessed bytes or
     /// the dirty flag is set) WITHOUT consuming any bytes.  This is cheap to call
     /// on every event-loop iteration; use `is_dirty()` / `process_pending_bytes()`
