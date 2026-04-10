@@ -409,7 +409,7 @@ impl GhosttyBuffer {
             || self
                 .incoming_bytes
                 .try_lock()
-                .map_or(true, |b| !b.is_empty())
+                .map_or(false, |b| !b.is_empty())
     }
 
     pub fn clear_dirty(&mut self) {
