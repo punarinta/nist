@@ -47,11 +47,6 @@ impl SerializablePaneNode {
                     .and_then(|t| t.get_cwd())
                     .and_then(|path| path.to_str().map(|s| s.to_string()));
 
-                // Capture output history before extracting
-                if let Ok(t) = terminal.lock() {
-                    t.capture_output_history();
-                }
-
                 // Extract output history; reuse the pre-read command_history
                 let history = terminal.lock().ok().map(|t| {
                     let output = t.get_output_history();
@@ -291,6 +286,16 @@ pub fn save_state(tab_bar: &TabBarGui) -> Result<(), String> {
 
     eprintln!("[STATE] Saved state to: {:?}", state_path);
     Ok(())
+}
+
+/// Traverse all terminals and capture their output history into the cache.
+/// This is expensive (reads full scrollback via FFI) — only call before exit.
+pub fn capture_all_output_histories(tab_bar: &TabBarGui) {
+    for terminal in tab_bar.get_all_terminals() {
+        if let Ok(t) = terminal.lock() {
+            t.capture_output_history();
+        }
+    }
 }
 
 /// Load the tab-pane layout state

@@ -189,8 +189,17 @@ impl ScreenBufferSnapshot {
         use libghostty_vt::screen::CellWide;
         use libghostty_vt::style::Underline;
 
-        // Flush any pending bytes from the PTY reader thread before snapshotting
-        gb.process_pending_bytes();
+        // Drain ALL pending bytes before snapshotting. The test server's handle_client
+        // loop blocks the main SDL event loop, so the main render loop never calls
+        // process_pending_bytes() while a client is connected. We must drain here.
+        // Each call processes MAX_BYTES_PER_FRAME bytes; loop until empty.
+        loop {
+            gb.process_pending_bytes();
+            let is_empty = gb.incoming_bytes.try_lock().map_or(true, |b| b.is_empty());
+            if is_empty {
+                break;
+            }
+        }
 
         let width = gb.width();
         let height = gb.height();
@@ -1293,7 +1302,7 @@ impl TestServer {
                     if let Some(terminal) = gui.get_active_terminal() {
                         if let Ok(t) = terminal.lock() {
                             if let Ok(mut incoming) = t.ghostty_buffer.lock().unwrap().incoming_bytes.lock() {
-                                incoming.extend_from_slice(&bytes);
+                                incoming.extend(bytes.iter().copied());
                                 return TestResponse::Ok;
                             }
                         }

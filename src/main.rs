@@ -469,6 +469,7 @@ fn main() -> Result<(), String> {
                         if ui::dialogs::confirm_quit(&mut canvas, &mut event_pump, &tab_font, scale_factor) {
                             // User confirmed quit
                             if let Ok(gui) = tab_bar_gui.try_lock() {
+                                state::capture_all_output_histories(&gui);
                                 if let Err(e) = state::save_state(&gui) {
                                     eprintln!("[MAIN] Failed to save state: {}", e);
                                 }
@@ -480,6 +481,7 @@ fn main() -> Result<(), String> {
                     }
                     input::events::EventAction::Quit => {
                         if let Ok(gui) = tab_bar_gui.try_lock() {
+                            state::capture_all_output_histories(&gui);
                             if let Err(e) = state::save_state(&gui) {
                                 eprintln!("[MAIN] Failed to save state: {}", e);
                             }
@@ -506,6 +508,7 @@ fn main() -> Result<(), String> {
                                 }
                                 // User confirmed, quit
                                 if let Ok(gui) = tab_bar_gui.try_lock() {
+                                    state::capture_all_output_histories(&gui);
                                     if let Err(e) = state::save_state(&gui) {
                                         eprintln!("[MAIN] Failed to save state: {}", e);
                                     }
@@ -547,6 +550,7 @@ fn main() -> Result<(), String> {
                                 continue;
                             }
                             if let Ok(gui) = tab_bar_gui.try_lock() {
+                                state::capture_all_output_histories(&gui);
                                 if let Err(e) = state::save_state(&gui) {
                                     eprintln!("[MAIN] Failed to save state: {}", e);
                                 }
@@ -967,7 +971,9 @@ fn main() -> Result<(), String> {
                         }
                     } else {
                         // User confirmed quit
-                        if let Err(e) = state::save_state(&tab_bar_gui.lock().unwrap()) {
+                        let gui = tab_bar_gui.lock().unwrap();
+                        state::capture_all_output_histories(&gui);
+                        if let Err(e) = state::save_state(&gui) {
                             eprintln!("[MAIN] Failed to save state: {}", e);
                         }
                         break 'running;

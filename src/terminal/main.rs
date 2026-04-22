@@ -213,7 +213,7 @@ impl Terminal {
                     }
                     Ok(n) => {
                         if let Ok(mut incoming) = incoming_bytes_clone.lock() {
-                            incoming.extend_from_slice(&buffer[..n]);
+                            incoming.extend(buffer[..n].iter().copied());
                         }
                         crate::pty_waker::wake();
                     }

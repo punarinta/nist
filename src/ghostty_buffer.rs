@@ -3,6 +3,7 @@ use libghostty_vt::style::RgbColor;
 use libghostty_vt::terminal::{Mode, PointCoordinate, ScrollViewport};
 use libghostty_vt::{RenderState, Terminal, TerminalOptions};
 use sdl3::pixels::Color;
+use std::collections::VecDeque;
 use std::sync::{mpsc, Arc, Mutex};
 
 use crate::kitty_graphics::KittyGraphicsState;
@@ -74,14 +75,14 @@ pub enum MouseTrackingMode {
 /// `libghostty_vt::Terminal` is `!Send + !Sync`.  We mark `GhosttyBuffer`
 /// as `Send + Sync` because, in practice, the `terminal` field is only ever
 /// accessed from the **main render thread**.  The background reader thread
-/// only touches `incoming_bytes`, which is itself a safe `Arc<Mutex<Vec<u8>>>`.
+/// only touches `incoming_bytes`, which is itself a safe `Arc<Mutex<VecDeque<u8>>>`.
 pub struct GhosttyBuffer {
     pub terminal: Box<Terminal<'static, 'static>>,
     render_state: RenderState<'static>,
     row_iter: RowIterator<'static>,
     cell_iter: CellIterator<'static>,
     /// Incoming raw bytes from the PTY reader thread.
-    pub incoming_bytes: Arc<Mutex<Vec<u8>>>,
+    pub incoming_bytes: Arc<Mutex<VecDeque<u8>>>,
     /// Dirty flag – set true when bytes are processed.
     pub dirty: bool,
     width: u16,
@@ -111,7 +112,7 @@ impl GhosttyBuffer {
         max_scrollback: usize,
         pty_write_tx: mpsc::SyncSender<Vec<u8>>,
         default_cursor: CursorStyle,
-    ) -> (Self, Arc<Mutex<Vec<u8>>>) {
+    ) -> (Self, Arc<Mutex<VecDeque<u8>>>) {
         let mut terminal = Box::new(
             Terminal::new(TerminalOptions {
                 cols: initial_cols,
@@ -170,7 +171,7 @@ impl GhosttyBuffer {
         let row_iter = RowIterator::new().expect("GhosttyBuffer: row_iter init failed");
         let cell_iter = CellIterator::new().expect("GhosttyBuffer: cell_iter init failed");
 
-        let incoming_bytes = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let incoming_bytes = Arc::new(Mutex::new(VecDeque::<u8>::new()));
         let incoming_clone = Arc::clone(&incoming_bytes);
 
         let gb = GhosttyBuffer {
@@ -200,7 +201,11 @@ impl GhosttyBuffer {
     /// for the OS to mark the window as "not responding".  Any remainder
     /// stays in `incoming_bytes` and is picked up on the next frame.
     pub fn process_pending_bytes(&mut self) {
-        const MAX_BYTES_PER_FRAME: usize = 65_536;
+        const MAX_BYTES_PER_FRAME: usize = 4_096;
+        // When the buffer grows beyond this limit (e.g. grep on minified files), discard
+        // the oldest bytes so the terminal stays responsive and catches up quickly.
+        // The terminal will show the tail of the output rather than freezing for minutes.
+        const OVERFLOW_LIMIT: usize = 512 * 1024; // 512 KB
 
         let bytes = {
             let Ok(mut incoming) = self.incoming_bytes.lock() else {
@@ -209,9 +214,16 @@ impl GhosttyBuffer {
             if incoming.is_empty() {
                 return;
             }
+            // Discard oldest bytes to keep the buffer bounded.
+            if incoming.len() > OVERFLOW_LIMIT {
+                let drop_n = incoming.len() - OVERFLOW_LIMIT;
+                incoming.drain(..drop_n);
+                eprintln!("[TERM] dropped {} bytes (buffer overflow)", drop_n);
+            }
             if incoming.len() <= MAX_BYTES_PER_FRAME {
-                std::mem::take(&mut *incoming)
+                Vec::from(std::mem::take(&mut *incoming))
             } else {
+                // drain from VecDeque front is O(drained), not O(total)
                 incoming.drain(..MAX_BYTES_PER_FRAME).collect()
             }
         };
@@ -219,7 +231,14 @@ impl GhosttyBuffer {
         // Intercept Kitty Graphics Protocol sequences for image rendering.
         let kitty_seqs = crate::kitty_graphics::find_kitty_sequences(&bytes);
         if kitty_seqs.is_empty() {
+            let t0 = std::time::Instant::now();
             self.terminal.vt_write(&bytes);
+            // When vt_write gets slow, the libghostty scrollback has grown large (long
+            // wrapping lines accumulate many rows).  Erase saved lines (ESC[3J) to reset
+            // the scrollback without touching the visible screen, so the next call is fast.
+            if t0.elapsed().as_millis() > 50 {
+                self.terminal.vt_write(b"\x1b[3J");
+            }
         } else {
             let mut last = 0usize;
             for (seq_start, seq_end) in kitty_seqs {
