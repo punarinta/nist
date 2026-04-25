@@ -663,10 +663,20 @@ impl Terminal {
         let sel = (*selection)?;
         drop(selection);
 
-        let gb = self.ghostty_buffer.try_lock().ok()?;
+        let mut gb = self.ghostty_buffer.try_lock().ok()?;
         let (start_col, start_row, end_col, end_row) = sel.normalized();
         let width = gb.width();
-        let total_rows = gb.scrollback_len() + gb.height();
+        let height = gb.height();
+        let scrollback_len = gb.scrollback_len();
+        let scroll_offset = gb.scroll_offset();
+        let total_rows = scrollback_len + height;
+
+        // Topmost visible row in absolute coordinates.
+        let viewport_start = scrollback_len.saturating_sub(scroll_offset);
+
+        // Build a viewport grid using the render API (correct, proven path).
+        // grid[row][col] = grapheme chars; empty vec = blank cell.
+        let viewport_grid = gb.get_viewport_text_grid();
 
         let mut text = String::new();
         for row in start_row..=end_row {
@@ -681,18 +691,40 @@ impl Terminal {
             };
 
             let mut line = String::new();
-            for col in line_start..=line_end {
-                let chars = gb.graphemes_at(col, row);
-                if chars.is_empty() {
-                    continue;
+            if row >= viewport_start && row < viewport_start + height {
+                // Row is in the current viewport — read from the render grid.
+                let vp_row = row - viewport_start;
+                for col in line_start..=line_end {
+                    let chars = viewport_grid
+                        .get(vp_row)
+                        .and_then(|r| r.get(col))
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    if chars.is_empty() {
+                        line.push(' ');
+                    } else {
+                        for &ch in chars {
+                            if ch != '\0' {
+                                line.push(ch);
+                            }
+                        }
+                    }
                 }
-                // Skip wide-char spacers (cell_width 0)
-                if gb.cell_width_at(col, row) == 0 {
-                    continue;
-                }
-                for ch in chars {
-                    if ch != '\0' {
-                        line.push(ch);
+            } else {
+                // Row is in scrollback — fall back to graphemes_at.
+                for col in line_start..=line_end {
+                    let chars = gb.graphemes_at(col, row);
+                    if chars.is_empty() {
+                        line.push(' ');
+                        continue;
+                    }
+                    if gb.cell_width_at(col, row) == 0 {
+                        continue;
+                    }
+                    for ch in chars {
+                        if ch != '\0' {
+                            line.push(ch);
+                        }
                     }
                 }
             }

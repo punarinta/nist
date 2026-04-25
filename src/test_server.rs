@@ -1057,74 +1057,69 @@ impl TestServer {
                 TestResponse::ActivePane { pane_id: 0 }
             }
             TestCommand::MouseClick { button, col, row, pressed } => {
-                let active_idx = *self.active_tab.lock().unwrap();
-                if let Ok(terminals) = self.terminals.lock() {
-                    if let Some(terminal) = terminals.get(active_idx) {
-                        if let Ok(mut t) = terminal.lock() {
-                            // Handle selection for left mouse button (button 0)
-                            if button == 0 {
-                                let cell_col = (col - 1) as usize;
-                                let cell_row = (row - 1) as usize;
-                                if pressed {
-                                    // Start selection on mouse down
-                                    t.start_selection(cell_col, cell_row);
-                                } else {
-                                    // Mouse up - check if this is a single click (no drag)
-                                    let selection = *t.selection.lock().unwrap();
-                                    if let Some(sel) = selection {
-                                        if sel.start_col == cell_col && sel.start_row == cell_row && sel.end_col == cell_col && sel.end_row == cell_row {
-                                            // Single point selection (no drag) - clear it
-                                            t.clear_selection();
-                                        } else {
-                                            // Actual drag - update the end point
-                                            t.update_selection(cell_col, cell_row);
+                // Get the active terminal via the pane layout (same path as Text/GetBuffer).
+                let terminal = self.tab_bar_gui.lock().ok()
+                    .and_then(|gui| gui.get_active_terminal());
+                if let Some(terminal) = terminal {
+                    if let Ok(mut t) = terminal.lock() {
+                        // Handle selection for left mouse button (button 0)
+                        if button == 0 {
+                            let cell_col = (col - 1) as usize;
+                            let cell_row = (row - 1) as usize;
+                            if pressed {
+                                t.start_selection(cell_col, cell_row);
+                            } else {
+                                // Mouse up - check if this is a single click (no drag)
+                                let selection = *t.selection.lock().unwrap();
+                                if let Some(sel) = selection {
+                                    if sel.start_col == cell_col && sel.start_row == cell_row && sel.end_col == cell_col && sel.end_row == cell_row {
+                                        t.clear_selection();
+                                    } else {
+                                        t.update_selection(cell_col, cell_row);
 
-                                            // Copy selection to PRIMARY clipboard on Linux
-                                            #[cfg(target_os = "linux")]
-                                            {
-                                                if let Some(text) = t.get_selected_text() {
-                                                    if !text.is_empty() {
-                                                        use arboard::{Clipboard, LinuxClipboardKind, SetExtLinux};
-                                                        drop(t); // Drop terminal lock
+                                        // Copy selection to PRIMARY clipboard on Linux
+                                        #[cfg(target_os = "linux")]
+                                        {
+                                            if let Some(text) = t.get_selected_text() {
+                                                if !text.is_empty() {
+                                                    use arboard::{Clipboard, LinuxClipboardKind, SetExtLinux};
+                                                    drop(t); // Drop terminal lock before locking gui
 
-                                                        // Store clipboard in PaneLayout to keep PRIMARY selection alive
-                                                        if let Ok(mut gui) = self.tab_bar_gui.lock() {
-                                                            if let Some(pane_layout) = gui.get_active_pane_layout() {
-                                                                match Clipboard::new() {
-                                                                    Ok(mut clipboard) => {
-                                                                        let text_copy = text.clone();
-                                                                        if let Err(e) = clipboard.set().clipboard(LinuxClipboardKind::Primary).text(text_copy) {
-                                                                            eprintln!("[TEST_SERVER] Failed to copy to PRIMARY: {}", e);
-                                                                        } else {
-                                                                            pane_layout.primary_clipboard = Some(clipboard);
-                                                                            eprintln!("[TEST_SERVER] Copied to PRIMARY clipboard: {} chars", text.len());
-                                                                        }
+                                                    if let Ok(mut gui) = self.tab_bar_gui.lock() {
+                                                        if let Some(pane_layout) = gui.get_active_pane_layout() {
+                                                            match Clipboard::new() {
+                                                                Ok(mut clipboard) => {
+                                                                    let text_copy = text.clone();
+                                                                    if let Err(e) = clipboard.set().clipboard(LinuxClipboardKind::Primary).text(text_copy) {
+                                                                        eprintln!("[TEST_SERVER] Failed to copy to PRIMARY: {}", e);
+                                                                    } else {
+                                                                        pane_layout.primary_clipboard = Some(clipboard);
+                                                                        eprintln!("[TEST_SERVER] Copied to PRIMARY clipboard: {} chars", text.len());
                                                                     }
-                                                                    Err(e) => {
-                                                                        eprintln!("[TEST_SERVER] Failed to create clipboard: {}", e);
-                                                                    }
+                                                                }
+                                                                Err(e) => {
+                                                                    eprintln!("[TEST_SERVER] Failed to create clipboard: {}", e);
                                                                 }
                                                             }
                                                         }
-
-                                                        thread::sleep(std::time::Duration::from_millis(50));
-                                                        return TestResponse::Ok;
                                                     }
+
+                                                    thread::sleep(std::time::Duration::from_millis(50));
+                                                    return TestResponse::Ok;
                                                 }
                                             }
                                         }
-                                    } else {
-                                        // No selection active, just update
-                                        t.update_selection(cell_col, cell_row);
                                     }
+                                } else {
+                                    t.update_selection(cell_col, cell_row);
                                 }
                             }
-
-                            // Also send mouse event for applications that use mouse tracking
-                            t.send_mouse_event(button, col, row, pressed);
-                            thread::sleep(std::time::Duration::from_millis(50));
-                            return TestResponse::Ok;
                         }
+
+                        // Also send mouse event for applications that use mouse tracking
+                        t.send_mouse_event(button, col, row, pressed);
+                        thread::sleep(std::time::Duration::from_millis(50));
+                        return TestResponse::Ok;
                     }
                 }
                 TestResponse::Error {
@@ -1132,19 +1127,15 @@ impl TestServer {
                 }
             }
             TestCommand::MouseMove { col, row } => {
-                // Mouse move is used during selection to update the selection end point
-                // We'll handle this by getting the active terminal and updating its selection
-                let active_idx = *self.active_tab.lock().unwrap();
-                if let Ok(terminals) = self.terminals.lock() {
-                    if let Some(terminal) = terminals.get(active_idx) {
-                        if let Ok(mut t) = terminal.lock() {
-                            // Convert terminal coordinates to cell coordinates (0-based)
-                            let cell_col = (col - 1) as usize;
-                            let cell_row = (row - 1) as usize;
-                            t.update_selection(cell_col, cell_row);
-                            thread::sleep(std::time::Duration::from_millis(10));
-                            return TestResponse::Ok;
-                        }
+                let terminal = self.tab_bar_gui.lock().ok()
+                    .and_then(|gui| gui.get_active_terminal());
+                if let Some(terminal) = terminal {
+                    if let Ok(mut t) = terminal.lock() {
+                        let cell_col = (col - 1) as usize;
+                        let cell_row = (row - 1) as usize;
+                        t.update_selection(cell_col, cell_row);
+                        thread::sleep(std::time::Duration::from_millis(10));
+                        return TestResponse::Ok;
                     }
                 }
                 TestResponse::Error {
@@ -1152,13 +1143,12 @@ impl TestServer {
                 }
             }
             TestCommand::GetSelection => {
-                let active_idx = *self.active_tab.lock().unwrap();
-                if let Ok(terminals) = self.terminals.lock() {
-                    if let Some(terminal) = terminals.get(active_idx) {
-                        if let Ok(t) = terminal.lock() {
-                            let text = t.get_selected_text();
-                            return TestResponse::Selection { text };
-                        }
+                let terminal = self.tab_bar_gui.lock().ok()
+                    .and_then(|gui| gui.get_active_terminal());
+                if let Some(terminal) = terminal {
+                    if let Ok(t) = terminal.lock() {
+                        let text = t.get_selected_text();
+                        return TestResponse::Selection { text };
                     }
                 }
                 TestResponse::Selection { text: None }

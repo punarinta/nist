@@ -507,17 +507,78 @@ impl GhosttyBuffer {
         })
     }
 
+    /// Read every cell in the current viewport.
+    ///
+    /// Returns `grid[row][col]` = grapheme chars at that cell, where row 0 is
+    /// the topmost visible row.  Empty vec means a blank cell (treat as space).
+    pub fn get_viewport_text_grid(&mut self) -> Vec<Vec<Vec<char>>> {
+        let height = self.height();
+        let width = self.width();
+        self.render_with(|ctx| {
+            let mut grid: Vec<Vec<Vec<char>>> = vec![vec![vec![]; width]; height];
+            let RenderContext { snapshot, row_iter, cell_iter } = ctx;
+            let mut row_it = row_iter.update(snapshot).expect("row_iter update");
+            let mut row_idx = 0;
+            while let Some(row) = row_it.next() {
+                if row_idx >= height { break; }
+                let mut cell_it = cell_iter.update(row).expect("cell_iter update");
+                let mut col_idx = 0;
+                while let Some(cell) = cell_it.next() {
+                    if col_idx >= width { break; }
+                    grid[row_idx][col_idx] = cell.graphemes().unwrap_or_default();
+                    col_idx += 1;
+                }
+                row_idx += 1;
+            }
+            grid
+        })
+    }
+
     // ── grid access (for selection / history reads) ──────────────────────────
+
+    /// Convert an absolute row (0 = oldest scrollback, increases toward
+    /// bottommost visible row) to a Point for grid_ref lookup.
+    ///
+    /// Uses Point::Viewport for rows inside the current viewport (fast),
+    /// and Point::History for rows that are scrolled above it.
+    fn abs_row_to_point(&self, abs_row: usize) -> Option<libghostty_vt::terminal::Point> {
+        use libghostty_vt::terminal::Point;
+        let scrollback_len = self.scrollback_len();
+        let scroll_offset = self.scroll_offset();
+        // Absolute row of the topmost currently visible row.
+        let viewport_start = scrollback_len.saturating_sub(scroll_offset);
+        let height = self.height();
+
+        if abs_row >= viewport_start && abs_row < viewport_start + height {
+            // Row is inside the current viewport.
+            let viewport_y = (abs_row - viewport_start) as u32;
+            Some(Point::Viewport(PointCoordinate {
+                x: 0, // x is set by caller; placeholder, overridden below
+                y: viewport_y,
+            }))
+        } else if abs_row < viewport_start {
+            // Row is in scrollback history above the viewport.
+            // Point::History y=0 is the row just above the viewport (newest history).
+            let history_y = (viewport_start - 1 - abs_row) as u32;
+            Some(Point::History(PointCoordinate {
+                x: 0,
+                y: history_y,
+            }))
+        } else {
+            None
+        }
+    }
 
     /// Read the grapheme cluster at an absolute screen row (0 = oldest
     /// scrollback line) and column.  Returns an empty vec on failure or if
     /// the cell has no text.
     pub fn graphemes_at(&self, col: usize, abs_row: usize) -> Vec<char> {
         use libghostty_vt::terminal::Point;
-        let point = Point::Screen(PointCoordinate {
-            x: col as u16,
-            y: abs_row as u32,
-        });
+        let point = match self.abs_row_to_point(abs_row) {
+            Some(Point::Viewport(c)) => Point::Viewport(PointCoordinate { x: col as u16, y: c.y }),
+            Some(Point::History(c)) => Point::History(PointCoordinate { x: col as u16, y: c.y }),
+            _ => return Vec::new(),
+        };
         let Ok(grid_ref) = self.terminal.grid_ref(point) else {
             return Vec::new();
         };
@@ -533,10 +594,11 @@ impl GhosttyBuffer {
     pub fn cell_width_at(&self, col: usize, abs_row: usize) -> u8 {
         use libghostty_vt::screen::CellWide;
         use libghostty_vt::terminal::Point;
-        let point = Point::Screen(PointCoordinate {
-            x: col as u16,
-            y: abs_row as u32,
-        });
+        let point = match self.abs_row_to_point(abs_row) {
+            Some(Point::Viewport(c)) => Point::Viewport(PointCoordinate { x: col as u16, y: c.y }),
+            Some(Point::History(c)) => Point::History(PointCoordinate { x: col as u16, y: c.y }),
+            _ => return 1,
+        };
         let Ok(grid_ref) = self.terminal.grid_ref(point) else {
             return 1;
         };
