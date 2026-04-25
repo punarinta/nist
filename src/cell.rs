@@ -15,21 +15,29 @@ pub fn is_emoji_char(ch: char) -> bool {
         // Symbols and Pictographs Extended-A
         0x1FA00..=0x1FA6F |
         0x1FA70..=0x1FAFF |
-        // Miscellaneous Symbols (including weather, zodiac)
+        // Miscellaneous Symbols (including weather, zodiac, cards, chess)
         0x2600..=0x26FF |
-        // Enclosed Alphanumeric Supplement (includes circled numbers and regional indicators for flags)
+        // Dingbats (✅✔✓❌❗❓➡✨💥 etc.)
+        0x2700..=0x27BF |
+        // Enclosed Alphanumeric Supplement (circled numbers, regional indicators for flags)
         0x1F100..=0x1F1FF |
         // Enclosed Ideographic Supplement
         0x1F200..=0x1F2FF |
-        // Variation Selectors (emoji presentation)
+        // Variation Selectors (emoji presentation selector U+FE0F)
         0xFE00..=0xFE0F |
         // Mahjong Tiles, Domino Tiles
         0x1F000..=0x1F02F |
         // Playing Cards
         0x1F0A0..=0x1F0FF |
-        // Emoji characters in Miscellaneous Technical range (⌚⌛⏩⏪⏫⏬⏭⏮⏯⏰⏱⏲⏳)
-        0x231A..=0x231B |  // Watch, Hourglass
-        0x23E9..=0x23F3    // Fast-forward/rewind/up/down, hourglass with flowing sand (⏳)
+        // Miscellaneous Technical: Watch, Hourglass and timer glyphs
+        0x231A..=0x231B |
+        0x23E9..=0x23F3 |
+        // Miscellaneous Symbols and Arrows (⬅⬆⬇⬛⬜⭐⭕ etc.)
+        0x2B00..=0x2BFF |
+        // Geometric Shapes (▪▫▬▭▮▯▰▱◆◇◈◉◊○◌◍◎●◐◑◒◓◔◕◖◗ etc.)
+        0x25A0..=0x25FF |
+        // Enclosed Alphanumerics (①②③ etc.)
+        0x2460..=0x24FF
     )
 }
 

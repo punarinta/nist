@@ -953,7 +953,10 @@ fn render_glyph<T>(
             if let Ok(surface) = emoji_fallback_result {
                 if surface.width() > 0 && surface.height() > 0 {
                     if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                        canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
+                        let scale = (cell_width as f32 / surface.width() as f32).min(cell_height as f32 / surface.height() as f32).min(1.0);
+                        let scaled_w = (surface.width() as f32 * scale) as u32;
+                        let scaled_h = (surface.height() as f32 * scale) as u32;
+                        canvas.copy(&texture, None, Rect::new(x, y, scaled_w, scaled_h)).map_err(|e| e.to_string())?;
                         if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
                         return Ok(());
                     }
@@ -970,7 +973,10 @@ fn render_glyph<T>(
         if let Ok(surface) = cjk_fallback_result {
             if surface.width() > 0 && surface.height() > 0 {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                    canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
+                    let scale = (cell_width as f32 / surface.width() as f32).min(cell_height as f32 / surface.height() as f32).min(1.0);
+                    let scaled_w = (surface.width() as f32 * scale) as u32;
+                    let scaled_h = (surface.height() as f32 * scale) as u32;
+                    canvas.copy(&texture, None, Rect::new(x, y, scaled_w, scaled_h)).map_err(|e| e.to_string())?;
                     if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
                     return Ok(());
                 }
