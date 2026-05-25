@@ -430,7 +430,7 @@ fn default_ai_command_generation() -> Vec<KeyBinding> {
         ctrl: true,
         shift: true,
         alt: false,
-        key: Key::A,
+        key: Key::I,
         key2: None,
         hold: false,
     }]
@@ -441,7 +441,7 @@ fn default_voice_input() -> Vec<KeyBinding> {
         ctrl: true,
         shift: true,
         alt: false,
-        key: Key::V,
+        key: Key::A,
         key2: None,
         hold: true,
     }]

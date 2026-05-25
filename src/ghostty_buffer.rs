@@ -236,7 +236,7 @@ impl GhosttyBuffer {
             // When vt_write gets slow, the libghostty scrollback has grown large (long
             // wrapping lines accumulate many rows).  Erase saved lines (ESC[3J) to reset
             // the scrollback without touching the visible screen, so the next call is fast.
-            if t0.elapsed().as_millis() > 50 {
+            if t0.elapsed().as_millis() > 500 {
                 self.terminal.vt_write(b"\x1b[3J");
             }
         } else {
