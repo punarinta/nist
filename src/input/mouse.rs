@@ -74,6 +74,11 @@ pub struct MouseState {
     pub ready_to_drag_tab: bool,
     pub ctrl_pressed: bool,
     pub hovered_url: Option<UrlInfo>,
+    /// True when Shift is held during a mouse-down, bypassing app mouse tracking for native selection
+    pub shift_bypassing_mouse: bool,
+    /// How many viewport lines we scrolled up during an active drag to compensate for scrollback
+    /// growth (new PTY output). Reset to 0 on mouse-up by scrolling back down the same amount.
+    pub selection_drag_scroll_compensation: usize,
 }
 
 impl MouseState {
@@ -90,6 +95,8 @@ impl MouseState {
             ready_to_drag_tab: false,
             ctrl_pressed: false,
             hovered_url: None,
+            shift_bypassing_mouse: false,
+            selection_drag_scroll_compensation: 0,
         }
     }
 }
@@ -364,10 +371,12 @@ fn handle_left_button_down(
     let pane_area_y = tab_bar_height as i32;
     let pane_area_height = window_height - tab_bar_height;
 
-    // Check if Ctrl is pressed for group selection or URL opening
+    // Check if Ctrl/Shift are pressed
     let keyboard_state = event_pump.keyboard_state();
     let is_ctrl_pressed =
         keyboard_state.is_scancode_pressed(sdl3::keyboard::Scancode::LCtrl) || keyboard_state.is_scancode_pressed(sdl3::keyboard::Scancode::RCtrl);
+    let is_shift_pressed =
+        keyboard_state.is_scancode_pressed(sdl3::keyboard::Scancode::LShift) || keyboard_state.is_scancode_pressed(sdl3::keyboard::Scancode::RShift);
 
     // Ctrl+Click on URL - open it in browser
     if is_ctrl_pressed && mouse_state.hovered_url.is_some() {
@@ -387,6 +396,7 @@ fn handle_left_button_down(
     }
 
     let mut terminal_has_mouse_tracking = false;
+    let mut shift_bypass = false;
 
     if let Ok(mut gui) = tab_bar_gui.try_lock() {
         // Check if other tabs have selections (before mutable borrow)
@@ -424,10 +434,13 @@ fn handle_left_button_down(
                     terminal_has_mouse_tracking = t.is_mouse_tracking_enabled();
                 }
             }
+            // Shift+click bypasses app mouse tracking so the user can always make native selections
+            shift_bypass = is_shift_pressed && terminal_has_mouse_tracking;
 
             // Handle double-click word selection and triple-click line selection.
             // Skip when the program has mouse tracking enabled - pass the clicks through instead.
-            if !terminal_has_mouse_tracking && clicks >= 2 && mouse_y >= tab_bar_height as i32 {
+            // Exception: Shift held bypasses mouse tracking for native selection.
+            if (!terminal_has_mouse_tracking || shift_bypass) && clicks >= 2 && mouse_y >= tab_bar_height as i32 {
                 if let Some(terminal) = gui.get_active_terminal() {
                     if let Ok(mut t) = terminal.try_lock() {
                         // Convert mouse coordinates to terminal cell coordinates
@@ -463,27 +476,33 @@ fn handle_left_button_down(
         }
     }
 
-    // Prepare for potential drag selection (don't start yet).
-    // Skip when the program has mouse tracking enabled - it handles its own selection.
-    if !terminal_has_mouse_tracking {
-        mouse_state.mouse_down_for_selection = true;
-        mouse_state.selection_start_pos = (mouse_x, mouse_y);
-        mouse_state.selection_started = false;
-    }
+    // Always prepare for a potential drag selection.
+    // Motion events are never forwarded to the app, so drag-selecting never
+    // conflicts with app mouse tracking.  The initial click is still forwarded
+    // (see below) so app interactions like clicking buttons still work.
+    // Shift+tracking sets shift_bypassing_mouse which also suppresses the
+    // button-down forwarding for a fully transparent selection experience.
+    mouse_state.mouse_down_for_selection = true;
+    mouse_state.selection_start_pos = (mouse_x, mouse_y);
+    mouse_state.selection_started = false;
+    mouse_state.shift_bypassing_mouse = shift_bypass;
 
-    // Send left mouse button press event to terminal (button 0 = left)
-    send_mouse_to_terminal(
-        tab_bar_gui,
-        mouse_x,
-        mouse_y,
-        0,
-        true,
-        char_width,
-        char_height,
-        tab_bar_height,
-        window_width,
-        window_height,
-    );
+    // Send left mouse button press event to terminal (button 0 = left).
+    // Skip when Shift is bypassing mouse tracking - the click is for selection, not the app.
+    if !shift_bypass {
+        send_mouse_to_terminal(
+            tab_bar_gui,
+            mouse_x,
+            mouse_y,
+            0,
+            true,
+            char_width,
+            char_height,
+            tab_bar_height,
+            window_width,
+            window_height,
+        );
+    }
 
     MouseResult::render()
 }
@@ -573,8 +592,11 @@ pub fn handle_mouse_button_up(
     let mut result = MouseResult::none();
 
     // Handle end of mouse selection
+    let was_shift_bypassing = mouse_state.shift_bypassing_mouse;
+    let was_selection_started = mouse_state.selection_started;
     if mouse_btn == MouseButton::Left && mouse_state.mouse_down_for_selection {
         mouse_state.mouse_down_for_selection = false;
+        mouse_state.shift_bypassing_mouse = false;
 
         // Only check for selected text if selection was actually started
         if mouse_state.selection_started {
@@ -589,6 +611,20 @@ pub fn handle_mouse_button_up(
                 if let Some(terminal) = gui.get_active_terminal() {
                     if let Ok(mut t) = terminal.try_lock() {
                         t.clear_selection();
+                    }
+                }
+            }
+        }
+        // Undo any viewport scroll we applied during the drag to keep selected rows visible.
+        // This returns the viewport to its pre-drag position (typically the live bottom).
+        let comp = std::mem::replace(&mut mouse_state.selection_drag_scroll_compensation, 0);
+        if comp > 0 {
+            if let Ok(gui) = tab_bar_gui.try_lock() {
+                if let Some(term) = gui.get_active_terminal() {
+                    if let Ok(t) = term.try_lock() {
+                        if let Ok(mut gb) = t.ghostty_buffer.try_lock() {
+                            gb.scroll_view_down(comp);
+                        }
                     }
                 }
             }
@@ -633,8 +669,13 @@ pub fn handle_mouse_button_up(
         mouse_state.ready_to_drag_tab = false;
     }
 
-    // Send mouse release events to terminal
-    if mouse_y >= tab_bar_height as i32 {
+    // Send mouse release events to terminal.
+    // Skip the left button release when a drag selection occurred (whether via Shift-bypass
+    // or a plain drag).  The app already got the button-down; sending a release at a
+    // different position would confuse it about the click location.
+    let skip_left_release = mouse_btn == MouseButton::Left
+        && (was_shift_bypassing || was_selection_started);
+    if mouse_y >= tab_bar_height as i32 && !skip_left_release {
         let button = match mouse_btn {
             MouseButton::Left => 0,
             MouseButton::Middle => 1,

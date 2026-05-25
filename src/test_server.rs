@@ -68,6 +68,8 @@ pub enum TestCommand {
         col: u32,      // 1-based column
         row: u32,      // 1-based row
         pressed: bool, // true for press, false for release
+        #[serde(default)]
+        shift: bool,   // true = Shift held, bypasses mouse tracking for native selection
     },
     #[serde(rename = "mouse_move")]
     MouseMove {
@@ -1056,16 +1058,34 @@ impl TestServer {
                 }
                 TestResponse::ActivePane { pane_id: 0 }
             }
-            TestCommand::MouseClick { button, col, row, pressed } => {
+            TestCommand::MouseClick { button, col, row, pressed, shift } => {
                 // Get the active terminal via the pane layout (same path as Text/GetBuffer).
                 let terminal = self.tab_bar_gui.lock().ok()
                     .and_then(|gui| gui.get_active_terminal());
                 if let Some(terminal) = terminal {
                     if let Ok(mut t) = terminal.lock() {
-                        // Handle selection for left mouse button (button 0)
+                        // Drain pending bytes before checking mouse tracking state.
+                        // The test server blocks the main SDL loop, so process_pending_bytes()
+                        // would otherwise not run until the next GetBuffer call.
+                        if let Ok(mut gb) = t.ghostty_buffer.lock() {
+                            loop {
+                                gb.process_pending_bytes();
+                                let is_empty = gb.incoming_bytes.try_lock().map_or(true, |b| b.is_empty());
+                                if is_empty { break; }
+                            }
+                        }
+
+                        // Mirrors mouse.rs: drag selection always works regardless of mouse
+                        // tracking.  Shift+tracking suppresses forwarding the button-down to
+                        // the app as well (fully transparent selection).
+                        let app_has_mouse_tracking = t.is_mouse_tracking_enabled();
+                        let shift_bypass = shift && app_has_mouse_tracking;
+
+                        let cell_col = (col - 1) as usize;
+                        let cell_row = (row - 1) as usize;
+
+                        // Handle selection for left mouse button (button 0) — always
                         if button == 0 {
-                            let cell_col = (col - 1) as usize;
-                            let cell_row = (row - 1) as usize;
                             if pressed {
                                 t.start_selection(cell_col, cell_row);
                             } else {
@@ -1116,8 +1136,18 @@ impl TestServer {
                             }
                         }
 
-                        // Also send mouse event for applications that use mouse tracking
-                        t.send_mouse_event(button, col, row, pressed);
+                        // Send mouse event to app unless:
+                        // - Shift is bypassing tracking entirely, OR
+                        // - This is a button-up after a drag selection (the app got button-down
+                        //   already; releasing at a different position would confuse it).
+                        let is_drag_release = !pressed && button == 0 && {
+                            let sel = t.selection.lock().unwrap();
+                            sel.map(|s| s.start_col != cell_col || s.start_row != cell_row)
+                                .unwrap_or(false)
+                        };
+                        if !shift_bypass && !is_drag_release {
+                            t.send_mouse_event(button, col, row, pressed);
+                        }
                         thread::sleep(std::time::Duration::from_millis(50));
                         return TestResponse::Ok;
                     }

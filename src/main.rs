@@ -1201,10 +1201,13 @@ fn main() -> Result<(), String> {
 
             // Rate-limit rendering to ~30 fps to avoid burning CPU on heavy PTY output.
             // Input events are already processed above; this only throttles the visual redraw.
+            // Mouse motion during a drag selection counts as a user event so the selection
+            // highlight renders at the fast 33ms interval instead of the slow 66ms PTY rate.
             let has_user_event = events.iter().any(|e| matches!(e,
                 Event::KeyDown { .. } | Event::TextInput { .. } |
                 Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
-            ));
+            )) || (mouse_state.mouse_down_for_selection
+                && events.iter().any(|e| matches!(e, Event::MouseMotion { .. })));
             // Interactive events (keyboard, clicks, cell-level mouse movement) require
             // the active pane to be fully re-rendered so URL highlights and selection
             // visuals stay correct.
@@ -1248,6 +1251,22 @@ fn main() -> Result<(), String> {
                 // We loop per-terminal until its buffer is empty so that fast producers
                 // (bundlers, claude-code) don't accumulate a growing lag debt.
                 if let Ok(gui) = tab_bar_gui.try_lock() {
+                    // Snapshot the active terminal's scrollback length before draining PTY
+                    // bytes so we can compensate if the viewport advances during a drag selection.
+                    let active_scrollback_before: Option<usize> = if mouse_state.selection_started {
+                        if let Some(term) = gui.get_active_terminal() {
+                            if let Ok(t) = term.try_lock() {
+                                t.ghostty_buffer.try_lock().ok().map(|gb| gb.scrollback_len())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     for term in gui.get_active_tab_terminals() {
                         if let Ok(t) = term.try_lock() {
                             if let Ok(mut gb) = t.ghostty_buffer.try_lock() {
@@ -1261,6 +1280,23 @@ fn main() -> Result<(), String> {
                                         .map_or(false, |b| !b.is_empty());
                                     if !has_more || std::time::Instant::now() >= deadline {
                                         break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // If a drag selection is in progress, pin the viewport by scrolling up
+                    // to compensate for any new scrollback lines added this frame.  This
+                    // keeps the selection's absolute-row addresses in the visible viewport.
+                    if let Some(before) = active_scrollback_before {
+                        if let Some(term) = gui.get_active_terminal() {
+                            if let Ok(t) = term.try_lock() {
+                                if let Ok(mut gb) = t.ghostty_buffer.try_lock() {
+                                    let delta = gb.scrollback_len().saturating_sub(before);
+                                    if delta > 0 {
+                                        gb.scroll_view_up(delta);
+                                        mouse_state.selection_drag_scroll_compensation += delta;
                                     }
                                 }
                             }
