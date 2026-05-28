@@ -990,21 +990,44 @@ pub fn handle_mouse_wheel(
 
     let mut needs_render = false;
 
-    // Mouse wheel scrolls through scrollback buffer
     // y > 0 is scroll up (backward in time), y < 0 is scroll down (forward in time)
     if wheel_y != 0 {
-        if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
-            let t = terminal.lock().unwrap();
-            let lines_to_scroll = wheel_y.abs().max(1) as usize;
+        let tracking_enabled = tab_bar_gui
+            .lock()
+            .unwrap()
+            .get_active_terminal()
+            .map(|t| t.lock().unwrap().is_mouse_tracking_enabled())
+            .unwrap_or(false);
 
-            if wheel_y > 0 {
-                // Scroll up (backward) through scrollback
-                t.ghostty_buffer.lock().unwrap().scroll_view_up(lines_to_scroll);
-            } else {
-                // Scroll down (forward) toward live view
-                t.ghostty_buffer.lock().unwrap().scroll_view_down(lines_to_scroll);
+        if tracking_enabled {
+            // Forward scroll to app as button 64 (up) / 65 (down)
+            let button = if wheel_y > 0 { 64u8 } else { 65u8 };
+            let times = wheel_y.unsigned_abs() as usize;
+            for _ in 0..times {
+                send_mouse_to_terminal(
+                    tab_bar_gui,
+                    mouse_x,
+                    mouse_y,
+                    button,
+                    true,
+                    char_width,
+                    char_height,
+                    tab_bar_height,
+                    window_width,
+                    window_height,
+                );
             }
-            needs_render = true;
+        } else {
+            if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
+                let t = terminal.lock().unwrap();
+                let lines_to_scroll = wheel_y.abs().max(1) as usize;
+                if wheel_y > 0 {
+                    t.ghostty_buffer.lock().unwrap().scroll_view_up(lines_to_scroll);
+                } else {
+                    t.ghostty_buffer.lock().unwrap().scroll_view_down(lines_to_scroll);
+                }
+                needs_render = true;
+            }
         }
     }
 

@@ -94,6 +94,14 @@ pub enum TestCommand {
     },
     #[serde(rename = "ctrl_mouse_wheel")]
     CtrlMouseWheel { delta: i32 }, // 1 for scroll up (zoom in), -1 for scroll down (zoom out)
+    /// Simulate a mouse wheel event. If mouse tracking is enabled, sends button 64/65 to the
+    /// app; otherwise scrolls the terminal's scrollback buffer.
+    #[serde(rename = "mouse_wheel")]
+    MouseWheel {
+        delta: i32, // positive = scroll up, negative = scroll down
+        col: u32,   // 1-based column for the mouse position
+        row: u32,   // 1-based row for the mouse position
+    },
     /// Check what the SDL hit test would return for a logical window coordinate.
     /// x=-30 means "30 logical pixels from the right edge of the window".
     /// Returns "Normal", "Draggable", "ResizeTop", "ResizeBottom", "ResizeLeft",
@@ -1282,6 +1290,46 @@ impl TestServer {
                 }
                 TestResponse::Error {
                     message: "Failed to simulate zoom".to_string(),
+                }
+            }
+            TestCommand::MouseWheel { delta, col, row } => {
+                let terminal = self.tab_bar_gui.lock().ok()
+                    .and_then(|gui| gui.get_active_terminal());
+                if let Some(terminal) = terminal {
+                    if let Ok(mut t) = terminal.lock() {
+                        // Drain pending bytes so injected escape sequences (e.g. mouse tracking
+                        // setup) are processed before we check the tracking state.
+                        if let Ok(mut gb) = t.ghostty_buffer.lock() {
+                            loop {
+                                gb.process_pending_bytes();
+                                let is_empty = gb.incoming_bytes.try_lock().map_or(true, |b| b.is_empty());
+                                if is_empty { break; }
+                            }
+                        }
+
+                        let tracking_enabled = t.is_mouse_tracking_enabled();
+                        if tracking_enabled {
+                            let button = if delta > 0 { 64u8 } else { 65u8 };
+                            let times = delta.unsigned_abs() as usize;
+                            for _ in 0..times {
+                                t.send_mouse_event(button, col, row, true);
+                            }
+                        } else {
+                            let lines = delta.unsigned_abs() as usize;
+                            if let Ok(mut gb) = t.ghostty_buffer.lock() {
+                                if delta > 0 {
+                                    gb.scroll_view_up(lines);
+                                } else {
+                                    gb.scroll_view_down(lines);
+                                }
+                            }
+                        }
+                        thread::sleep(std::time::Duration::from_millis(50));
+                        return TestResponse::Ok;
+                    }
+                }
+                TestResponse::Error {
+                    message: "Failed to handle mouse wheel".to_string(),
                 }
             }
             TestCommand::CheckHitTest { x, y } => {
