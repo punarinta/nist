@@ -154,17 +154,20 @@ fn main() -> Result<(), String> {
     let mut event_pump = app.event_pump;
     let _event_subsystem = app.event_subsystem; // keep SDL event subsystem alive
     let mut font = app.fonts.font;
-    let tab_font = app.fonts.tab_font;
-    let cpu_font = app.fonts.cpu_font;
-    let context_menu_font = app.fonts.context_menu_font;
-    let emoji_font = app.fonts.emoji_font;
-    let unicode_fallback_font = app.fonts.unicode_fallback_font;
-    let cjk_font = app.fonts.cjk_font;
+    // Fonts and scale-derived metrics are mutable: the main loop rebuilds them when
+    // the display scaling changes (window mapped onto a scaled output, moved between
+    // monitors, or `wlr-randr --scale` adjusted at runtime).
+    let mut tab_font = app.fonts.tab_font;
+    let mut cpu_font = app.fonts.cpu_font;
+    let mut context_menu_font = app.fonts.context_menu_font;
+    let mut emoji_font = app.fonts.emoji_font;
+    let mut unicode_fallback_font = app.fonts.unicode_fallback_font;
+    let mut cjk_font = app.fonts.cjk_font;
     let mut char_width = app.char_dims.width;
     let mut char_height = app.char_dims.height;
-    let scale_factor = app.scale_info.scale_factor;
-    let mouse_coords_need_scaling = app.scale_info.mouse_coords_need_scaling;
-    let tab_bar_height = app.tab_bar_height;
+    let mut scale_factor = app.scale_info.scale_factor;
+    let mut mouse_coords_need_scaling = app.scale_info.mouse_coords_need_scaling;
+    let mut tab_bar_height = app.tab_bar_height;
     let mut tab_bar = app.tab_bar;
     let tab_bar_gui = app.tab_bar_gui;
     let mut settings = app.settings;
@@ -211,8 +214,11 @@ fn main() -> Result<(), String> {
     let mut pending_new_tab = false;
     let mut tab_switched = false; // persists until the next render to force pane redraw
     let mut last_render = Instant::now();
-    let input_render_interval = std::time::Duration::from_millis(33); // ~30 fps on interaction
-    let pty_render_interval   = std::time::Duration::from_millis(66); // ~15 fps for PTY output
+    let pty_render_interval = std::time::Duration::from_millis(66); // ~15 fps for PTY output
+
+    // Throttle for the dead-terminal sweep (child.try_wait() is a syscall per terminal).
+    let mut last_dead_check = Instant::now();
+    let dead_check_interval = std::time::Duration::from_millis(500);
 
     // Animation clock (monotonic, used for voice indicator pulse etc.)
     let app_start = Instant::now();
@@ -620,6 +626,57 @@ fn main() -> Result<(), String> {
                         window_logical_size.1.store(new_log_h as i32, std::sync::atomic::Ordering::Relaxed);
                         is_window_maximized.store(canvas.window().is_maximized(), std::sync::atomic::Ordering::Relaxed);
                         eprintln!("[MAIN] Window resized to {}x{}", new_width, new_height);
+
+                        // Re-detect display scaling. The initial detection at startup runs
+                        // before the Wayland surface is configured (so it can read a stale
+                        // 1.0 scale); the real scale only becomes known once the window is
+                        // mapped, and can change later (monitor move, `wlr-randr --scale`).
+                        // When it changes we must rebuild every font and scale-derived metric,
+                        // otherwise glyphs are rasterized at the wrong size and the compositor
+                        // upscales a low-res buffer (blurry text) while fixed chrome looks off.
+                        // Computed inline (rather than via the verbose detect_scaling) so a
+                        // drag-resize doesn't spam the log on every intermediate size.
+                        let (rdw, _) = canvas.window().size_in_pixels();
+                        let new_scale_factor = system::init::robust_scale_factor(
+                            new_log_w,
+                            rdw,
+                            canvas.window().display_scale(),
+                            canvas.window().pixel_density(),
+                        );
+                        if (new_scale_factor - scale_factor).abs() > 0.01 {
+                            eprintln!(
+                                "[MAIN] Display scale changed {:.2} -> {:.2}, rebuilding fonts",
+                                scale_factor, new_scale_factor
+                            );
+                            scale_factor = new_scale_factor;
+                            mouse_coords_need_scaling = scale_factor > 1.0 && new_log_w != rdw;
+                            tab_bar_height = (36.0 * scale_factor) as u32;
+                            tab_bar.height = tab_bar_height;
+
+                            match system::init::load_fonts(&ttf_context, &settings, scale_factor) {
+                                Ok(new_fonts) => {
+                                    font = new_fonts.font;
+                                    tab_font = new_fonts.tab_font;
+                                    cpu_font = new_fonts.cpu_font;
+                                    context_menu_font = new_fonts.context_menu_font;
+                                    emoji_font = new_fonts.emoji_font;
+                                    unicode_fallback_font = new_fonts.unicode_fallback_font;
+                                    cjk_font = new_fonts.cjk_font;
+
+                                    if let Ok((w, h)) = font.size_of_char('M') {
+                                        char_width = w as f32;
+                                        char_height = h as f32;
+                                    }
+                                    glyph_cache.clear();
+                                    eprintln!(
+                                        "[MAIN] Fonts rebuilt at scale {:.2}, char dims {:.1}x{:.1}",
+                                        scale_factor, char_width, char_height
+                                    );
+                                }
+                                Err(e) => eprintln!("[MAIN] Failed to rebuild fonts at new scale: {}", e),
+                            }
+                        }
+
                         for (_, entry) in pane_cache.drain() { entry.destroy_textures(); }
                         // Resize all terminals to match their pane dimensions
                         resize_terminals_to_panes(&tab_bar_gui, char_width, char_height, tab_bar_height, new_width, new_height);
@@ -762,8 +819,8 @@ fn main() -> Result<(), String> {
                                     char_height = h as f32;
                                     eprintln!("[MAIN] New character dimensions: {:.2}x{:.2} pixels", char_width, char_height);
 
-                                    // Clear glyph cache - old glyphs are wrong size
-                                    for (_, tex) in glyph_cache.drain() { unsafe { tex.destroy() }; }
+                                    // Clear glyph atlas - old glyphs are wrong size
+                                    glyph_cache.clear();
                                     for (_, entry) in pane_cache.drain() { entry.destroy_textures(); }
                                     eprintln!("[MAIN] Glyph cache cleared");
                                 } else {
@@ -898,10 +955,13 @@ fn main() -> Result<(), String> {
                 }
             }
 
-            // Check for dead terminals and clean up panes
+            // Check for dead terminals and clean up panes.
+            // Throttled: try_wait() is a syscall per terminal and this branch runs on
+            // every event batch (including each mouse-motion tick).
             let mut need_resize = false;
             let mut need_state_save = false;
-            {
+            if last_dead_check.elapsed() >= dead_check_interval {
+                last_dead_check = Instant::now();
                 let mut gui = tab_bar_gui.lock().unwrap();
                 let mut tabs_to_remove = Vec::new();
 
@@ -1241,8 +1301,10 @@ fn main() -> Result<(), String> {
             )) || mouse_moved_cell
                 || (mouse_state.mouse_down_for_selection && mouse_state.selection_started)
                 || tab_switched;
-            let effective_interval = if has_user_event { input_render_interval } else { pty_render_interval };
-            if last_render.elapsed() >= effective_interval {
+            // User-input frames render immediately — VSync already paces presentation,
+            // so an extra software cap only adds perceived latency. Pure PTY-driven
+            // frames stay throttled to avoid burning CPU on heavy output.
+            if has_user_event || last_render.elapsed() >= pty_render_interval {
                 // Process pending bytes for all active terminals right before rendering.
                 // Drain all pending bytes for every active terminal before rendering.
                 // This is the ONLY place we call vt_write() (via process_pending_bytes),
@@ -1270,9 +1332,15 @@ fn main() -> Result<(), String> {
                     for term in gui.get_active_tab_terminals() {
                         if let Ok(t) = term.try_lock() {
                             if let Ok(mut gb) = t.ghostty_buffer.try_lock() {
-                                // Drain fully but bail after 20ms to avoid blocking the render thread.
+                                // Drain with a time budget so the render thread is never
+                                // blocked for long. The budget adapts to the backlog:
+                                // under heavy bursts (cat/grep of big files) spend more of
+                                // the frame parsing so the terminal catches up quickly
+                                // without dropping output.
+                                let backlog = gb.incoming_bytes.try_lock().map_or(0, |b| b.len());
+                                let budget_ms = if backlog > 256 * 1024 { 45 } else { 20 };
                                 let deadline = std::time::Instant::now()
-                                    + std::time::Duration::from_millis(20);
+                                    + std::time::Duration::from_millis(budget_ms);
                                 loop {
                                     gb.process_pending_bytes();
                                     let has_more = gb.incoming_bytes

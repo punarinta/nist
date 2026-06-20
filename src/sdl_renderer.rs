@@ -60,6 +60,11 @@ pub struct TabBar {
     /// Physical x-coordinate of the right edge of the last rendered tab.
     /// Shared with the hit-test closure so that only the gap after tabs is Draggable.
     pub tabs_right_edge: Arc<AtomicI32>,
+    /// Cached rendering of the whole tab bar. Re-rendered only when the state
+    /// hash changes; otherwise blitted, avoiding per-frame TTF rasterization.
+    cache_texture: Option<sdl3::render::Texture>,
+    cache_hash: u64,
+    cache_w: u32,
 }
 
 impl TabBar {
@@ -88,6 +93,9 @@ impl TabBar {
             left_scroll_button_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
             right_scroll_button_rect: ClickableRect::new(Rect::new(0, 0, 0, 0)),
             tabs_right_edge: Arc::new(AtomicI32::new(0)),
+            cache_texture: None,
+            cache_hash: 0,
+            cache_w: 0,
         }
     }
 
@@ -209,7 +217,89 @@ impl TabBar {
         }
     }
 
+    /// Hash of everything that influences the tab bar's pixels. When this is
+    /// unchanged, the cached texture is blitted instead of re-rendering
+    /// (TTF rasterization of tab titles is the most expensive part of a frame).
+    fn state_hash(&self, window_width: u32, cpu_usage: f32, is_maximized: bool) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.tabs.hash(&mut h);
+        self.active_tab.hash(&mut h);
+        self.editing_tab.hash(&mut h);
+        self.edit_text.hash(&mut h);
+        self.edit_cursor_pos.hash(&mut h);
+        self.first_visible_tab_index.hash(&mut h);
+        self.dragging_tab.hash(&mut h);
+        self.drag_offset_x.hash(&mut h);
+        // Matches the "{:02.0}%" CPU display granularity.
+        (cpu_usage.min(99.0).round() as u32).hash(&mut h);
+        is_maximized.hash(&mut h);
+        window_width.hash(&mut h);
+        self.height.hash(&mut h);
+        // Which tab the mouse hovers controls close-button visibility.
+        let hovered = self
+            .tab_rects
+            .iter()
+            .position(|r| r.contains_point(self.mouse_x, self.mouse_y));
+        hovered.hash(&mut h);
+        h.finish()
+    }
+
     pub fn render<T>(
+        &mut self,
+        canvas: &mut Canvas<Window>,
+        font: &Font,
+        cpu_font: &Font,
+        texture_creator: &TextureCreator<T>,
+        window_width: u32,
+        cpu_usage: f32,
+        is_maximized: bool,
+    ) -> Result<(), String> {
+        let hash = self.state_hash(window_width, cpu_usage, is_maximized);
+        let needs_redraw =
+            self.cache_texture.is_none() || self.cache_hash != hash || self.cache_w != window_width;
+
+        if needs_redraw {
+            if self.cache_w != window_width || self.cache_texture.is_none() {
+                if let Some(old) = self.cache_texture.take() {
+                    unsafe { old.destroy() };
+                }
+                match texture_creator.create_texture_target(None, window_width, self.height) {
+                    Ok(tex) => {
+                        self.cache_texture = Some(tex);
+                        self.cache_w = window_width;
+                    }
+                    Err(e) => {
+                        // No render-target support: fall back to direct rendering.
+                        eprintln!("[RENDER] Tab bar cache texture failed: {e}");
+                        return self.render_uncached(
+                            canvas, font, cpu_font, texture_creator, window_width, cpu_usage, is_maximized,
+                        );
+                    }
+                }
+            }
+            let mut tex = self.cache_texture.take().unwrap();
+            let mut inner: Result<(), String> = Ok(());
+            canvas
+                .with_texture_canvas(&mut tex, |tc| {
+                    inner = self.render_uncached(
+                        tc, font, cpu_font, texture_creator, window_width, cpu_usage, is_maximized,
+                    );
+                })
+                .map_err(|e| e.to_string())?;
+            self.cache_texture = Some(tex);
+            inner?;
+            self.cache_hash = hash;
+        }
+
+        let tex = self.cache_texture.as_ref().unwrap();
+        canvas
+            .copy(tex, None, Rect::new(0, 0, window_width, self.height))
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn render_uncached<T>(
         &mut self,
         canvas: &mut Canvas<Window>,
         font: &Font,

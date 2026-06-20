@@ -125,18 +125,39 @@ pub struct ContextMenu<A: Clone> {
     pub padding: i32,
     /// Currently hovered item index
     pub hovered_item: Option<usize>,
+    /// UI scale factor (physical pixels per logical pixel). All geometry below is
+    /// already expressed in physical pixels, so icons, text offsets and item sizes
+    /// stay proportional to the (also scaled) menu font at any display scaling.
+    pub scale: f32,
 }
 
+/// Base (unscaled, 1.0x) menu metrics in logical pixels.
+///
+/// These are the previous fixed pixel values (which were implicitly tuned for a ~2x
+/// display) divided by 2, i.e. expressed as true logical pixels. Multiplied by the
+/// display scale they reproduce the original proportions at 2x and stay consistent
+/// at every other scale — the icon in particular must track the (scaled) font rather
+/// than being doubled on top of an already-2x-tuned size.
+const BASE_WIDTH: f32 = 200.0;
+const BASE_ITEM_HEIGHT: f32 = 27.5;
+const BASE_PADDING: f32 = 2.5;
+const BASE_ICON_X: f32 = 5.0;
+const BASE_ICON_SIZE: f32 = 16.0;
+const BASE_TEXT_X: f32 = 26.0;
+
 impl<A: Clone> ContextMenu<A> {
-    /// Create a new context menu with default dimensions
-    pub fn new(items: Vec<ContextMenuItem<A>>, position: (i32, i32)) -> Self {
+    /// Create a new context menu, scaling all dimensions by `scale` so the menu
+    /// matches the display scaling used for the rest of the UI.
+    pub fn new(items: Vec<ContextMenuItem<A>>, position: (i32, i32), scale: f32) -> Self {
+        let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
         Self {
             items,
             position,
-            width: 400,
-            item_height: 55,
-            padding: 5,
+            width: (BASE_WIDTH * scale) as u32,
+            item_height: (BASE_ITEM_HEIGHT * scale) as u32,
+            padding: (BASE_PADDING * scale).round() as i32,
             hovered_item: None,
+            scale,
         }
     }
 
@@ -219,17 +240,22 @@ impl<A: Clone> ContextMenu<A> {
                 canvas.fill_rect(hover_rect).map_err(|e| e.to_string())?;
             }
 
-            // Render icon
+            // Render icon, scaled to the display scaling. The icon is resized with a
+            // high-quality filter to the target physical-pixel size so it stays crisp
+            // and proportional to the (also scaled) text instead of rendering at a
+            // fixed pixel size that looks giant on a low scale or tiny on a high one.
+            let icon_size = (BASE_ICON_SIZE * self.scale).round().max(1.0) as u32;
             if let Ok(img) = image::load_from_memory(item.image) {
-                let rgba = img.to_rgba8();
+                let resized = img.resize_exact(icon_size, icon_size, image::imageops::FilterType::Lanczos3);
+                let rgba = resized.to_rgba8();
                 let (img_width, img_height) = rgba.dimensions();
                 let pixels = rgba.into_raw();
 
                 if let Ok(icon_surface) = create_sdl_surface_from_rgba(img_width, img_height, pixels) {
                     if let Ok(icon_texture) = texture_creator.create_texture_from_surface::<&Surface>(&icon_surface) {
-                        let icon_size = 32u32.min(img_width).min(img_height);
+                        let icon_x = self.position.0 + (BASE_ICON_X * self.scale).round() as i32;
                         let icon_y = item_y + ((self.item_height as i32 - icon_size as i32).max(0) / 2);
-                        let icon_rect = Rect::new(self.position.0 + 10, icon_y, icon_size, icon_size);
+                        let icon_rect = Rect::new(icon_x, icon_y, icon_size, icon_size);
                         canvas.copy(&icon_texture, None, icon_rect).map_err(|e| e.to_string())?;
                         unsafe { icon_texture.destroy() };
                     }
@@ -246,7 +272,8 @@ impl<A: Clone> ContextMenu<A> {
             if let Ok(surface) = font.render(&item.caption).blended(text_color) {
                 if let Ok(texture) = texture_creator.create_texture_from_surface::<&Surface>(&surface) {
                     let text_y = item_y + ((self.item_height as i32 - surface.height() as i32).max(0) / 2);
-                    let text_rect = Rect::new(self.position.0 + 52, text_y, surface.width(), surface.height());
+                    let text_x = self.position.0 + (BASE_TEXT_X * self.scale).round() as i32;
+                    let text_rect = Rect::new(text_x, text_y, surface.width(), surface.height());
                     canvas.copy(&texture, None, text_rect).map_err(|e| e.to_string())?;
                     unsafe { texture.destroy() };
                 }

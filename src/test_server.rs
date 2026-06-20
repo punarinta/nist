@@ -1370,7 +1370,7 @@ impl TestServer {
                     if let Some(terminal) = gui.get_active_terminal() {
                         if let Ok(t) = terminal.lock() {
                             if let Ok(mut incoming) = t.ghostty_buffer.lock().unwrap().incoming_bytes.lock() {
-                                incoming.extend(bytes.iter().copied());
+                                incoming.push(&bytes);
                                 return TestResponse::Ok;
                             }
                         }

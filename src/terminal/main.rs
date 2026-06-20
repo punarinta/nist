@@ -213,7 +213,7 @@ impl Terminal {
                     }
                     Ok(n) => {
                         if let Ok(mut incoming) = incoming_bytes_clone.lock() {
-                            incoming.extend(buffer[..n].iter().copied());
+                            incoming.push(&buffer[..n]);
                         }
                         crate::pty_waker::wake();
                     }
@@ -396,7 +396,6 @@ impl Terminal {
             format!("\x1b[M{}{}{}", btn_char, col_char, row_char)
         };
 
-        eprintln!("[MOUSE] Sending sequence: {:?}", sequence);
         if let Ok(mut writer) = self.writer.lock() {
             if let Err(e) = writer.write_all(sequence.as_bytes()) {
                 eprintln!("[TERMINAL] Failed to write mouse event to PTY: {}", e);

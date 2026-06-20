@@ -16,7 +16,6 @@ use arboard::Clipboard;
 use sdl3::render::{Canvas, TextureCreator};
 use sdl3::ttf::Sdl3TtfContext;
 use sdl3::video::{HitTestResult, Window, WindowContext};
-use std::collections::HashMap;
 #[cfg(not(target_os = "windows"))]
 use std::sync::mpsc::channel;
 #[cfg(target_os = "linux")]
@@ -76,7 +75,7 @@ pub struct InitializedApp<'a> {
     pub sys: System,
     pub ctrl_keys: std::collections::HashMap<sdl3::keyboard::Scancode, u8>,
     pub mouse_state: crate::input::mouse::MouseState,
-    pub glyph_cache: HashMap<String, sdl3::render::Texture>,
+    pub glyph_cache: crate::ui::glyph_atlas::GlyphAtlas,
     pub window_logical_size: Arc<(AtomicI32, AtomicI32)>,
     pub is_window_maximized: Arc<AtomicBool>,
     #[cfg(target_os = "linux")]
@@ -108,12 +107,24 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
     // display so the window never appears bigger than the screen on restore.
     let (window_width, window_height) = (1280_u32, 800_u32);
 
-    let sdl_context = sdl3::init().unwrap();
+    // Prefer SDL's native Wayland backend when running in a Wayland session.
+    //
+    // The X11/Xwayland backend cannot speak wp-fractional-scale-v1. Under fractional
+    // scaling (e.g. `wlr-randr --scale 1.5`) Xwayland clients are rendered at an integer
+    // scale and then downscaled by the compositor to the fractional ratio, producing
+    // bilinear-blurred text and chrome. The native Wayland backend self-scales at the
+    // true fractional ratio, so output stays crisp regardless of how scaling is set up.
+    //
+    // This must be done before sdl3::init() since the video driver is chosen there. We
+    // only override when the user hasn't pinned a driver themselves, and we keep x11 as a
+    // fallback so non-Wayland sessions (and any Wayland setup where the native backend
+    // fails to initialise) still work.
+    let (sdl_context, video_subsystem) = init_video()?;
 
     // Set window class name for proper desktop integration
     configure_sdl_hints();
 
-    let video_subsystem = sdl_context.video().unwrap();
+    eprintln!("[INIT] SDL video driver: {}", video_subsystem.current_video_driver());
 
     // Create window with high DPI awareness
     let mut window = create_window(&video_subsystem, window_width, window_height)?;
@@ -255,7 +266,7 @@ pub fn initialize<'a>(ttf_context: &'a Sdl3TtfContext, test_port: Option<u16>, d
     let mouse_state = crate::input::mouse::MouseState::new();
 
     // Initialize glyph cache
-    let glyph_cache = HashMap::new();
+    let glyph_cache = crate::ui::glyph_atlas::GlyphAtlas::new(1024);
 
     Ok(InitializedApp {
         canvas,
@@ -303,6 +314,112 @@ fn setup_signal_handlers() -> Result<std::sync::mpsc::Receiver<i32>, String> {
     });
 
     Ok(signal_rx)
+}
+
+/// Initialise SDL and the video subsystem, choosing the backend by whether the
+/// display scaling is fractional.
+///
+/// SDL defaults to X11/Xwayland, which cannot speak wp-fractional-scale-v1: under
+/// FRACTIONAL scaling (e.g. `wlr-randr --scale 1.5`) Xwayland renders at an integer
+/// scale that the compositor then downscales → bilinear-blurred text. The native
+/// Wayland backend self-scales at the true ratio and stays crisp. But at INTEGER
+/// scaling Xwayland is already crisp *and* sizes the system cursor correctly, whereas
+/// the native Wayland backend renders an oversized cursor — so we only keep Wayland
+/// when scaling is actually fractional.
+///
+/// Xwayland masks the fractional scale (it reports an integer), so we must read the
+/// real scale through the Wayland backend. We initialise Wayland first and read the
+/// desktop display mode's `pixel_density` — reliable even without a window, unlike
+/// `SDL_GetDisplayContentScale` which under-reports 1.0 until a surface exists — then:
+///   - fractional → keep the Wayland context (crisp; no re-init, so no chance of a
+///     flaky Wayland re-initialisation);
+///   - integer    → drop it and re-init on SDL's default backend (Xwayland);
+///   - unavailable → fall back to the default backend.
+///
+/// Driver selection uses the `SDL_VIDEODRIVER` env var only (never the persistent
+/// `SDL_VIDEO_DRIVER` hint, which would leak a wayland-only choice into a later init
+/// and panic on backends that can't honour it). Honours an explicit user-provided
+/// `SDL_VIDEODRIVER` and is a no-op off Wayland / off Linux.
+fn init_video() -> Result<(sdl3::Sdl, sdl3::VideoSubsystem), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let in_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let user_pinned = std::env::var_os("SDL_VIDEODRIVER").is_some();
+
+        if in_wayland && !user_pinned {
+            std::env::set_var("SDL_VIDEODRIVER", "wayland");
+            let probed = (|| -> Option<(sdl3::Sdl, sdl3::VideoSubsystem, f32)> {
+                let ctx = sdl3::init().ok()?;
+                let video = ctx.video().ok()?;
+                let scale = video
+                    .get_primary_display()
+                    .ok()
+                    .map(|d| {
+                        let content_scale = d.get_content_scale().unwrap_or(0.0);
+                        let mode_density = d.get_mode().map(|m| m.pixel_density).unwrap_or(0.0);
+                        content_scale.max(mode_density)
+                    })
+                    .unwrap_or(0.0);
+                Some((ctx, video, scale))
+            })();
+            // Clear the forced driver regardless of outcome (only affects later inits).
+            std::env::remove_var("SDL_VIDEODRIVER");
+
+            if let Some((ctx, video, scale)) = probed {
+                let fractional = scale > 0.0 && scale.is_finite() && (scale - scale.round()).abs() > 0.01;
+                // Xwayland is only worth switching to when it actually exists.
+                let xwayland_available = std::env::var_os("DISPLAY").is_some();
+
+                if fractional || !xwayland_available {
+                    // Keep native Wayland: it's lower overhead than Xwayland, mandatory for
+                    // crisp fractional scaling, and the only option when there's no Xwayland.
+                    // Reusing the probe's context also avoids a flaky Wayland re-init.
+                    eprintln!("[INIT] Scale {:.3}: using native wayland video driver", scale);
+                    return Ok((ctx, video));
+                }
+
+                // Integer scale *with* Xwayland present: prefer x11. At integer scale it is
+                // crisp, and it sizes the system mouse cursor correctly, whereas SDL's
+                // native-wayland backend renders an oversized cursor here. The Xwayland
+                // overhead is negligible for a GPU-accelerated terminal.
+                eprintln!("[INIT] Integer scale {:.3} with Xwayland present: using x11 video driver", scale);
+                drop(video);
+                drop(ctx); // release the Wayland probe instance before re-initialising on x11
+                std::env::set_var("SDL_VIDEODRIVER", "x11");
+            } else {
+                eprintln!("[INIT] Native wayland backend unavailable; using default video driver");
+            }
+        }
+    }
+
+    let ctx = sdl3::init().map_err(|e| format!("SDL init failed: {}", e))?;
+    match ctx.video() {
+        Ok(video) => Ok((ctx, video)),
+        Err(e) => {
+            // A forced SDL_VIDEODRIVER may name a backend SDL can't actually bring
+            // up here — e.g. a Wayland session exports SDL_VIDEODRIVER=wayland but
+            // SDL's wayland backend fails to initialise ("wayland not available").
+            // With a driver pinned, SDL won't try any other backend, so rather than
+            // dying we drop the forced choice and let SDL auto-select a working one
+            // (x11 here). Where the pinned driver does work, the first attempt
+            // succeeds and we never reach this fallback.
+            if let Some(forced) = std::env::var_os("SDL_VIDEODRIVER") {
+                eprintln!(
+                    "[INIT] video driver '{}' failed ({}); retrying with SDL auto-selection",
+                    forced.to_string_lossy(),
+                    e
+                );
+                drop(ctx);
+                std::env::remove_var("SDL_VIDEODRIVER");
+                let ctx = sdl3::init().map_err(|e| format!("SDL init failed: {}", e))?;
+                let video = ctx
+                    .video()
+                    .map_err(|e| format!("SDL video init failed: {}", e))?;
+                return Ok((ctx, video));
+            }
+            Err(format!("SDL video init failed: {}", e))
+        }
+    }
 }
 
 /// Configure SDL hints for proper window management
@@ -395,40 +512,47 @@ fn create_canvas(window: Window) -> Result<Canvas<Window>, String> {
     Ok(canvas)
 }
 
-/// Detect display scaling factors
-fn detect_scaling(canvas: &Canvas<Window>) -> ScaleInfo {
+/// Compute a robust UI scale factor from the signals SDL exposes.
+///
+/// Compositors populate these inconsistently. On a plain X11/GNOME HiDPI setup
+/// the drawable can equal the logical size (ratio 1.0) while the desktop content
+/// scale is 2.0; on wlroots with `wlr-randr --scale` the per-output scale may only
+/// surface through `display_scale`/`pixel_density` (and not until the surface is
+/// configured). The reliable rule is therefore to take the LARGEST trustworthy
+/// signal: under-reporting is the failure mode that yields tiny glyphs rendered
+/// into a low-resolution buffer which the compositor then upscales (blur), with
+/// fixed-size chrome (icons) towering over the shrunken text.
+pub fn robust_scale_factor(logical_w: u32, pixels_w: u32, display_scale: f32, pixel_density: f32) -> f32 {
+    let ratio = if logical_w > 0 { pixels_w as f32 / logical_w as f32 } else { 1.0 };
+
+    let mut scale = 1.0_f32;
+    for candidate in [ratio, display_scale, pixel_density] {
+        if candidate.is_finite() && candidate > scale {
+            scale = candidate;
+        }
+    }
+
+    // Clamp to a sane range so a bogus reading can never blow up font sizes.
+    scale.clamp(1.0, 6.0)
+}
+
+/// Detect display scaling factors from the current window state.
+///
+/// Safe to call repeatedly: the main loop re-runs this whenever the window is
+/// (re)configured or moved between displays so that scale changes — including
+/// runtime `wlr-randr --scale` adjustments — are picked up and the fonts/chrome
+/// are rebuilt accordingly.
+pub fn detect_scaling(canvas: &Canvas<Window>) -> ScaleInfo {
     let (window_width_logical, window_height_logical) = canvas.window().size();
     let (drawable_width, drawable_height) = canvas.window().size_in_pixels();
+    let display_scale = canvas.window().display_scale();
+    let pixel_density = canvas.window().pixel_density();
 
     eprintln!("[INIT] Window size: {}x{} logical", window_width_logical, window_height_logical);
     eprintln!("[INIT] Drawable size: {}x{} pixels", drawable_width, drawable_height);
-    eprintln!("[INIT] Pixel density: {:.2}", canvas.window().pixel_density());
+    eprintln!("[INIT] Pixel density: {:.2}, SDL3 display scale: {:.2}", pixel_density, display_scale);
 
-    // Calculate scale factor from drawable vs logical size
-    let mut scale_factor = if window_width_logical > 0 {
-        drawable_width as f32 / window_width_logical as f32
-    } else {
-        1.0
-    };
-
-    // Use SDL3's display scale as authoritative source
-    let window_display_scale = canvas.window().display_scale();
-    if window_display_scale > 0.0 {
-        eprintln!("[INIT] SDL3 display scale: {:.2}", window_display_scale);
-        if (window_display_scale - scale_factor).abs() > 0.01 {
-            eprintln!("[INIT] Using SDL3 display scale instead of calculated ratio");
-            scale_factor = window_display_scale;
-        }
-    }
-
-    // Fallback to pixel density if scale is still 1.0
-    if scale_factor == 1.0 {
-        let pixel_density = canvas.window().pixel_density();
-        if pixel_density > 1.0 {
-            scale_factor = pixel_density;
-            eprintln!("[INIT] Using pixel density for scaling: {:.2}", scale_factor);
-        }
-    }
+    let scale_factor = robust_scale_factor(window_width_logical, drawable_width, display_scale, pixel_density);
 
     let expected_physical_w = (window_width_logical as f32 * scale_factor) as u32;
     let expected_physical_h = (window_height_logical as f32 * scale_factor) as u32;
@@ -437,12 +561,10 @@ fn detect_scaling(canvas: &Canvas<Window>) -> ScaleInfo {
         scale_factor, expected_physical_w, expected_physical_h
     );
 
-    // Determine if mouse coordinates need scaling
-    let mouse_coords_need_scaling = scale_factor > 1.0 && {
-        let (w_width, _) = canvas.window().size();
-        let (d_width, _) = canvas.window().size_in_pixels();
-        w_width != d_width
-    };
+    // Mouse coordinates arrive in logical units; they only need scaling to the
+    // physical-pixel render space when the drawable is actually larger than the
+    // logical window (i.e. SDL gave us a true HiDPI buffer).
+    let mouse_coords_need_scaling = scale_factor > 1.0 && window_width_logical != drawable_width;
 
     eprintln!(
         "[INIT] Mouse coordinate scaling: {}",
@@ -456,7 +578,7 @@ fn detect_scaling(canvas: &Canvas<Window>) -> ScaleInfo {
 }
 
 /// Load all required fonts
-fn load_fonts<'a>(ttf_context: &'a Sdl3TtfContext, settings: &settings::Settings, scale_factor: f32) -> Result<Fonts<'a>, String> {
+pub fn load_fonts<'a>(ttf_context: &'a Sdl3TtfContext, settings: &settings::Settings, scale_factor: f32) -> Result<Fonts<'a>, String> {
     let font_size = settings.terminal.font_size * scale_factor;
 
     // Load monospace font

@@ -15,8 +15,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::ghostty_buffer::{CursorStyle, DEFAULT_BG_COLOR};
-use crate::cell::{is_cjk_grapheme, is_emoji_grapheme};
+use crate::cell::{is_cjk_char, is_emoji_char};
 use crate::pane_layout::PaneId;
+use crate::ui::glyph_atlas::{GlyphAtlas, GlyphKey, GLYPH_RENDER_COLOR, MAX_GLYPH_CHARS};
 use crate::sdl_renderer;
 use crate::tab_gui::TabBarGui;
 use crate::ui::context_menu::ContextMenu;
@@ -36,6 +37,10 @@ pub struct PaneCacheEntry {
     /// evicted when the corresponding placement is deleted from KittyGraphicsState.
     /// Survives pane texture rebuilds (even on resize) to avoid redundant GPU uploads.
     pub kitty_texture_cache: HashMap<u32, sdl3::render::Texture>,
+    /// Content hash of each rendered row (damage tracking). A row whose hash is
+    /// unchanged since the last render is skipped — its pixels are already in
+    /// the texture — so typing or selection changes redraw only affected rows.
+    pub row_hashes: Vec<u64>,
 }
 
 impl PaneCacheEntry {
@@ -51,7 +56,7 @@ impl PaneCacheEntry {
 
 /// Character data saved from the cell under the cursor (used for block cursor overlay).
 pub struct CursorCellChar {
-    pub text: String,
+    pub chars: Vec<char>,
     pub fg: Color,
     pub bg: Color,
     pub underline: bool,
@@ -69,6 +74,31 @@ pub struct CursorOverlay {
     pub style: CursorStyle,
     /// Cell data for block cursors (None for bar/underline).
     pub cell: Option<CursorCellChar>,
+}
+
+/// FNV-1a offset basis (seed for row damage hashes).
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// Fold one value into an FNV-1a hash.
+#[inline]
+fn fnv(h: &mut u64, v: u64) {
+    *h ^= v;
+    *h = h.wrapping_mul(0x0000_0100_0000_01b3);
+}
+
+/// Final draw operations for one cell, buffered per row so the row's content
+/// hash can be compared before any SDL call is issued.
+struct CellDraw {
+    col: usize,
+    width_cells: usize,
+    chars: [char; MAX_GLYPH_CHARS],
+    nchars: u8,
+    fg: (u8, u8, u8),
+    /// Final background fill color (selection already applied); None = default bg.
+    bg: Option<Color>,
+    underline: bool,
+    strikethrough: bool,
+    draw_text: bool,
 }
 
 /// Get the platform-specific pane padding in pixels
@@ -133,7 +163,7 @@ pub fn render_frame<T>(
     char_width: f32,
     char_height: f32,
     cursor_visible: bool,
-    glyph_cache: &mut HashMap<String, sdl3::render::Texture>,
+    glyph_cache: &mut GlyphAtlas,
     pane_cache: &mut HashMap<PaneId, PaneCacheEntry>,
     mouse_state: &crate::input::mouse::MouseState,
     voice_recording: bool,
@@ -142,6 +172,7 @@ pub fn render_frame<T>(
     force_active_redraw: bool,
     is_maximized: bool,
 ) -> Result<bool, String> {
+    let perf_t0 = std::time::Instant::now();
     // Clear screen with terminal background color
     canvas.set_draw_color(DEFAULT_BG_COLOR);
     canvas.clear();
@@ -163,6 +194,7 @@ pub fn render_frame<T>(
         tab_bar.edit_cursor_pos = cursor_pos;
     }
     tab_bar.render(canvas, tab_font, cpu_font, texture_creator, window_w, cpu_usage, is_maximized)?;
+    let perf_tabbar = perf_t0.elapsed();
 
     // Calculate pane area (tab_bar_height is already in physical pixels)
     let pane_area_y = tab_bar_height as i32;
@@ -228,6 +260,11 @@ pub fn render_frame<T>(
             || !pane_cache.contains_key(&pane_id)
             || (is_active && force_active_redraw);
 
+        // Anything that invalidates the whole texture (size, border state, first
+        // use) disables row-damage skipping for this render.
+        let full_redraw = size_changed || selection_changed || active_changed
+            || !pane_cache.contains_key(&pane_id);
+
         // Create or recreate target texture when size changes or first use
         if size_changed || !pane_cache.contains_key(&pane_id) {
             match texture_creator.create_texture_target(None, pane_w, pane_h) {
@@ -244,17 +281,20 @@ pub fn render_frame<T>(
                         last_is_active: is_active,
                         last_cursor_style: CursorStyle::default(),
                         kitty_texture_cache,
+                        row_hashes: Vec::new(),
                     });
                 }
                 Err(e) => {
                     // No cache available — fall back to direct rendering
                     eprintln!("[RENDER] Failed to create pane texture: {e}");
                     let mut tmp_kitty_cache = HashMap::new();
+                    let mut tmp_row_hashes = Vec::new();
                     let (was_dirty, cursor_overlay) = render_pane(
                         canvas, texture_creator, terminal_font, emoji_font,
                         unicode_fallback_font, cjk_font, rect, terminal.clone(),
                         is_active, is_selected, pane_count, char_width, char_height,
-                        glyph_cache, &mut tmp_kitty_cache, mouse_state, pane_id,
+                        glyph_cache, &mut tmp_kitty_cache, &mut tmp_row_hashes, true,
+                        mouse_state, pane_id,
                     )?;
                     any_dirty = any_dirty || was_dirty;
                     if is_active && cursor_visible {
@@ -262,6 +302,16 @@ pub fn render_frame<T>(
                             draw_cursor_overlay(canvas, texture_creator, terminal_font,
                                 emoji_font, unicode_fallback_font, cjk_font, glyph_cache,
                                 rect, char_width, char_height, ov)?;
+                        }
+                    }
+                    if let Ok(t) = terminal.try_lock() {
+                        if let Ok(gb) = t.ghostty_buffer.try_lock() {
+                            if !gb.is_at_bottom() {
+                                render_scrollback_indicator(
+                                    canvas, texture_creator, terminal_font, rect,
+                                    gb.scroll_offset(), get_pane_padding(),
+                                )?;
+                            }
                         }
                     }
                     continue;
@@ -280,15 +330,14 @@ pub fn render_frame<T>(
                 let texture_rect = Rect::new(0, 0, pane_w, pane_h);
                 // Split-borrow entry so we can pass kitty_texture_cache into the closure
                 // while with_texture_canvas holds &mut entry.texture.
-                let PaneCacheEntry { texture, kitty_texture_cache, .. } = entry;
+                let PaneCacheEntry { texture, kitty_texture_cache, row_hashes, .. } = entry;
                 canvas.with_texture_canvas(texture, |tc| {
-                    tc.set_draw_color(DEFAULT_BG_COLOR);
-                    tc.clear();
                     render_result = render_pane(
                         tc, texture_creator, terminal_font, emoji_font,
                         unicode_fallback_font, cjk_font, texture_rect, terminal.clone(),
                         is_active, is_selected, pane_count, char_width, char_height,
-                        glyph_cache, kitty_texture_cache, mouse_state, pane_id,
+                        glyph_cache, kitty_texture_cache, row_hashes, full_redraw,
+                        mouse_state, pane_id,
                     );
                 }).map_err(|e| e.to_string())?;
             }
@@ -336,6 +385,19 @@ pub fn render_frame<T>(
                     rect, char_width, char_height, ov)?;
             }
         }
+
+        // Scrollback indicator as a canvas overlay (never baked into the pane
+        // texture, so row-damage skipping can't leave it stale or accumulated).
+        if let Ok(t) = terminal.try_lock() {
+            if let Ok(gb) = t.ghostty_buffer.try_lock() {
+                if !gb.is_at_bottom() {
+                    render_scrollback_indicator(
+                        canvas, texture_creator, terminal_font, rect,
+                        gb.scroll_offset(), get_pane_padding(),
+                    )?;
+                }
+            }
+        }
     }
 
     // Render voice input indicator on top of the active pane
@@ -360,7 +422,17 @@ pub fn render_frame<T>(
         }
     }
 
+    let perf_panes = perf_t0.elapsed();
     canvas.present();
+    let perf_total = perf_t0.elapsed();
+    if perf_total.as_millis() > 50 {
+        eprintln!(
+            "[PERF2] tabbar={}ms panes={}ms present={}ms",
+            perf_tabbar.as_millis(),
+            (perf_panes - perf_tabbar).as_millis(),
+            (perf_total - perf_panes).as_millis()
+        );
+    }
     Ok(any_dirty)
 }
 
@@ -385,8 +457,10 @@ fn render_pane<T>(
     pane_count: usize,
     char_width: f32,
     char_height: f32,
-    glyph_cache: &mut HashMap<String, sdl3::render::Texture>,
+    glyph_cache: &mut GlyphAtlas,
     kitty_texture_cache: &mut HashMap<u32, sdl3::render::Texture>,
+    row_hashes: &mut Vec<u64>,
+    full_redraw: bool,
     mouse_state: &crate::input::mouse::MouseState,
     pane_id: crate::pane_layout::PaneId,
 ) -> Result<(bool, Option<CursorOverlay>), String> {
@@ -417,7 +491,46 @@ fn render_pane<T>(
     // cursor_visible is NOT checked here — the caller controls blink visibility.
     let collect_cursor = gb_cursor_vis && is_active && is_at_bottom;
 
-    let (cursor_overlay_data, cursor_style) = gb.render_with(|ctx| -> Result<(Option<CursorCellChar>, CursorStyle), String> {
+    // ── row damage bookkeeping ────────────────────────────────────────────────
+    // Seed folds in everything that affects pixels but isn't per-cell data:
+    // the viewport scroll position (drives the scrollback indicator) and the
+    // Kitty image placements (drawn over rows; any change must erase old pixels).
+    let mut seed = FNV_OFFSET;
+    fnv(&mut seed, scroll_offset as u64);
+    for p in gb.kitty_graphics.placements.iter() {
+        fnv(&mut seed, p.image_id as u64);
+        fnv(&mut seed, p.abs_row as u64);
+        fnv(&mut seed, p.cell_x as u64);
+    }
+
+    // row_hashes holds one hash per row plus the previous seed as last element.
+    // Panes showing Kitty images always redraw fully: images are drawn over
+    // arbitrary rows and partial band erases would corrupt them. (Same cost as
+    // the pre-damage-tracking behavior; images are rare.)
+    let full = full_redraw
+        || row_hashes.len() != rows + 1
+        || !gb.kitty_graphics.placements.is_empty();
+    let seed_changed = !full && row_hashes[rows] != seed;
+    if full {
+        row_hashes.clear();
+        row_hashes.resize(rows + 1, u64::MAX);
+        canvas.set_draw_color(DEFAULT_BG_COLOR);
+        canvas.fill_rect(rect).map_err(|e| e.to_string())?;
+    } else if seed_changed {
+        // Overlays (scrollback indicator, Kitty images) can extend below the
+        // last row band; erase that strip so stale overlay pixels don't survive.
+        let strip_y = rect.y() + pane_padding as i32 + (rows as f32 * char_height) as i32;
+        let strip_h = (rect.y() + rect.height() as i32 - strip_y).max(0) as u32;
+        if strip_h > 0 {
+            canvas.set_draw_color(DEFAULT_BG_COLOR);
+            canvas
+                .fill_rect(Rect::new(rect.x(), strip_y, rect.width(), strip_h))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    row_hashes[rows] = seed;
+
+    let (cursor_overlay_data, cursor_style, rows_drawn) = gb.render_with(|ctx| -> Result<(Option<CursorCellChar>, CursorStyle, usize), String> {
         use libghostty_vt::screen::CellWide;
         use libghostty_vt::style::Underline;
         use libghostty_vt::render::CursorVisualStyle as CVS;
@@ -439,14 +552,22 @@ fn render_pane<T>(
         let is_bar_cursor = matches!(cursor_style, CursorStyle::BlinkingBar | CursorStyle::SteadyBar);
 
         let mut saved_cursor: Option<CursorCellChar> = None;
+        let mut rows_drawn = 0usize;
 
         let mut row_iteration = row_iter.update(snapshot).map_err(|e| format!("{e:?}"))?;
         let mut row_idx = 0usize;
+
+        // Per-row draw ops, buffered so the row hash can be compared before any
+        // SDL call is issued. Reused across rows (no per-row allocation).
+        let mut row_cells: Vec<CellDraw> = Vec::with_capacity(cols);
 
         while let Some(row) = row_iteration.next() {
             if row_idx >= rows {
                 break;
             }
+
+            row_cells.clear();
+            let mut row_hash = seed;
 
             let mut cell_iteration = cell_iter.update(row).map_err(|e| format!("{e:?}"))?;
             let mut col_idx = 0usize;
@@ -492,13 +613,13 @@ fn render_pane<T>(
                 // Collect cursor cell data for the overlay (block cursors only).
                 // The cell is still rendered normally — the overlay will draw on top.
                 if collect_cursor && !is_bar_cursor && col_idx == cursor_x && row_idx == cursor_y {
-                    let text: String = if graphemes.is_empty() {
-                        " ".to_string()
+                    let chars = if graphemes.is_empty() {
+                        vec![' ']
                     } else {
-                        graphemes.iter().collect()
+                        graphemes.clone()
                     };
                     saved_cursor = Some(CursorCellChar {
-                        text,
+                        chars,
                         fg: cell_fg,
                         bg: cell_bg,
                         underline: style.underline != Underline::None,
@@ -507,105 +628,172 @@ fn render_pane<T>(
                     // No `continue` — render the cell normally; the cursor overlay covers it.
                 }
 
-                let x = rect.x() + pane_padding as i32 + (col_idx as f32 * char_width) as i32;
-                let y = rect.y() + pane_padding as i32 + (row_idx as f32 * char_height) as i32;
-                let actual_cell_width = char_width * cell_w as f32;
-
                 let cell_selected = if let Some(ref sel) = selection_snapshot {
                     sel.contains(col_idx, row_idx, scroll_offset, scrollback_len)
                 } else {
                     false
                 };
 
-                // Render background
-                if cell_selected {
-                    canvas.set_draw_color(Color::RGB(70, 130, 180));
-                    canvas
-                        .fill_rect(Rect::new(x, y, actual_cell_width as u32, char_height as u32))
-                        .map_err(|e| e.to_string())?;
+                // Final background fill color, if any.
+                let bg = if cell_selected {
+                    Some(Color::RGB(70, 130, 180))
                 } else if actual_bg.r != DEFAULT_BG_COLOR.r
                     || actual_bg.g != DEFAULT_BG_COLOR.g
                     || actual_bg.b != DEFAULT_BG_COLOR.b
                 {
-                    canvas.set_draw_color(actual_bg);
+                    Some(actual_bg)
+                } else {
+                    None
+                };
+
+                let draw_text = !graphemes.is_empty()
+                    && !style.invisible
+                    && !(graphemes.len() == 1 && graphemes[0] == ' ');
+
+                if bg.is_none() && !draw_text {
+                    col_idx += 1;
+                    continue; // nothing to draw; absence is reflected by the hash
+                }
+
+                let is_hovered_url = draw_text
+                    && mouse_state.ctrl_pressed
+                    && mouse_state.hovered_url.as_ref().map_or(false, |url| {
+                        url.row == row_idx
+                            && col_idx >= url.col_start
+                            && col_idx <= url.col_end
+                            && url.pane_id == pane_id
+                    });
+
+                let (fg_r, fg_g, fg_b) = if is_hovered_url {
+                    (70u8, 130u8, 255u8)
+                } else if style.inverse {
+                    (cell_bg.r, cell_bg.g, cell_bg.b)
+                } else {
+                    (cell_fg.r, cell_fg.g, cell_fg.b)
+                };
+
+                let mut chars = ['\0'; MAX_GLYPH_CHARS];
+                let nchars = graphemes.len().min(MAX_GLYPH_CHARS);
+                chars[..nchars].copy_from_slice(&graphemes[..nchars]);
+
+                let cd = CellDraw {
+                    col: col_idx,
+                    width_cells: cell_w,
+                    chars,
+                    nchars: nchars as u8,
+                    fg: (fg_r, fg_g, fg_b),
+                    bg,
+                    underline: style.underline != Underline::None || is_hovered_url,
+                    strikethrough: style.strikethrough,
+                    draw_text,
+                };
+
+                // Fold the cell's draw ops into the row hash.
+                fnv(&mut row_hash, cd.col as u64);
+                fnv(&mut row_hash, cd.width_cells as u64);
+                for &c in &cd.chars[..nchars] {
+                    fnv(&mut row_hash, c as u64);
+                }
+                fnv(&mut row_hash, ((fg_r as u64) << 16) | ((fg_g as u64) << 8) | fg_b as u64);
+                fnv(&mut row_hash, match cd.bg {
+                    Some(c) => 0x100_0000 | ((c.r as u64) << 16) | ((c.g as u64) << 8) | c.b as u64,
+                    None => 0,
+                });
+                fnv(
+                    &mut row_hash,
+                    (cd.underline as u64) | ((cd.strikethrough as u64) << 1) | ((cd.draw_text as u64) << 2),
+                );
+
+                row_cells.push(cd);
+                col_idx += 1;
+            }
+
+            // Skip rows whose pixels are already correct in the texture.
+            if !full && row_hashes[row_idx] == row_hash {
+                row_idx += 1;
+                continue;
+            }
+            row_hashes[row_idx] = row_hash;
+            rows_drawn += 1;
+
+            let band_y = rect.y() + pane_padding as i32 + (row_idx as f32 * char_height) as i32;
+            if !full {
+                // Erase this row band (a full redraw already cleared everything).
+                canvas.set_draw_color(DEFAULT_BG_COLOR);
+                canvas
+                    .fill_rect(Rect::new(rect.x(), band_y, rect.width(), char_height as u32))
+                    .map_err(|e| e.to_string())?;
+            }
+
+            // Backgrounds first, then glyphs: consecutive atlas copies batch
+            // into a single GPU draw when not interleaved with fill_rects.
+            for cd in &row_cells {
+                if let Some(bg) = cd.bg {
+                    let x = rect.x() + pane_padding as i32 + (cd.col as f32 * char_width) as i32;
+                    canvas.set_draw_color(bg);
                     canvas
-                        .fill_rect(Rect::new(x, y, actual_cell_width as u32, char_height as u32))
+                        .fill_rect(Rect::new(
+                            x,
+                            band_y,
+                            (char_width * cd.width_cells as f32) as u32,
+                            char_height as u32,
+                        ))
                         .map_err(|e| e.to_string())?;
                 }
-
-                // Render text
-                if !graphemes.is_empty() && !style.invisible {
-                    let text: String = graphemes.iter().collect();
-                    if text != " " {
-                        let is_hovered_url = mouse_state.ctrl_pressed
-                            && mouse_state.hovered_url.as_ref().map_or(false, |url| {
-                                url.row == row_idx
-                                    && col_idx >= url.col_start
-                                    && col_idx <= url.col_end
-                                    && url.pane_id == pane_id
-                            });
-
-                        let (fg_r, fg_g, fg_b) = if is_hovered_url {
-                            (70u8, 130u8, 255u8)
-                        } else if style.inverse {
-                            (cell_bg.r, cell_bg.g, cell_bg.b)
-                        } else {
-                            (cell_fg.r, cell_fg.g, cell_fg.b)
-                        };
-
-                        let should_underline = style.underline != Underline::None || is_hovered_url;
-
-                        render_glyph(
-                            canvas,
-                            texture_creator,
-                            font,
-                            emoji_font,
-                            unicode_fallback_font,
-                            cjk_font,
-                            glyph_cache,
-                            &text,
-                            x,
-                            y,
-                            fg_r,
-                            fg_g,
-                            fg_b,
-                            actual_cell_width as u32,
-                            char_height as u32,
-                            should_underline,
-                            style.strikethrough,
-                        )?;
-                    }
+            }
+            for cd in &row_cells {
+                if cd.draw_text {
+                    let x = rect.x() + pane_padding as i32 + (cd.col as f32 * char_width) as i32;
+                    render_glyph(
+                        canvas,
+                        texture_creator,
+                        font,
+                        emoji_font,
+                        unicode_fallback_font,
+                        cjk_font,
+                        glyph_cache,
+                        &cd.chars[..cd.nchars as usize],
+                        x,
+                        band_y,
+                        cd.fg.0,
+                        cd.fg.1,
+                        cd.fg.2,
+                        (char_width * cd.width_cells as f32) as u32,
+                        char_height as u32,
+                        cd.underline,
+                        cd.strikethrough,
+                    )?;
                 }
-
-                col_idx += 1;
             }
 
             row_idx += 1;
         }
 
-        Ok((saved_cursor, cursor_style))
+        Ok((saved_cursor, cursor_style, rows_drawn))
     })?;
 
-    // Show scroll position indicator when viewing scrollback
-    if !gb.is_at_bottom() {
-        render_scrollback_indicator(canvas, texture_creator, font, rect, gb.scroll_offset(), pane_padding)?;
-    }
+    // Note: the scrollback indicator is drawn by the caller as a canvas overlay
+    // (never into the pane texture), so it can't accumulate or go stale.
 
-    // Render Kitty Graphics Protocol images on top of text content
-    let scrollback_len = gb.scrollback_len();
-    let scroll_offset = gb.scroll_offset();
-    render_kitty_images(
-        canvas,
-        texture_creator,
-        &mut gb.kitty_graphics.placements,
-        kitty_texture_cache,
-        rect,
-        pane_padding,
-        char_width,
-        char_height,
-        scrollback_len,
-        scroll_offset,
-    )?;
+    // Render Kitty Graphics Protocol images on top of text content. Skipped
+    // when nothing was redrawn (the texture already contains them); the
+    // deletion frame is covered by the seed change erasing all bands.
+    if full || seed_changed || rows_drawn > 0 {
+        let scrollback_len = gb.scrollback_len();
+        let scroll_offset = gb.scroll_offset();
+        render_kitty_images(
+            canvas,
+            texture_creator,
+            &mut gb.kitty_graphics.placements,
+            kitty_texture_cache,
+            rect,
+            pane_padding,
+            char_width,
+            char_height,
+            scrollback_len,
+            scroll_offset,
+        )?;
+    }
 
     let was_dirty = gb.dirty;
     gb.clear_dirty();
@@ -676,7 +864,7 @@ fn draw_cursor_overlay<T>(
     emoji_font: &Font,
     unicode_fallback_font: &Font,
     cjk_font: &Font,
-    glyph_cache: &mut HashMap<String, sdl3::render::Texture>,
+    glyph_cache: &mut GlyphAtlas,
     pane_rect: Rect,
     char_width: f32,
     char_height: f32,
@@ -721,7 +909,7 @@ fn draw_cursor_overlay<T>(
                 render_glyph(
                     canvas, texture_creator, font, emoji_font,
                     unicode_fallback_font, cjk_font, glyph_cache,
-                    &cd.text, cx, cy,
+                    &cd.chars, cx, cy,
                     text_color.r, text_color.g, text_color.b,
                     char_width as u32, char_height as u32,
                     cd.underline, cd.strikethrough,
@@ -823,7 +1011,9 @@ fn render_kitty_images<T>(
     Ok(())
 }
 
-/// Render a single glyph with caching
+/// Render a single grapheme cluster via the shared glyph atlas.
+/// Every copy references an atlas page, so SDL3 batches consecutive cells
+/// into a handful of GPU draws instead of one draw + texture switch per cell.
 fn render_glyph<T>(
     canvas: &mut Canvas<Window>,
     texture_creator: &TextureCreator<T>,
@@ -831,8 +1021,8 @@ fn render_glyph<T>(
     emoji_font: &Font,
     unicode_fallback_font: &Font,
     cjk_font: &Font,
-    glyph_cache: &mut HashMap<String, sdl3::render::Texture>,
-    text: &str,
+    glyph_cache: &mut GlyphAtlas,
+    chars: &[char],
     x: i32,
     y: i32,
     r: u8,
@@ -843,182 +1033,134 @@ fn render_glyph<T>(
     underline: bool,
     strikethrough: bool,
 ) -> Result<(), String> {
-    // Cap the glyph cache to avoid unbounded growth without ever nuking it all at once.
-    // Entries beyond this limit are rendered on demand but not stored.
-    const MAX_GLYPH_CACHE: usize = 2000;
-    let can_cache = glyph_cache.len() < MAX_GLYPH_CACHE;
+    let key = GlyphKey::from_chars(chars);
+    let is_likely_emoji = chars.iter().copied().any(is_emoji_char);
 
-    let cache_key = text.to_string();
-    let is_likely_emoji = is_emoji_grapheme(text);
-
-    // Check cache first
-    if let Some(cached_texture) = glyph_cache.get_mut(&cache_key) {
-        cached_texture.set_color_mod(r, g, b);
-        let query = cached_texture.query();
-
-        if is_likely_emoji {
-            let base_size = cell_width.min(cell_height);
-            let scale_x = base_size as f32 / query.width as f32;
-            let scale_y = base_size as f32 / query.height as f32;
-            let scale = scale_x.min(scale_y);
-            let scaled_width = (query.width as f32 * scale) as u32;
-            let scaled_height = (query.height as f32 * scale) as u32;
-            let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
-            let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
-            canvas.copy(cached_texture, None, Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
-        } else if query.width > cell_width || query.height > cell_height {
-            let scale = (cell_width as f32 / query.width as f32).min(cell_height as f32 / query.height as f32);
-            let scaled_width = (query.width as f32 * scale) as u32;
-            let scaled_height = (query.height as f32 * scale) as u32;
-            canvas.copy(cached_texture, None, Rect::new(x, y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
-        } else {
-            canvas.copy(cached_texture, None, Rect::new(x, y, query.width, query.height)).map_err(|e| e.to_string())?;
+    let loc = match glyph_cache.lookup(&key) {
+        Some(cached) => cached,
+        None => {
+            // Atlas miss: rasterize through the font fallback chain.
+            // This is the only place a String is allocated for a glyph.
+            let text: String = chars.iter().take(MAX_GLYPH_CHARS).collect();
+            let is_likely_cjk = chars.iter().copied().any(is_cjk_char);
+            match rasterize_glyph(
+                font, emoji_font, unicode_fallback_font, cjk_font,
+                &text, is_likely_emoji, is_likely_cjk,
+            ) {
+                Some(surface) => glyph_cache.insert(canvas, texture_creator, key, &surface)?,
+                None => {
+                    glyph_cache.insert_failed(key);
+                    None
+                }
+            }
         }
+    };
 
-        draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, underline, strikethrough)?;
+    let Some(loc) = loc else {
+        // Unrenderable in every font: draw the replacement box instead.
+        if !(chars.len() == 1 && chars[0] == '□') {
+            render_glyph(
+                canvas, texture_creator, font, emoji_font, unicode_fallback_font,
+                cjk_font, glyph_cache, &['□'], x, y, r, g, b,
+                cell_width, cell_height, underline, strikethrough,
+            )?;
+        }
         return Ok(());
-    }
+    };
 
-    let render_color = Color::RGB(255, 255, 255);
-    let is_likely_cjk = is_cjk_grapheme(text);
+    let (qw, qh) = (loc.rect.width(), loc.rect.height());
+    let dst = if is_likely_emoji {
+        // Scale emoji to fit the cell, centered.
+        let base_size = cell_width.min(cell_height);
+        let scale = (base_size as f32 / qw as f32).min(base_size as f32 / qh as f32);
+        let sw = (qw as f32 * scale) as u32;
+        let sh = (qh as f32 * scale) as u32;
+        Rect::new(
+            x + (cell_width as i32 - sw as i32) / 2,
+            y + (cell_height as i32 - sh as i32) / 2,
+            sw,
+            sh,
+        )
+    } else if qw > cell_width || qh > cell_height {
+        let scale = (cell_width as f32 / qw as f32).min(cell_height as f32 / qh as f32);
+        Rect::new(x, y, (qw as f32 * scale) as u32, (qh as f32 * scale) as u32)
+    } else {
+        Rect::new(x, y, qw, qh)
+    };
+    glyph_cache.draw(canvas, loc, dst, r, g, b)?;
 
-    // Emoji: use emoji font, scale to fit cell
-    if is_likely_emoji {
-        let has_emoji_glyph = text.chars().next()
-            .map_or(false, |ch| emoji_font.find_glyph(ch).is_some());
-        if has_emoji_glyph {
-            let emoji_result = emoji_font.render(text).blended(render_color);
-            if let Ok(surface) = emoji_result {
-                if surface.width() > 0 && surface.height() > 0 {
-                    if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                        let base_size = cell_width.min(cell_height);
-                        let scale_x = base_size as f32 / surface.width() as f32;
-                        let scale_y = base_size as f32 / surface.height() as f32;
-                        let scale = scale_x.min(scale_y);
-                        let scaled_width = (surface.width() as f32 * scale) as u32;
-                        let scaled_height = (surface.height() as f32 * scale) as u32;
-                        let offset_x = (cell_width as i32 - scaled_width as i32) / 2;
-                        let offset_y = (cell_height as i32 - scaled_height as i32) / 2;
-                        canvas.copy(&texture, None, Rect::new(x + offset_x, y + offset_y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
-                        if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
-                        return Ok(());
-                    }
-                }
+    draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, underline, strikethrough)
+}
+
+/// Rasterize a grapheme through the font fallback chain
+/// (emoji → CJK → main → emoji-fallback → CJK-fallback → symbols → '□').
+fn rasterize_glyph(
+    font: &Font,
+    emoji_font: &Font,
+    unicode_fallback_font: &Font,
+    cjk_font: &Font,
+    text: &str,
+    is_likely_emoji: bool,
+    is_likely_cjk: bool,
+) -> Option<sdl3::surface::Surface<'static>> {
+    let first = text.chars().next()?;
+    let ok = |s: &sdl3::surface::Surface| s.width() > 0 && s.height() > 0;
+
+    if is_likely_emoji && emoji_font.find_glyph(first).is_some() {
+        if let Ok(s) = emoji_font.render(text).blended(GLYPH_RENDER_COLOR) {
+            if ok(&s) {
+                return Some(s);
             }
         }
     }
-
-    // CJK: use CJK font at native size
     if is_likely_cjk {
-        let cjk_result = cjk_font.render(text).blended(render_color);
-        if let Ok(surface) = cjk_result {
-            if surface.width() > 0 && surface.height() > 0 {
-                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                    canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
-                    if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
-                    return Ok(());
-                }
+        if let Ok(s) = cjk_font.render(text).blended(GLYPH_RENDER_COLOR) {
+            if ok(&s) {
+                return Some(s);
             }
         }
     }
-
-    // Main font
-    let has_main_glyph = text.chars().next()
-        .map_or(false, |ch| font.find_glyph(ch).is_some());
-    if has_main_glyph {
-        let render_result = if text.chars().count() == 1 {
-            font.render_char(text.chars().next().unwrap()).blended(render_color)
+    if font.find_glyph(first).is_some() {
+        let rendered = if text.chars().count() == 1 {
+            font.render_char(first).blended(GLYPH_RENDER_COLOR)
         } else {
-            font.render(text).blended(render_color)
+            font.render(text).blended(GLYPH_RENDER_COLOR)
         };
-
-        if let Ok(surface) = render_result {
-            if surface.width() > 0 && surface.height() > 0 {
-                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                    canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
-                    if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
-                    draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, underline, strikethrough)?;
-                    return Ok(());
-                }
+        if let Ok(s) = rendered {
+            if ok(&s) {
+                return Some(s);
             }
         }
     }
-
-    // Fallback: emoji font for non-emoji characters
-    if !is_likely_emoji {
-        let has_emoji_fallback_glyph = text.chars().next()
-            .map_or(false, |ch| emoji_font.find_glyph(ch).is_some());
-        if has_emoji_fallback_glyph {
-            let emoji_fallback_result = emoji_font.render(text).blended(render_color);
-            if let Ok(surface) = emoji_fallback_result {
-                if surface.width() > 0 && surface.height() > 0 {
-                    if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                        let scale = (cell_width as f32 / surface.width() as f32).min(cell_height as f32 / surface.height() as f32).min(1.0);
-                        let scaled_w = (surface.width() as f32 * scale) as u32;
-                        let scaled_h = (surface.height() as f32 * scale) as u32;
-                        canvas.copy(&texture, None, Rect::new(x, y, scaled_w, scaled_h)).map_err(|e| e.to_string())?;
-                        if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
-                        return Ok(());
-                    }
-                }
+    if !is_likely_emoji && emoji_font.find_glyph(first).is_some() {
+        if let Ok(s) = emoji_font.render(text).blended(GLYPH_RENDER_COLOR) {
+            if ok(&s) {
+                return Some(s);
             }
         }
     }
-
-    // Fallback: CJK font
-    let has_cjk_fallback_glyph = text.chars().next()
-        .map_or(false, |ch| cjk_font.find_glyph(ch).is_some());
-    if has_cjk_fallback_glyph {
-        let cjk_fallback_result = cjk_font.render(text).blended(render_color);
-        if let Ok(surface) = cjk_fallback_result {
-            if surface.width() > 0 && surface.height() > 0 {
-                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                    let scale = (cell_width as f32 / surface.width() as f32).min(cell_height as f32 / surface.height() as f32).min(1.0);
-                    let scaled_w = (surface.width() as f32 * scale) as u32;
-                    let scaled_h = (surface.height() as f32 * scale) as u32;
-                    canvas.copy(&texture, None, Rect::new(x, y, scaled_w, scaled_h)).map_err(|e| e.to_string())?;
-                    if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
-                    return Ok(());
-                }
+    if !is_likely_cjk && cjk_font.find_glyph(first).is_some() {
+        if let Ok(s) = cjk_font.render(text).blended(GLYPH_RENDER_COLOR) {
+            if ok(&s) {
+                return Some(s);
             }
         }
     }
-
-    // Fallback: unicode symbol font
-    let has_glyph = text.chars().next()
-        .map_or(false, |ch| unicode_fallback_font.find_glyph(ch).is_some());
-    if has_glyph {
-        if let Ok(surface) = unicode_fallback_font.render(text).blended(render_color) {
-            if surface.width() > 0 && surface.height() > 0 {
-                if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                    let scale = (cell_width as f32 / surface.width() as f32).min(cell_height as f32 / surface.height() as f32).min(1.0);
-                    let scaled_width = (surface.width() as f32 * scale) as u32;
-                    let scaled_height = (surface.height() as f32 * scale) as u32;
-                    canvas.copy(&texture, None, Rect::new(x, y, scaled_width, scaled_height)).map_err(|e| e.to_string())?;
-                    if can_cache { glyph_cache.insert(cache_key, texture); } else { unsafe { texture.destroy() }; }
-                    return Ok(());
-                }
+    if unicode_fallback_font.find_glyph(first).is_some() {
+        if let Ok(s) = unicode_fallback_font.render(text).blended(GLYPH_RENDER_COLOR) {
+            if ok(&s) {
+                return Some(s);
             }
         }
     }
-
-    // Last resort: replacement box '□'
-    let fallback_key = "□".to_string();
-    if let Some(cached_fallback) = glyph_cache.get_mut(&fallback_key) {
-        cached_fallback.set_color_mod(r, g, b);
-        let query = cached_fallback.query();
-        canvas.copy(cached_fallback, None, Rect::new(x, y, query.width, query.height)).map_err(|e| e.to_string())?;
-    } else if let Ok(surface) = font.render_char('□').blended(render_color) {
-        if surface.width() > 0 && surface.height() > 0 {
-            if let Ok(texture) = texture_creator.create_texture_from_surface::<&sdl3::surface::Surface>(&surface) {
-                canvas.copy(&texture, None, Rect::new(x, y, surface.width(), surface.height())).map_err(|e| e.to_string())?;
-                glyph_cache.insert(fallback_key, texture);
-            }
+    // Last resort: replacement box (cached under the original key so the
+    // fallback chain doesn't re-run every frame for unknown glyphs).
+    if let Ok(s) = font.render_char('□').blended(GLYPH_RENDER_COLOR) {
+        if ok(&s) {
+            return Some(s);
         }
     }
-
-    draw_text_decorations(canvas, x, y, cell_width, cell_height, r, g, b, underline, strikethrough)?;
-    Ok(())
+    None
 }
 
 /// Draw text decorations (underline, strikethrough, bold effect)

@@ -49,6 +49,67 @@ impl CursorStyle {
 
 pub const DEFAULT_BG_COLOR: Color = Color::RGB(20, 20, 20);
 
+/// Chunked byte queue between the PTY reader thread and the main thread.
+/// Whole read() buffers are pushed and popped, so neither side does per-byte
+/// work while holding the lock.
+pub struct ByteQueue {
+    chunks: VecDeque<Vec<u8>>,
+    len: usize,
+}
+
+impl ByteQueue {
+    pub fn new() -> Self {
+        ByteQueue { chunks: VecDeque::new(), len: 0 }
+    }
+
+    pub fn push(&mut self, data: &[u8]) {
+        self.len += data.len();
+        self.chunks.push_back(data.to_vec());
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Pop up to `max` bytes (soft limit: whole chunks only, so a single chunk
+    /// larger than `max` is returned intact rather than split).
+    pub fn pop_bytes(&mut self, max: usize) -> Vec<u8> {
+        let Some(first) = self.chunks.pop_front() else {
+            return Vec::new();
+        };
+        self.len -= first.len();
+        if first.len() >= max || self.chunks.is_empty() {
+            return first; // single-chunk fast path: no copy
+        }
+        let mut out = first;
+        while let Some(next) = self.chunks.front() {
+            if out.len() + next.len() > max {
+                break;
+            }
+            let next = self.chunks.pop_front().unwrap();
+            self.len -= next.len();
+            out.extend_from_slice(&next);
+        }
+        out
+    }
+
+    /// Drop oldest whole chunks until total length is at most `limit`.
+    /// Returns the number of bytes dropped.
+    pub fn drop_oldest(&mut self, limit: usize) -> usize {
+        let mut dropped = 0usize;
+        while self.len > limit {
+            let Some(chunk) = self.chunks.pop_front() else { break };
+            self.len -= chunk.len();
+            dropped += chunk.len();
+        }
+        dropped
+    }
+}
+
 /// Context passed to the `render_with` closure.
 pub struct RenderContext<'snap, 'alloc> {
     pub snapshot: &'snap libghostty_vt::render::Snapshot<'alloc, 'snap>,
@@ -75,14 +136,14 @@ pub enum MouseTrackingMode {
 /// `libghostty_vt::Terminal` is `!Send + !Sync`.  We mark `GhosttyBuffer`
 /// as `Send + Sync` because, in practice, the `terminal` field is only ever
 /// accessed from the **main render thread**.  The background reader thread
-/// only touches `incoming_bytes`, which is itself a safe `Arc<Mutex<VecDeque<u8>>>`.
+/// only touches `incoming_bytes`, which is itself a safe `Arc<Mutex<ByteQueue>>`.
 pub struct GhosttyBuffer {
     pub terminal: Box<Terminal<'static, 'static>>,
     render_state: RenderState<'static>,
     row_iter: RowIterator<'static>,
     cell_iter: CellIterator<'static>,
     /// Incoming raw bytes from the PTY reader thread.
-    pub incoming_bytes: Arc<Mutex<VecDeque<u8>>>,
+    pub incoming_bytes: Arc<Mutex<ByteQueue>>,
     /// Dirty flag – set true when bytes are processed.
     pub dirty: bool,
     width: u16,
@@ -112,7 +173,7 @@ impl GhosttyBuffer {
         max_scrollback: usize,
         pty_write_tx: mpsc::SyncSender<Vec<u8>>,
         default_cursor: CursorStyle,
-    ) -> (Self, Arc<Mutex<VecDeque<u8>>>) {
+    ) -> (Self, Arc<Mutex<ByteQueue>>) {
         let mut terminal = Box::new(
             Terminal::new(TerminalOptions {
                 cols: initial_cols,
@@ -171,7 +232,7 @@ impl GhosttyBuffer {
         let row_iter = RowIterator::new().expect("GhosttyBuffer: row_iter init failed");
         let cell_iter = CellIterator::new().expect("GhosttyBuffer: cell_iter init failed");
 
-        let incoming_bytes = Arc::new(Mutex::new(VecDeque::<u8>::new()));
+        let incoming_bytes = Arc::new(Mutex::new(ByteQueue::new()));
         let incoming_clone = Arc::clone(&incoming_bytes);
 
         let gb = GhosttyBuffer {
@@ -201,11 +262,15 @@ impl GhosttyBuffer {
     /// for the OS to mark the window as "not responding".  Any remainder
     /// stays in `incoming_bytes` and is picked up on the next frame.
     pub fn process_pending_bytes(&mut self) {
-        const MAX_BYTES_PER_FRAME: usize = 4_096;
-        // When the buffer grows beyond this limit (e.g. grep on minified files), discard
-        // the oldest bytes so the terminal stays responsive and catches up quickly.
-        // The terminal will show the tail of the output rather than freezing for minutes.
-        const OVERFLOW_LIMIT: usize = 512 * 1024; // 512 KB
+        // Bounded per call so a single vt_write of pathological content (very
+        // long wrapping lines) stays well under the 500ms threshold that
+        // triggers the scrollback-erasing ESC[3J fallback below.
+        const MAX_BYTES_PER_CALL: usize = 32 * 1024;
+        // When the buffer grows beyond this limit (e.g. cat on a huge file while the
+        // window is hidden), discard the oldest bytes so the terminal stays responsive.
+        // Kept high so normal large outputs (grep, build logs) are never dropped and
+        // remain available in scrollback / selection.
+        const OVERFLOW_LIMIT: usize = 8 * 1024 * 1024; // 8 MB
 
         let bytes = {
             let Ok(mut incoming) = self.incoming_bytes.lock() else {
@@ -214,18 +279,11 @@ impl GhosttyBuffer {
             if incoming.is_empty() {
                 return;
             }
-            // Discard oldest bytes to keep the buffer bounded.
-            if incoming.len() > OVERFLOW_LIMIT {
-                let drop_n = incoming.len() - OVERFLOW_LIMIT;
-                incoming.drain(..drop_n);
-                eprintln!("[TERM] dropped {} bytes (buffer overflow)", drop_n);
+            let dropped = incoming.drop_oldest(OVERFLOW_LIMIT);
+            if dropped > 0 {
+                eprintln!("[TERM] dropped {} bytes (buffer overflow)", dropped);
             }
-            if incoming.len() <= MAX_BYTES_PER_FRAME {
-                Vec::from(std::mem::take(&mut *incoming))
-            } else {
-                // drain from VecDeque front is O(drained), not O(total)
-                incoming.drain(..MAX_BYTES_PER_FRAME).collect()
-            }
+            incoming.pop_bytes(MAX_BYTES_PER_CALL)
         };
 
         // Intercept Kitty Graphics Protocol sequences for image rendering.

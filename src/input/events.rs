@@ -92,8 +92,21 @@ pub fn handle_event(
     match event {
         Event::Quit { .. } => EventResult::quit(),
 
+        // A plain resize, a change in the drawable's physical pixel size, or the
+        // window moving to a differently-scaled display all require the render
+        // state (and possibly the scale factor) to be recomputed. The main loop's
+        // resize handler re-detects scaling and rebuilds fonts/chrome if it changed.
         Event::Window {
-            win_event: sdl3::event::WindowEvent::Resized(_width, _height),
+            win_event:
+                sdl3::event::WindowEvent::Resized(..)
+                | sdl3::event::WindowEvent::PixelSizeChanged(..)
+                | sdl3::event::WindowEvent::DisplayChanged(..),
+            ..
+        } => EventResult::resize(),
+
+        // Runtime display scale change (e.g. `wlr-randr --scale` while running).
+        Event::Display {
+            display_event: sdl3::event::DisplayEvent::ContentScaleChanged,
             ..
         } => EventResult::resize(),
 
@@ -221,6 +234,7 @@ fn handle_mouse_button_down_event(
         char_height,
         w,
         h,
+        scale_factor,
         mouse_state,
         event_pump,
         #[cfg(target_os = "linux")]

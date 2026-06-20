@@ -41,13 +41,6 @@ pub fn is_emoji_char(ch: char) -> bool {
     )
 }
 
-/// Check if a string contains an emoji (including combined emojis with modifiers)
-#[inline]
-pub fn is_emoji_grapheme(s: &str) -> bool {
-    // Check if any character in the grapheme cluster is an emoji
-    s.chars().any(is_emoji_char)
-}
-
 /// Check if a character is a CJK (Chinese, Japanese, Korean) character
 #[inline]
 pub fn is_cjk_char(ch: char) -> bool {
@@ -94,11 +87,4 @@ pub fn is_cjk_char(ch: char) -> bool {
         // Halfwidth and Fullwidth Forms (，！？：；""'' etc.)
         0xFF00..=0xFFEF
     )
-}
-
-/// Check if a string contains CJK characters
-#[inline]
-pub fn is_cjk_grapheme(s: &str) -> bool {
-    // Check if any character in the grapheme cluster is CJK
-    s.chars().any(is_cjk_char)
 }

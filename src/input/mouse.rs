@@ -224,6 +224,7 @@ pub fn handle_mouse_button_down(
     char_height: f32,
     window_width: u32,
     window_height: u32,
+    scale_factor: f32,
     mouse_state: &mut MouseState,
     event_pump: &sdl3::EventPump,
     #[allow(unused_variables)]
@@ -257,7 +258,7 @@ pub fn handle_mouse_button_down(
                         let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_width, pane_area_height);
                         for (pane_id, rect, _, _, _) in pane_rects {
                             if rect.contains_point((mouse_x, mouse_y)) {
-                                pane_layout.open_context_menu(pane_id, mouse_x, mouse_y, window_width as i32, window_height as i32);
+                                pane_layout.open_context_menu(pane_id, mouse_x, mouse_y, window_width as i32, window_height as i32, scale_factor);
                                 break;
                             }
                         }
