@@ -4,6 +4,8 @@
 # Run this when you need to rebuild the vendored library (e.g. after bumping
 # GHOSTTY_COMMIT in build.rs or switching to a different CPU architecture).
 #
+# Built ReleaseFast + baseline CPU (see the build step below for the why).
+#
 # Zig is required. If not in PATH, this script will download it into
 # third-party/zig/ automatically (no snap, no sudo required).
 
@@ -56,8 +58,19 @@ git clone --filter=blob:none --no-checkout "$GHOSTTY_REPO" "$WORK_DIR/ghostty"
 git -C "$WORK_DIR/ghostty" checkout "$GHOSTTY_COMMIT"
 
 # Build
+# -Doptimize=ReleaseFast: ghostty's build.zig defaults the optimize mode to
+#   Debug (std.Build.standardOptimizeOption with no -Doptimize), which also
+#   enables ghostty's `slow_runtime_safety`. A Debug libghostty-vt parses the VT
+#   stream at ~1 MB/s; ReleaseFast does ~115 MB/s — a ~100x throughput win on the
+#   terminal hot path (large `cat`, build logs, fast scrollback). Measured; this
+#   is by far the biggest lever in the whole build. (release-windows.sh already
+#   passes ReleaseFast — this brings the Linux/macOS prebuilt in line.)
+# -Dcpu=baseline: keep the artifact portable across CPUs. Benchmarked native vs
+#   baseline at ReleaseFast: identical throughput (the hot kernels are Google-
+#   Highway SIMD, already AVX2 in both), so -Dcpu=native buys nothing here and
+#   only risks an illegal-instruction crash on a different/older CPU.
 echo "Building libghostty-vt ..."
-(cd "$WORK_DIR/ghostty" && "$ZIG" build -Demit-lib-vt --prefix "$WORK_DIR/install")
+(cd "$WORK_DIR/ghostty" && "$ZIG" build -Demit-lib-vt -Doptimize=ReleaseFast -Dcpu=baseline --prefix "$WORK_DIR/install")
 
 # Copy artifacts into prebuilt/
 echo "Updating prebuilt artifacts ..."
