@@ -98,7 +98,7 @@ pub enum TestCommand {
     /// app; otherwise scrolls the terminal's scrollback buffer.
     #[serde(rename = "mouse_wheel")]
     MouseWheel {
-        delta: i32, // positive = scroll up, negative = scroll down
+        delta: f32, // positive = scroll up, negative = scroll down; may be fractional (touchpad)
         col: u32,   // 1-based column for the mouse position
         row: u32,   // 1-based row for the mouse position
     },
@@ -374,6 +374,8 @@ pub struct TestServer {
     hit_test_buttons_width: i32,
     /// Logical resize-border width (8 px).
     hit_test_resize_border: i32,
+    /// Leftover fractional wheel delta, same accumulation as the real SDL wheel path.
+    wheel_accum: Mutex<f32>,
 }
 
 impl TestServer {
@@ -412,6 +414,7 @@ impl TestServer {
             hit_test_tab_bar_height,
             hit_test_buttons_width,
             hit_test_resize_border,
+            wheel_accum: Mutex::new(0.0),
         })
     }
 
@@ -1307,19 +1310,25 @@ impl TestServer {
                             }
                         }
 
+                        // Same fractional accumulation as the real SDL wheel path
+                        let steps = {
+                            let mut accum = self.wheel_accum.lock().unwrap();
+                            crate::input::mouse::accumulate_wheel_delta(&mut accum, delta)
+                        };
+
                         let tracking_enabled = t.is_mouse_tracking_enabled();
                         if tracking_enabled {
-                            let button = if delta > 0 { 64u8 } else { 65u8 };
-                            let times = delta.unsigned_abs() as usize;
+                            let button = if steps > 0 { 64u8 } else { 65u8 };
+                            let times = steps.unsigned_abs() as usize;
                             for _ in 0..times {
                                 t.send_mouse_event(button, col, row, true);
                             }
                         } else {
-                            let lines = delta.unsigned_abs() as usize;
+                            let lines = steps.unsigned_abs() as usize;
                             if let Ok(mut gb) = t.ghostty_buffer.lock() {
-                                if delta > 0 {
+                                if steps > 0 {
                                     gb.scroll_view_up(lines);
-                                } else {
+                                } else if steps < 0 {
                                     gb.scroll_view_down(lines);
                                 }
                             }

@@ -79,6 +79,10 @@ pub struct MouseState {
     /// How many viewport lines we scrolled up during an active drag to compensate for scrollback
     /// growth (new PTY output). Reset to 0 on mouse-up by scrolling back down the same amount.
     pub selection_drag_scroll_compensation: usize,
+    /// Leftover fractional vertical wheel delta (touchpads/hi-res wheels emit sub-1.0 events)
+    pub wheel_accum_y: f32,
+    /// Leftover fractional horizontal wheel delta
+    pub wheel_accum_x: f32,
 }
 
 impl MouseState {
@@ -97,8 +101,27 @@ impl MouseState {
             hovered_url: None,
             shift_bypassing_mouse: false,
             selection_drag_scroll_compensation: 0,
+            wheel_accum_y: 0.0,
+            wheel_accum_x: 0.0,
         }
     }
+}
+
+/// Accumulate a (possibly fractional) wheel delta and return the whole number of steps
+/// to apply now. The fractional remainder stays in `accum` for the next event, so a burst
+/// of small touchpad deltas (e.g. 0.3 each) adds up instead of truncating to zero.
+/// A direction reversal discards the leftover so opposite scrolling responds immediately.
+pub fn accumulate_wheel_delta(accum: &mut f32, delta: f32) -> i32 {
+    if delta == 0.0 {
+        return 0;
+    }
+    if (*accum > 0.0 && delta < 0.0) || (*accum < 0.0 && delta > 0.0) {
+        *accum = 0.0;
+    }
+    *accum += delta;
+    let steps = accum.trunc();
+    *accum -= steps;
+    steps as i32
 }
 
 /// Send mouse event to terminal
@@ -974,11 +997,12 @@ pub fn handle_mouse_motion(
 /// Handle mouse wheel event
 #[allow(clippy::too_many_arguments)]
 pub fn handle_mouse_wheel(
-    wheel_y: i32,
-    wheel_x: i32,
+    wheel_y_raw: f32,
+    wheel_x_raw: f32,
     mouse_x: i32,
     mouse_y: i32,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
+    mouse_state: &mut MouseState,
     tab_bar_height: u32,
     char_width: f32,
     char_height: f32,
@@ -988,6 +1012,9 @@ pub fn handle_mouse_wheel(
     if mouse_y < tab_bar_height as i32 {
         return MouseResult::none();
     }
+
+    let wheel_y = accumulate_wheel_delta(&mut mouse_state.wheel_accum_y, wheel_y_raw);
+    let wheel_x = accumulate_wheel_delta(&mut mouse_state.wheel_accum_x, wheel_x_raw);
 
     let mut needs_render = false;
 

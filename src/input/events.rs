@@ -164,6 +164,7 @@ pub fn handle_event(
             *y,
             *x,
             tab_bar_gui,
+            mouse_state,
             scale_factor,
             mouse_coords_need_scaling,
             char_width,
@@ -372,6 +373,7 @@ fn handle_mouse_wheel_event(
     y: f32,
     x: f32,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
+    mouse_state: &mut MouseState,
     scale_factor: f32,
     mouse_coords_need_scaling: bool,
     char_width: f32,
@@ -405,7 +407,7 @@ fn handle_mouse_wheel_event(
 
     let (w, h) = canvas_window.size();
 
-    let result = super::mouse::handle_mouse_wheel(y as i32, x as i32, mouse_x, mouse_y, tab_bar_gui, tab_bar_height, char_width, char_height, w, h);
+    let result = super::mouse::handle_mouse_wheel(y, x, mouse_x, mouse_y, tab_bar_gui, mouse_state, tab_bar_height, char_width, char_height, w, h);
 
     EventResult {
         action: EventAction::None,
