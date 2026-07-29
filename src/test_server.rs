@@ -101,6 +101,13 @@ pub enum TestCommand {
         delta: f32, // positive = scroll up, negative = scroll down; may be fractional (touchpad)
         col: u32,   // 1-based column for the mouse position
         row: u32,   // 1-based row for the mouse position
+        /// Lines per wheel click, as the `scrollMultiplier` setting would supply.
+        #[serde(default = "default_scroll_multiplier")]
+        multiplier: f32,
+        /// How many wheel events to deliver back-to-back, simulating one touchpad
+        /// gesture (a real gesture arrives as a burst well inside WHEEL_GESTURE_GAP).
+        #[serde(default = "default_wheel_count")]
+        count: u32,
     },
     /// Check what the SDL hit test would return for a logical window coordinate.
     /// x=-30 means "30 logical pixels from the right edge of the window".
@@ -374,8 +381,17 @@ pub struct TestServer {
     hit_test_buttons_width: i32,
     /// Logical resize-border width (8 px).
     hit_test_resize_border: i32,
-    /// Leftover fractional wheel delta, same accumulation as the real SDL wheel path.
-    wheel_accum: Mutex<f32>,
+    /// Mouse state for the wheel handler, so fractional deltas accumulate across
+    /// commands exactly like they do across SDL events.
+    wheel_mouse_state: Mutex<crate::input::mouse::MouseState>,
+}
+
+fn default_scroll_multiplier() -> f32 {
+    3.0
+}
+
+fn default_wheel_count() -> u32 {
+    1
 }
 
 impl TestServer {
@@ -414,7 +430,7 @@ impl TestServer {
             hit_test_tab_bar_height,
             hit_test_buttons_width,
             hit_test_resize_border,
-            wheel_accum: Mutex::new(0.0),
+            wheel_mouse_state: Mutex::new(crate::input::mouse::MouseState::new()),
         })
     }
 
@@ -1295,13 +1311,18 @@ impl TestServer {
                     message: "Failed to simulate zoom".to_string(),
                 }
             }
-            TestCommand::MouseWheel { delta, col, row } => {
-                let terminal = self.tab_bar_gui.lock().ok()
-                    .and_then(|gui| gui.get_active_terminal());
-                if let Some(terminal) = terminal {
-                    if let Ok(mut t) = terminal.lock() {
-                        // Drain pending bytes so injected escape sequences (e.g. mouse tracking
-                        // setup) are processed before we check the tracking state.
+            TestCommand::MouseWheel { delta, col, row, multiplier, count } => {
+                // Drain pending bytes so injected escape sequences (mouse tracking setup,
+                // alt-screen entry) are processed before the wheel handler inspects them.
+                // Scoped so no terminal lock is held when handle_mouse_wheel re-locks.
+                {
+                    let terminal = self.tab_bar_gui.lock().ok().and_then(|gui| gui.get_active_terminal());
+                    let Some(terminal) = terminal else {
+                        return TestResponse::Error {
+                            message: "Failed to handle mouse wheel".to_string(),
+                        };
+                    };
+                    if let Ok(t) = terminal.lock() {
                         if let Ok(mut gb) = t.ghostty_buffer.lock() {
                             loop {
                                 gb.process_pending_bytes();
@@ -1309,37 +1330,44 @@ impl TestServer {
                                 if is_empty { break; }
                             }
                         }
+                    };
+                }
 
-                        // Same fractional accumulation as the real SDL wheel path
-                        let steps = {
-                            let mut accum = self.wheel_accum.lock().unwrap();
-                            crate::input::mouse::accumulate_wheel_delta(&mut accum, delta)
-                        };
+                // Cell (col, row) -> window pixel at the centre of that cell, the inverse
+                // of the mapping send_mouse_to_terminal applies.
+                let tab_bar_height = self._tab_bar_height;
+                let padding = crate::ui::render::get_pane_padding() as f32;
+                let mouse_x = (padding + (col.saturating_sub(1)) as f32 * self.char_width + self.char_width / 2.0) as i32;
+                let mouse_y = (tab_bar_height as f32 + padding + (row.saturating_sub(1)) as f32 * self.char_height + self.char_height / 2.0) as i32;
 
-                        let tracking_enabled = t.is_mouse_tracking_enabled();
-                        if tracking_enabled {
-                            let button = if steps > 0 { 64u8 } else { 65u8 };
-                            let times = steps.unsigned_abs() as usize;
-                            for _ in 0..times {
-                                t.send_mouse_event(button, col, row, true);
-                            }
-                        } else {
-                            let lines = steps.unsigned_abs() as usize;
-                            if let Ok(mut gb) = t.ghostty_buffer.lock() {
-                                if steps > 0 {
-                                    gb.scroll_view_up(lines);
-                                } else if steps < 0 {
-                                    gb.scroll_view_down(lines);
-                                }
-                            }
-                        }
-                        thread::sleep(std::time::Duration::from_millis(50));
-                        return TestResponse::Ok;
+                let (w, h) = {
+                    let w = *self.window_width.lock().unwrap();
+                    let h = *self.window_height.lock().unwrap();
+                    (w, h)
+                };
+
+                // The real handler, so tests cover the code the SDL event path runs.
+                {
+                    let mut ms = self.wheel_mouse_state.lock().unwrap();
+                    for _ in 0..count.max(1) {
+                        crate::input::mouse::handle_mouse_wheel(
+                            delta,
+                            0.0,
+                            mouse_x,
+                            mouse_y,
+                            &self.tab_bar_gui,
+                            &mut ms,
+                            tab_bar_height,
+                            self.char_width,
+                            self.char_height,
+                            w,
+                            h,
+                            multiplier,
+                        );
                     }
                 }
-                TestResponse::Error {
-                    message: "Failed to handle mouse wheel".to_string(),
-                }
+                thread::sleep(std::time::Duration::from_millis(50));
+                TestResponse::Ok
             }
             TestCommand::CheckHitTest { x, y } => {
                 // Evaluate the hit-test logic with the same shared state used by the

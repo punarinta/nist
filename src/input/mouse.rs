@@ -83,6 +83,8 @@ pub struct MouseState {
     pub wheel_accum_y: f32,
     /// Leftover fractional horizontal wheel delta
     pub wheel_accum_x: f32,
+    /// When the previous wheel event arrived, used to drop stale leftovers between gestures.
+    pub last_wheel_at: Option<std::time::Instant>,
 }
 
 impl MouseState {
@@ -103,20 +105,26 @@ impl MouseState {
             selection_drag_scroll_compensation: 0,
             wheel_accum_y: 0.0,
             wheel_accum_x: 0.0,
+            last_wheel_at: None,
         }
     }
 }
 
+/// A gap this long between wheel events ends the gesture: leftover fractions are
+/// dropped so the next flick starts from zero instead of inheriting old progress.
+pub const WHEEL_GESTURE_GAP: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Accumulate a (possibly fractional) wheel delta and return the whole number of steps
 /// to apply now. The fractional remainder stays in `accum` for the next event, so a burst
 /// of small touchpad deltas (e.g. 0.3 each) adds up instead of truncating to zero.
-/// A direction reversal discards the leftover so opposite scrolling responds immediately.
+///
+/// Deltas are summed signed: a touchpad reports plenty of tiny opposite-sign jitter
+/// mid-gesture, and discarding the leftover on every sign flip is what made a slow
+/// two-finger scroll never reach a whole step. Leftovers are dropped by elapsed time
+/// (see `WHEEL_GESTURE_GAP`), not by direction.
 pub fn accumulate_wheel_delta(accum: &mut f32, delta: f32) -> i32 {
     if delta == 0.0 {
         return 0;
-    }
-    if (*accum > 0.0 && delta < 0.0) || (*accum < 0.0 && delta > 0.0) {
-        *accum = 0.0;
     }
     *accum += delta;
     let steps = accum.trunc();
@@ -137,9 +145,12 @@ pub fn send_mouse_to_terminal(
     window_width: u32,
     window_height: u32,
 ) {
-    let mut gui = match tab_bar_gui.try_lock() {
+    // Blocking lock on purpose: this is the main thread and every other holder of
+    // this mutex keeps it briefly. Skipping on a busy lock silently dropped mouse
+    // reports (wheel scrolling in mouse-tracking apps just did nothing).
+    let mut gui = match tab_bar_gui.lock() {
         Ok(g) => g,
-        Err(_) => return, // Skip this mouse event if lock is busy
+        Err(_) => return, // Poisoned: nothing useful to do with this event
     };
     if let Some(pane_layout) = gui.get_active_pane_layout() {
         let pane_area_y = tab_bar_height as i32;
@@ -995,6 +1006,11 @@ pub fn handle_mouse_motion(
 }
 
 /// Handle mouse wheel event
+///
+/// `scroll_multiplier` is how many lines one wheel click scrolls (3 is the terminal
+/// convention). It is applied before accumulation, so a touchpad's fractional deltas
+/// are scaled up too — without it a gentle two-finger scroll needs a full wheel click
+/// worth of travel to move a single line, which reads as "scrolling is stuck".
 #[allow(clippy::too_many_arguments)]
 pub fn handle_mouse_wheel(
     wheel_y_raw: f32,
@@ -1008,30 +1024,50 @@ pub fn handle_mouse_wheel(
     char_height: f32,
     window_width: u32,
     window_height: u32,
+    scroll_multiplier: f32,
 ) -> MouseResult {
     if mouse_y < tab_bar_height as i32 {
         return MouseResult::none();
     }
 
-    let wheel_y = accumulate_wheel_delta(&mut mouse_state.wheel_accum_y, wheel_y_raw);
-    let wheel_x = accumulate_wheel_delta(&mut mouse_state.wheel_accum_x, wheel_x_raw);
+    // A pause between flicks ends the gesture: don't let a leftover fraction from a
+    // gesture minutes ago count toward this one (or fight its direction).
+    let now = std::time::Instant::now();
+    if mouse_state
+        .last_wheel_at
+        .is_none_or(|prev| now.duration_since(prev) > WHEEL_GESTURE_GAP)
+    {
+        mouse_state.wheel_accum_y = 0.0;
+        mouse_state.wheel_accum_x = 0.0;
+    }
+    mouse_state.last_wheel_at = Some(now);
+
+    let multiplier = if scroll_multiplier > 0.0 { scroll_multiplier } else { 1.0 };
+    let wheel_y = accumulate_wheel_delta(&mut mouse_state.wheel_accum_y, wheel_y_raw * multiplier);
+    let wheel_x = accumulate_wheel_delta(&mut mouse_state.wheel_accum_x, wheel_x_raw * multiplier);
 
     let mut needs_render = false;
 
     // y > 0 is scroll up (backward in time), y < 0 is scroll down (forward in time)
     if wheel_y != 0 {
-        let tracking_enabled = tab_bar_gui
-            .lock()
-            .unwrap()
-            .get_active_terminal()
-            .map(|t| t.lock().unwrap().is_mouse_tracking_enabled())
-            .unwrap_or(false);
+        // One lock for the whole operation: locking per report let a busy frame drop
+        // wheel reports on the floor (send_mouse_to_terminal skips on a busy lock).
+        let terminal = tab_bar_gui.lock().unwrap().get_active_terminal();
+        let (tracking_enabled, alt_screen) = terminal
+            .as_ref()
+            .map(|t| {
+                let t = t.lock().unwrap();
+                let alt = t.ghostty_buffer.lock().map(|gb| gb.is_alt_screen()).unwrap_or(false);
+                (t.is_mouse_tracking_enabled(), alt)
+            })
+            .unwrap_or((false, false));
+
+        let lines = wheel_y.unsigned_abs() as usize;
 
         if tracking_enabled {
             // Forward scroll to app as button 64 (up) / 65 (down)
             let button = if wheel_y > 0 { 64u8 } else { 65u8 };
-            let times = wheel_y.unsigned_abs() as usize;
-            for _ in 0..times {
+            for _ in 0..lines {
                 send_mouse_to_terminal(
                     tab_bar_gui,
                     mouse_x,
@@ -1045,54 +1081,46 @@ pub fn handle_mouse_wheel(
                     window_height,
                 );
             }
-        } else {
-            if let Some(terminal) = tab_bar_gui.lock().unwrap().get_active_terminal() {
-                let t = terminal.lock().unwrap();
-                let lines_to_scroll = wheel_y.abs().max(1) as usize;
-                if wheel_y > 0 {
-                    t.ghostty_buffer.lock().unwrap().scroll_view_up(lines_to_scroll);
-                } else {
-                    t.ghostty_buffer.lock().unwrap().scroll_view_down(lines_to_scroll);
+        } else if alt_screen {
+            // Alternate screen has no scrollback to move. Translate the wheel into
+            // cursor keys (xterm's "alternate scroll") so full-screen apps that don't
+            // track the mouse — less, man, git log — still scroll.
+            if let Some(terminal) = terminal {
+                if let Ok(mut t) = terminal.lock() {
+                    let key: &[u8] = if wheel_y > 0 { b"\x1b[A" } else { b"\x1b[B" };
+                    for _ in 0..lines {
+                        t.send_key(key);
+                    }
                 }
-                needs_render = true;
             }
+        } else if let Some(terminal) = terminal {
+            let t = terminal.lock().unwrap();
+            if wheel_y > 0 {
+                t.ghostty_buffer.lock().unwrap().scroll_view_up(lines);
+            } else {
+                t.ghostty_buffer.lock().unwrap().scroll_view_down(lines);
+            }
+            needs_render = true;
         }
     }
 
-    // Handle horizontal scrolling if needed (less common)
+    // Handle horizontal scrolling if needed (less common). One report per column,
+    // same as the vertical axis, so a wide gesture doesn't collapse into one step.
     if wheel_x != 0 {
-        match wheel_x.cmp(&0) {
-            std::cmp::Ordering::Greater => {
-                // Scroll right - button 66
-                send_mouse_to_terminal(
-                    tab_bar_gui,
-                    mouse_x,
-                    mouse_y,
-                    66,
-                    true,
-                    char_width,
-                    char_height,
-                    tab_bar_height,
-                    window_width,
-                    window_height,
-                );
-            }
-            std::cmp::Ordering::Less => {
-                // Scroll left - button 67
-                send_mouse_to_terminal(
-                    tab_bar_gui,
-                    mouse_x,
-                    mouse_y,
-                    67,
-                    true,
-                    char_width,
-                    char_height,
-                    tab_bar_height,
-                    window_width,
-                    window_height,
-                );
-            }
-            std::cmp::Ordering::Equal => {}
+        let button = if wheel_x > 0 { 66u8 } else { 67u8 };
+        for _ in 0..wheel_x.unsigned_abs() {
+            send_mouse_to_terminal(
+                tab_bar_gui,
+                mouse_x,
+                mouse_y,
+                button,
+                true,
+                char_width,
+                char_height,
+                tab_bar_height,
+                window_width,
+                window_height,
+            );
         }
     }
 

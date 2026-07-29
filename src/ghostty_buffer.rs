@@ -443,6 +443,12 @@ impl GhosttyBuffer {
             .unwrap_or(0)
     }
 
+    /// True when the alternate screen is active (full-screen apps: vim, less,
+    /// Claude Code, …). There is no scrollback to scroll in that mode.
+    pub fn is_alt_screen(&self) -> bool {
+        self.terminal.is_alt_screen()
+    }
+
     /// Returns `true` when the viewport is at the live (bottom) position.
     pub fn is_at_bottom(&self) -> bool {
         self.terminal

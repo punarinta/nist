@@ -160,9 +160,11 @@ pub fn handle_event(
             canvas_window,
         ),
 
-        Event::MouseWheel { y, x, .. } => handle_mouse_wheel_event(
+        Event::MouseWheel { y, x, mouse_x, mouse_y, .. } => handle_mouse_wheel_event(
             *y,
             *x,
+            *mouse_x,
+            *mouse_y,
             tab_bar_gui,
             mouse_state,
             scale_factor,
@@ -172,6 +174,7 @@ pub fn handle_event(
             tab_bar_height,
             canvas_window,
             event_pump,
+            settings,
         ),
 
         Event::KeyDown { keycode, keymod, scancode, .. } => handle_key_down_event(
@@ -198,6 +201,16 @@ pub fn handle_event(
     }
 }
 
+/// Window size in the coordinate space mouse hit-testing works in.
+///
+/// Mouse coordinates are scaled to physical pixels (see `mouse_coords_need_scaling`)
+/// and `tab_bar_height` is physical too, so pane rects must be built from the
+/// physical drawable size. Using the logical size here shrinks every pane rect on a
+/// scaled display and silently drops events for a pointer outside the shrunken rect.
+fn mouse_space_window_size(canvas_window: &sdl3::video::Window) -> (u32, u32) {
+    canvas_window.size_in_pixels()
+}
+
 fn handle_mouse_button_down_event(
     mouse_btn: sdl3::mouse::MouseButton,
     x: i32,
@@ -221,7 +234,7 @@ fn handle_mouse_button_down_event(
         (x, y)
     };
 
-    let (w, h) = canvas_window.size_in_pixels();
+    let (w, h) = mouse_space_window_size(canvas_window);
 
     let result = super::mouse::handle_mouse_button_down(
         mouse_btn,
@@ -300,7 +313,7 @@ fn handle_mouse_button_up_event(
         (x, y)
     };
 
-    let (w, h) = canvas_window.size_in_pixels();
+    let (w, h) = mouse_space_window_size(canvas_window);
 
     let result = super::mouse::handle_mouse_button_up(
         mouse_btn,
@@ -347,7 +360,7 @@ fn handle_mouse_motion_event(
         (x, y)
     };
 
-    let (w, h) = canvas_window.size_in_pixels();
+    let (w, h) = mouse_space_window_size(canvas_window);
 
     let result = super::mouse::handle_mouse_motion(
         mouse_x,
@@ -369,9 +382,12 @@ fn handle_mouse_motion_event(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_mouse_wheel_event(
     y: f32,
     x: f32,
+    event_mouse_x: f32,
+    event_mouse_y: f32,
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
     mouse_state: &mut MouseState,
     scale_factor: f32,
@@ -381,6 +397,7 @@ fn handle_mouse_wheel_event(
     tab_bar_height: u32,
     canvas_window: &sdl3::video::Window,
     event_pump: &sdl3::EventPump,
+    settings: &Settings,
 ) -> EventResult {
     // Check if Ctrl is pressed for font size change
     let keyboard_state = event_pump.keyboard_state();
@@ -398,16 +415,31 @@ fn handle_mouse_wheel_event(
         };
     }
 
-    let mouse_state_sdl = event_pump.mouse_state();
+    // Use the position carried by the wheel event itself rather than the live pointer
+    // state: the latter can be stale (a touchpad two-finger scroll produces no motion
+    // events), and a stale position lands outside the pane, so the report is never sent.
     let (mouse_x, mouse_y) = if mouse_coords_need_scaling {
-        ((mouse_state_sdl.x() * scale_factor) as i32, (mouse_state_sdl.y() * scale_factor) as i32)
+        ((event_mouse_x * scale_factor) as i32, (event_mouse_y * scale_factor) as i32)
     } else {
-        (mouse_state_sdl.x() as i32, mouse_state_sdl.y() as i32)
+        (event_mouse_x as i32, event_mouse_y as i32)
     };
 
-    let (w, h) = canvas_window.size();
+    let (w, h) = mouse_space_window_size(canvas_window);
 
-    let result = super::mouse::handle_mouse_wheel(y, x, mouse_x, mouse_y, tab_bar_gui, mouse_state, tab_bar_height, char_width, char_height, w, h);
+    let result = super::mouse::handle_mouse_wheel(
+        y,
+        x,
+        mouse_x,
+        mouse_y,
+        tab_bar_gui,
+        mouse_state,
+        tab_bar_height,
+        char_width,
+        char_height,
+        w,
+        h,
+        settings.terminal.scroll_multiplier,
+    );
 
     EventResult {
         action: EventAction::None,

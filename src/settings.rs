@@ -481,6 +481,14 @@ pub struct TerminalSettings {
     #[serde(rename = "fontFamily")]
     pub font_family: String,
     pub cursor: String,
+    /// Lines scrolled per wheel click. 3 is the terminal convention; raising it makes
+    /// touchpad scrolling (which reports fractions of a click per event) travel further.
+    #[serde(default = "default_scroll_multiplier", rename = "scrollMultiplier")]
+    pub scroll_multiplier: f32,
+}
+
+fn default_scroll_multiplier() -> f32 {
+    3.0
 }
 
 impl Default for TerminalSettings {
@@ -489,6 +497,7 @@ impl Default for TerminalSettings {
             font_size: 12.0,
             font_family: "auto".to_string(),
             cursor: "pipe".to_string(),
+            scroll_multiplier: default_scroll_multiplier(),
         }
     }
 }
