@@ -603,8 +603,12 @@ impl GhosttyBuffer {
     /// Convert an absolute row (0 = oldest scrollback, increases toward
     /// bottommost visible row) to a Point for grid_ref lookup.
     ///
-    /// Uses Point::Viewport for rows inside the current viewport (fast),
-    /// and Point::History for rows that are scrolled above it.
+    /// Scrollback rows use Point::History, which shares our origin: y=0 is the
+    /// *oldest* history row and it does not move with the viewport, so those rows
+    /// stay addressable no matter how far the view is scrolled. Active-screen rows
+    /// use Point::Viewport, which is relative to the current viewport and therefore
+    /// only reaches rows the viewport actually shows — a scrolled-up view cannot
+    /// address the active screen below it (returns None; scroll back down first).
     fn abs_row_to_point(&self, abs_row: usize) -> Option<libghostty_vt::terminal::Point> {
         use libghostty_vt::terminal::Point;
         let scrollback_len = self.scrollback_len();
@@ -613,20 +617,18 @@ impl GhosttyBuffer {
         let viewport_start = scrollback_len.saturating_sub(scroll_offset);
         let height = self.height();
 
-        if abs_row >= viewport_start && abs_row < viewport_start + height {
-            // Row is inside the current viewport.
+        if abs_row < scrollback_len {
+            // Row is in scrollback history.
+            Some(Point::History(PointCoordinate {
+                x: 0, // x is set by caller; placeholder, overridden below
+                y: abs_row as u32,
+            }))
+        } else if abs_row >= viewport_start && abs_row < viewport_start + height {
+            // Active-screen row the viewport currently shows.
             let viewport_y = (abs_row - viewport_start) as u32;
             Some(Point::Viewport(PointCoordinate {
-                x: 0, // x is set by caller; placeholder, overridden below
-                y: viewport_y,
-            }))
-        } else if abs_row < viewport_start {
-            // Row is in scrollback history above the viewport.
-            // Point::History y=0 is the row just above the viewport (newest history).
-            let history_y = (viewport_start - 1 - abs_row) as u32;
-            Some(Point::History(PointCoordinate {
                 x: 0,
-                y: history_y,
+                y: viewport_y,
             }))
         } else {
             None

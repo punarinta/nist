@@ -76,6 +76,19 @@ pub enum TestCommand {
         col: u32, // 1-based column
         row: u32, // 1-based row
     },
+    /// Begin a drag selection at a cell, through the same code the SDL motion handler
+    /// runs once the drag threshold is crossed. Leaves the shared MouseState marked as
+    /// "dragging", so a following `mouse_wheel` extends the selection.
+    #[serde(rename = "drag_begin")]
+    DragBegin { col: u32, row: u32 },
+    /// Move the loose end of an in-progress drag selection to a cell. `row` may be 0 or
+    /// negative, or greater than the terminal height, to drag past the pane edge and
+    /// exercise the autoscroll.
+    #[serde(rename = "drag_to")]
+    DragTo { col: i32, row: i32 },
+    /// End the drag (button up). Keeps the selection; only clears the drag state.
+    #[serde(rename = "drag_end")]
+    DragEnd,
     #[serde(rename = "get_cwd")]
     GetCwd,
     #[serde(rename = "get_selection")]
@@ -381,9 +394,10 @@ pub struct TestServer {
     hit_test_buttons_width: i32,
     /// Logical resize-border width (8 px).
     hit_test_resize_border: i32,
-    /// Mouse state for the wheel handler, so fractional deltas accumulate across
-    /// commands exactly like they do across SDL events.
-    wheel_mouse_state: Mutex<crate::input::mouse::MouseState>,
+    /// Mouse state shared by the wheel and drag commands, so fractional wheel
+    /// deltas accumulate across commands exactly like they do across SDL events
+    /// and a wheel event can see that a drag selection is in progress.
+    mouse_state: Mutex<crate::input::mouse::MouseState>,
 }
 
 fn default_scroll_multiplier() -> f32 {
@@ -430,8 +444,29 @@ impl TestServer {
             hit_test_tab_bar_height,
             hit_test_buttons_width,
             hit_test_resize_border,
-            wheel_mouse_state: Mutex::new(crate::input::mouse::MouseState::new()),
+            mouse_state: Mutex::new(crate::input::mouse::MouseState::new()),
         })
+    }
+
+    /// Window pixel at the centre of a 1-based terminal cell — the inverse of the
+    /// mapping the real mouse handlers apply. Coordinates outside the grid (row 0 or
+    /// negative, row > height) land outside the pane on purpose, so tests can drag
+    /// past its edges.
+    fn cell_to_pixels(&self, col: i32, row: i32) -> (i32, i32) {
+        let padding = crate::ui::render::get_pane_padding() as f32;
+        let x = padding + (col - 1) as f32 * self.char_width + self.char_width / 2.0;
+        let y = self._tab_bar_height as f32
+            + padding
+            + (row - 1) as f32 * self.char_height
+            + self.char_height / 2.0;
+        (x.floor() as i32, y.floor() as i32)
+    }
+
+    fn window_size(&self) -> (u32, u32) {
+        (
+            *self.window_width.lock().unwrap(),
+            *self.window_height.lock().unwrap(),
+        )
     }
 
     pub fn update_tabs(&self, terminals: Vec<Arc<Mutex<Terminal>>>) {
@@ -1110,6 +1145,14 @@ impl TestServer {
 
                         let cell_col = (col - 1) as usize;
                         let cell_row = (row - 1) as usize;
+                        // Selection rows are absolute (scrollback + screen), so a screen row
+                        // has to be converted before it can be compared with one. Comparing
+                        // the raw screen row only matched while the scrollback was empty.
+                        let cell_abs_row = t
+                            .ghostty_buffer
+                            .lock()
+                            .map(|gb| gb.scrollback_len().saturating_sub(gb.scroll_offset()) + cell_row)
+                            .unwrap_or(cell_row);
 
                         // Handle selection for left mouse button (button 0) — always
                         if button == 0 {
@@ -1119,7 +1162,7 @@ impl TestServer {
                                 // Mouse up - check if this is a single click (no drag)
                                 let selection = *t.selection.lock().unwrap();
                                 if let Some(sel) = selection {
-                                    if sel.start_col == cell_col && sel.start_row == cell_row && sel.end_col == cell_col && sel.end_row == cell_row {
+                                    if sel.start_col == cell_col && sel.start_row == cell_abs_row && sel.end_col == cell_col && sel.end_row == cell_abs_row {
                                         t.clear_selection();
                                     } else {
                                         t.update_selection(cell_col, cell_row);
@@ -1169,7 +1212,7 @@ impl TestServer {
                         //   already; releasing at a different position would confuse it).
                         let is_drag_release = !pressed && button == 0 && {
                             let sel = t.selection.lock().unwrap();
-                            sel.map(|s| s.start_col != cell_col || s.start_row != cell_row)
+                            sel.map(|s| s.start_col != cell_col || s.start_row != cell_abs_row)
                                 .unwrap_or(false)
                         };
                         if !shift_bypass && !is_drag_release {
@@ -1209,6 +1252,51 @@ impl TestServer {
                     }
                 }
                 TestResponse::Selection { text: None }
+            }
+            TestCommand::DragBegin { col, row } => {
+                let (mouse_x, mouse_y) = self.cell_to_pixels(col as i32, row as i32);
+                let (w, h) = self.window_size();
+                {
+                    let mut ms = self.mouse_state.lock().unwrap();
+                    ms.mouse_down_for_selection = true;
+                    ms.selection_start_pos = (mouse_x, mouse_y);
+                    ms.selection_started = true;
+                    ms.selection_drag_scroll_compensation = 0;
+                }
+                crate::input::mouse::handle_selection_start(
+                    &self.tab_bar_gui,
+                    mouse_x,
+                    mouse_y,
+                    self.char_width,
+                    self.char_height,
+                    self._tab_bar_height,
+                    w,
+                    h,
+                );
+                thread::sleep(std::time::Duration::from_millis(20));
+                TestResponse::Ok
+            }
+            TestCommand::DragTo { col, row } => {
+                let (mouse_x, mouse_y) = self.cell_to_pixels(col, row);
+                let (w, h) = self.window_size();
+                crate::input::mouse::handle_selection_update(
+                    &self.tab_bar_gui,
+                    mouse_x,
+                    mouse_y,
+                    self.char_width,
+                    self.char_height,
+                    self._tab_bar_height,
+                    w,
+                    h,
+                );
+                thread::sleep(std::time::Duration::from_millis(20));
+                TestResponse::Ok
+            }
+            TestCommand::DragEnd => {
+                let mut ms = self.mouse_state.lock().unwrap();
+                ms.mouse_down_for_selection = false;
+                ms.selection_started = false;
+                TestResponse::Ok
             }
             TestCommand::GetCwd => {
                 let active_idx = *self.active_tab.lock().unwrap();
@@ -1333,22 +1421,13 @@ impl TestServer {
                     };
                 }
 
-                // Cell (col, row) -> window pixel at the centre of that cell, the inverse
-                // of the mapping send_mouse_to_terminal applies.
                 let tab_bar_height = self._tab_bar_height;
-                let padding = crate::ui::render::get_pane_padding() as f32;
-                let mouse_x = (padding + (col.saturating_sub(1)) as f32 * self.char_width + self.char_width / 2.0) as i32;
-                let mouse_y = (tab_bar_height as f32 + padding + (row.saturating_sub(1)) as f32 * self.char_height + self.char_height / 2.0) as i32;
-
-                let (w, h) = {
-                    let w = *self.window_width.lock().unwrap();
-                    let h = *self.window_height.lock().unwrap();
-                    (w, h)
-                };
+                let (mouse_x, mouse_y) = self.cell_to_pixels(col as i32, row as i32);
+                let (w, h) = self.window_size();
 
                 // The real handler, so tests cover the code the SDL event path runs.
                 {
-                    let mut ms = self.wheel_mouse_state.lock().unwrap();
+                    let mut ms = self.mouse_state.lock().unwrap();
                     for _ in 0..count.max(1) {
                         crate::input::mouse::handle_mouse_wheel(
                             delta,

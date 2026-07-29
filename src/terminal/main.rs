@@ -677,11 +677,14 @@ impl Terminal {
         // grid[row][col] = grapheme chars; empty vec = blank cell.
         let viewport_grid = gb.get_viewport_text_grid();
 
-        // When scrolled up (scroll_offset > 0), active screen rows (abs_row >=
-        // scrollback_len) that fall below the current viewport cannot be accessed
-        // via abs_row_to_point (it returns None for those rows).  Record the need
-        // to temporarily reset scroll so we can read those rows via graphemes_at.
-        let needs_scroll_reset = scroll_offset > 0 && end_row >= scrollback_len;
+        // A selection that spans more than one screen reaches active-screen rows that a
+        // scrolled-up viewport cannot address (abs_row_to_point returns None for them).
+        // Reset the view to the live bottom before reading the first of those — every
+        // row is addressable there — and restore the scroll after the loop. Rows are
+        // visited in ascending order, so this happens once, after every in-viewport row
+        // has already been read from the render grid. The gb lock is held throughout, so
+        // rendering never observes the temporary scroll.
+        let mut view_was_reset = false;
 
         let mut text = String::new();
         for row in start_row..=end_row {
@@ -715,30 +718,14 @@ impl Terminal {
                         }
                     }
                 }
-            } else if row >= scrollback_len && needs_scroll_reset {
-                // Active screen row not in the current viewport (scrolled past it).
-                // Temporarily reset scroll to 0 so abs_row_to_point can see this row,
-                // read via graphemes_at, then restore.  The gb lock prevents rendering
-                // from running concurrently, so there is no visual flicker.
-                gb.reset_view_offset();
-                for col in line_start..=line_end {
-                    let chars = gb.graphemes_at(col, row);
-                    if chars.is_empty() {
-                        line.push(' ');
-                    } else {
-                        if gb.cell_width_at(col, row) == 0 {
-                            continue;
-                        }
-                        for ch in chars {
-                            if ch != '\0' {
-                                line.push(ch);
-                            }
-                        }
-                    }
-                }
-                gb.scroll_view_up(scroll_offset);
             } else {
-                // Row is in scrollback above the current viewport — fall back to graphemes_at.
+                // Row is outside the current viewport — read it via graphemes_at.
+                // Scrollback rows are addressable from anywhere; an active-screen row
+                // out here means the view is scrolled past it, so bring it into reach.
+                if row >= scrollback_len && !view_was_reset {
+                    gb.reset_view_offset();
+                    view_was_reset = true;
+                }
                 for col in line_start..=line_end {
                     let chars = gb.graphemes_at(col, row);
                     if chars.is_empty() {
@@ -761,6 +748,10 @@ impl Terminal {
             if row < end_row {
                 text.push('\n');
             }
+        }
+
+        if view_was_reset {
+            gb.scroll_view_up(scroll_offset);
         }
 
         Some(text)

@@ -209,7 +209,14 @@ pub fn handle_selection_start(
     }
 }
 
-/// Handle selection update
+/// Handle selection update: move the selection's loose end to the mouse position.
+///
+/// The pointer may sit outside the pane — a drag that runs past the top or bottom
+/// edge is exactly how you select more than one screenful. In that case the viewport
+/// is scrolled by however many rows the pointer overshoots (proportional autoscroll,
+/// so the further out you drag the faster it goes) and the loose end is clamped to
+/// the edge row. The selection's anchor is stored in absolute rows, so it keeps
+/// pointing at the line it was started on however far the view travels.
 pub fn handle_selection_update(
     tab_bar_gui: &Arc<Mutex<TabBarGui>>,
     mouse_x: i32,
@@ -229,16 +236,43 @@ pub fn handle_selection_update(
         let pane_area_height = window_height - tab_bar_height;
         let pane_rects = pane_layout.get_pane_rects(0, pane_area_y, window_width, pane_area_height);
 
-        for (_pane_id, rect, terminal, _is_active, _is_selected) in pane_rects {
-            if rect.contains_point((mouse_x, mouse_y)) {
-                let (relative_x, relative_y) = crate::ui::render::adjust_mouse_coords_for_padding(mouse_x, mouse_y, rect.x(), rect.y());
-                let col = ((relative_x as f32 / char_width).floor() as usize).max(0);
-                let row = ((relative_y as f32 / char_height).floor() as usize).max(0);
+        // The pane under the pointer, or — when the drag has left every pane — the
+        // active one, which is the pane holding the selection being dragged.
+        let target = pane_rects
+            .iter()
+            .find(|(_, rect, _, _, _)| rect.contains_point((mouse_x, mouse_y)))
+            .or_else(|| pane_rects.iter().find(|(_, _, _, is_active, _)| *is_active));
 
-                if let Ok(mut t) = terminal.lock() {
-                    t.update_selection(col, row);
+        if let Some((_pane_id, rect, terminal, _is_active, _is_selected)) = target {
+            let (relative_x, relative_y) = crate::ui::render::adjust_mouse_coords_for_padding(mouse_x, mouse_y, rect.x(), rect.y());
+            let col_f = relative_x as f32 / char_width;
+            let row_f = relative_y as f32 / char_height;
+
+            if let Ok(mut t) = terminal.lock() {
+                let (term_w, term_h) = (t.width.max(1), t.height.max(1));
+
+                // Rows the pointer overshoots the pane by, in either direction.
+                let overshoot_up = if row_f < 0.0 { (-row_f).ceil() as usize } else { 0 };
+                let overshoot_down = if row_f >= term_h as f32 {
+                    (row_f - term_h as f32 + 1.0).ceil() as usize
+                } else {
+                    0
+                };
+                if overshoot_up > 0 || overshoot_down > 0 {
+                    if let Ok(mut gb) = t.ghostty_buffer.try_lock() {
+                        if overshoot_up > 0 {
+                            gb.scroll_view_up(overshoot_up);
+                        } else {
+                            gb.scroll_view_down(overshoot_down);
+                        }
+                    }
                 }
-                break;
+
+                // Scroll first, then resolve the row: the loose end must land on the
+                // line now shown at the edge, not the one that was there before.
+                let col = col_f.floor().clamp(0.0, (term_w - 1) as f32) as usize;
+                let row = row_f.floor().clamp(0.0, (term_h - 1) as f32) as usize;
+                t.update_selection(col, row);
             }
         }
     }
@@ -929,8 +963,15 @@ pub fn handle_mouse_motion(
         needs_render = true;
     }
 
-    // Start/update selection if mouse is dragging with left button down
-    if mouse_state.mouse_down_for_selection && mouse_y >= tab_bar_height as i32 && !mouse_state.dragging_tab {
+    // Start/update selection if mouse is dragging with left button down.
+    // Once the drag is under way we keep following the pointer even after it leaves
+    // the terminal area (up into the tab bar, off the bottom of the window): that is
+    // what lets a selection grow past what the screen shows, via the autoscroll in
+    // handle_selection_update.
+    if mouse_state.mouse_down_for_selection
+        && !mouse_state.dragging_tab
+        && (mouse_state.selection_started || mouse_y >= tab_bar_height as i32)
+    {
         let distance_moved = ((mouse_x - mouse_state.selection_start_pos.0).pow(2) + (mouse_y - mouse_state.selection_start_pos.1).pow(2)) as f32;
         // Threshold: about 5 pixels (5^2 = 25)
         if distance_moved > 25.0 {
@@ -1094,13 +1135,36 @@ pub fn handle_mouse_wheel(
                 }
             }
         } else if let Some(terminal) = terminal {
-            let t = terminal.lock().unwrap();
-            if wheel_y > 0 {
-                t.ghostty_buffer.lock().unwrap().scroll_view_up(lines);
-            } else {
-                t.ghostty_buffer.lock().unwrap().scroll_view_down(lines);
+            {
+                let t = terminal.lock().unwrap();
+                if wheel_y > 0 {
+                    t.ghostty_buffer.lock().unwrap().scroll_view_up(lines);
+                } else {
+                    t.ghostty_buffer.lock().unwrap().scroll_view_down(lines);
+                }
             }
             needs_render = true;
+
+            if mouse_state.mouse_down_for_selection && mouse_state.selection_started {
+                // Scrolling mid-drag extends the selection over the lines the scroll
+                // just brought under the pointer — that is how you select more than
+                // one screenful without dragging to the edge. The anchor is stored in
+                // absolute rows, so it stays on the line the drag started from.
+                handle_selection_update(
+                    tab_bar_gui,
+                    mouse_x,
+                    mouse_y,
+                    char_width,
+                    char_height,
+                    tab_bar_height,
+                    window_width,
+                    window_height,
+                );
+                // The viewport is now where the user put it. Drop the compensation
+                // owed for PTY output during this drag so mouse-up does not yank the
+                // view back down out from under them.
+                mouse_state.selection_drag_scroll_compensation = 0;
+            }
         }
     }
 
