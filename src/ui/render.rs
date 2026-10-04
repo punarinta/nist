@@ -240,7 +240,19 @@ pub fn render_frame<T>(
         // cursor_visible is NOT checked here — the cursor is drawn as a canvas overlay
         // after blitting, so cursor blinks never invalidate the pane texture.
         let (gb_dirty, size_changed, selection_changed, active_changed) = {
-            let t = terminal.lock().unwrap();
+            let mut t = terminal.lock().unwrap();
+            // Self-heal a grid/pane desync: a resize whose terminal update was
+            // skipped (resize_terminals_to_panes bails out when the GUI lock is
+            // busy) leaves the grid taller than the pane can display, so the
+            // bottom rows — and the shell prompt after a command completes —
+            // land on rows that are never drawn, with only the cursor overlay
+            // "hanging in the air" below the content. Nothing re-ran the resize
+            // until a tab switch. Re-sync here, before the grid is read.
+            let (want_cols, want_rows) =
+                calculate_terminal_size(pane_w, pane_h, char_width, char_height);
+            if t.width != want_cols || t.height != want_rows {
+                t.set_size(want_cols, want_rows, char_width as u32, char_height as u32);
+            }
             let gb = t.ghostty_buffer.lock().unwrap();
             let dirty = gb.dirty;
             let size_chg = pane_cache.get(&pane_id)
@@ -356,17 +368,24 @@ pub fn render_frame<T>(
             if let Ok(t) = terminal.try_lock() {
                 if let Ok(gb) = t.ghostty_buffer.try_lock() {
                     if gb.cursor_visible() && gb.is_at_bottom() {
-                        let style = pane_cache.get(&pane_id)
-                            .map(|e| e.last_cursor_style)
-                            .unwrap_or_default();
-                        cursor_overlay = Some(CursorOverlay {
-                            col: gb.cursor_x(),
-                            row: gb.cursor_y(),
-                            style,
-                            // No cell data without re-rendering: block cursor draws a plain block.
-                            // Character rendering is refreshed whenever content changes (gb_dirty).
-                            cell: None,
-                        });
+                        // Same clamp as render_pane: never place the overlay on a
+                        // row/col the pane cannot draw (grid/pane size mismatch).
+                        let (usable_w, usable_h) = get_usable_dimensions(pane_w, pane_h);
+                        let cols = ((usable_w as f32 / char_width) as usize).min(gb.width());
+                        let rows = ((usable_h as f32 / char_height) as usize).min(gb.height());
+                        if gb.cursor_x() < cols && gb.cursor_y() < rows {
+                            let style = pane_cache.get(&pane_id)
+                                .map(|e| e.last_cursor_style)
+                                .unwrap_or_default();
+                            cursor_overlay = Some(CursorOverlay {
+                                col: gb.cursor_x(),
+                                row: gb.cursor_y(),
+                                style,
+                                // No cell data without re-rendering: block cursor draws a plain block.
+                                // Character rendering is refreshed whenever content changes (gb_dirty).
+                                cell: None,
+                            });
+                        }
                     }
                 }
             }
@@ -489,7 +508,11 @@ fn render_pane<T>(
     let scrollback_len = gb.scrollback_len();
     // Whether to collect cursor overlay data (position + cell char under cursor).
     // cursor_visible is NOT checked here — the caller controls blink visibility.
-    let collect_cursor = gb_cursor_vis && is_active && is_at_bottom;
+    // The cursor must sit inside the drawable area: if the grid is (transiently)
+    // larger than the pane rect, a cursor on an undrawable row/col would be
+    // painted floating in empty space below the rendered content.
+    let collect_cursor =
+        gb_cursor_vis && is_active && is_at_bottom && cursor_x < cols && cursor_y < rows;
 
     // ── row damage bookkeeping ────────────────────────────────────────────────
     // Seed folds in everything that affects pixels but isn't per-cell data:

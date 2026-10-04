@@ -256,17 +256,36 @@ fn main() -> Result<(), String> {
     let mut reason_rate_limited: u64 = 0;  // too-soon-to-render path
     let mut reason_voice: u64 = 0;
 
+    // Periodically persist working-directory changes so they survive an
+    // unclean exit (reboot, SIGKILL) where no exit-time save happens.
+    let mut last_cwd_check = Instant::now();
+    let mut last_saved_cwds = tab_bar_gui.lock().map(|gui| state::snapshot_cwds(&gui)).unwrap_or_default();
+
     'running: loop {
         // Check for termination signals (SIGTERM, SIGINT, SIGHUP from OS)
         #[cfg(not(target_os = "windows"))]
         if let Ok(sig) = signal_rx.try_recv() {
             eprintln!("[MAIN] Termination signal {} received, saving state and exiting...", sig);
-            if let Ok(gui) = tab_bar_gui.try_lock() {
+            // Block for the lock: skipping this save would lose state on shutdown.
+            if let Ok(gui) = tab_bar_gui.lock() {
                 if let Err(e) = state::save_state(&gui) {
                     eprintln!("[MAIN] Failed to save state: {}", e);
                 }
             }
             break 'running;
+        }
+
+        if last_cwd_check.elapsed() >= std::time::Duration::from_secs(2) {
+            last_cwd_check = Instant::now();
+            if let Ok(gui) = tab_bar_gui.try_lock() {
+                let cwds = state::snapshot_cwds(&gui);
+                if cwds != last_saved_cwds {
+                    match state::save_state(&gui) {
+                        Ok(()) => last_saved_cwds = cwds,
+                        Err(e) => eprintln!("[STATE] Failed to save state on cwd change: {}", e),
+                    }
+                }
+            }
         }
 
         // Receive clipboard objects from background threads and store in PaneLayout

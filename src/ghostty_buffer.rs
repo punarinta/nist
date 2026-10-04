@@ -369,6 +369,8 @@ impl GhosttyBuffer {
             s.1 = cols;
         }
         let _ = self.terminal.resize(cols, rows, self.cell_width_px, self.cell_height_px);
+        // Resizing reflows the screen content, so the cached pane texture is stale.
+        self.dirty = true;
     }
 
     /// Update the cell pixel dimensions used for pixel-aware terminal queries

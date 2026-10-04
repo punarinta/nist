@@ -20,6 +20,14 @@ pub(crate) struct Terminal {
     pub(crate) command_history: Arc<Mutex<Vec<String>>>,
     pub(crate) output_history: Arc<Mutex<Vec<String>>>,
     pub(crate) current_command: Arc<Mutex<String>>,
+    /// Last known working directory. Survives the shell dying (e.g. the whole
+    /// session being killed on shutdown) so saved state never loses it.
+    last_cwd: Mutex<Option<std::path::PathBuf>>,
+    /// Directory the shell was actually spawned in (may be an ancestor of the
+    /// requested one if that no longer exists).
+    spawn_dir: Option<std::path::PathBuf>,
+    /// Set once the shell has been seen outside `spawn_dir`.
+    left_spawn_dir: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -152,7 +160,10 @@ impl Terminal {
         cmd.env("COLUMNS", initial_width.to_string());
         cmd.env("LINES", initial_height.to_string());
 
-        if let Some(ref dir) = start_directory {
+        // Never let a missing directory reset the pane to $HOME: start in the
+        // nearest existing ancestor, but remember the requested path.
+        let spawn_dir = start_directory.as_deref().and_then(nearest_existing_dir);
+        if let Some(ref dir) = spawn_dir {
             cmd.cwd(dir);
         }
 
@@ -237,6 +248,9 @@ impl Terminal {
             command_history: Arc::new(Mutex::new(Vec::new())),
             output_history: Arc::new(Mutex::new(Vec::new())),
             current_command: Arc::new(Mutex::new(String::new())),
+            last_cwd: Mutex::new(start_directory),
+            spawn_dir,
+            left_spawn_dir: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -757,7 +771,26 @@ impl Terminal {
         Some(text)
     }
 
+    /// Current working directory of the shell, falling back to the last known
+    /// one when the shell process is gone or unreadable.
     pub(crate) fn get_cwd(&self) -> Option<std::path::PathBuf> {
+        use std::sync::atomic::Ordering;
+        let live = self.read_live_cwd();
+        let mut cached = self.last_cwd.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(live) = live {
+            if self.spawn_dir.as_ref() != Some(&live) {
+                self.left_spawn_dir.store(true, Ordering::Relaxed);
+            }
+            // While the shell still sits in the fallback spawn dir, keep the
+            // originally requested path (it may come back, e.g. a late mount).
+            if self.left_spawn_dir.load(Ordering::Relaxed) || cached.is_none() {
+                *cached = Some(live);
+            }
+        }
+        cached.clone()
+    }
+
+    fn read_live_cwd(&self) -> Option<std::path::PathBuf> {
         if let Some(pid) = self.child.process_id() {
             #[cfg(target_os = "linux")]
             {
@@ -900,6 +933,11 @@ impl Terminal {
         }
         false
     }
+}
+
+/// `path` itself if it is an existing directory, else its nearest existing ancestor.
+fn nearest_existing_dir(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    path.ancestors().find(|p| p.is_dir()).map(|p| p.to_path_buf())
 }
 
 impl Drop for Terminal {

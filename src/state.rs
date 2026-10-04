@@ -165,9 +165,11 @@ impl SerializablePaneNode {
     {
         match self {
             SerializablePaneNode::Leaf { working_directory, history } => {
+                // Pass the saved path through as-is: the terminal falls back to the
+                // nearest existing ancestor itself and keeps remembering this path.
                 let start_dir = working_directory
                     .as_ref()
-                    .and_then(|s| std::path::PathBuf::from(s).canonicalize().ok())
+                    .map(std::path::PathBuf::from)
                     .or_else(|| std::env::current_dir().ok());
                 let terminal = terminal_factory(start_dir);
 
@@ -279,13 +281,26 @@ pub fn save_state(tab_bar: &TabBarGui) -> Result<(), String> {
     let json_value = JsonValue::Object(state_map);
     let json_string = format_json(&json_value);
 
-    // Write to file
-    let mut file = fs::File::create(&state_path).map_err(|e| format!("Failed to create state file: {}", e))?;
+    // Write atomically (temp file + fsync + rename) so a crash or shutdown
+    // mid-write can never leave a truncated state file behind.
+    let tmp_path = state_path.with_extension("json.tmp");
+    let mut file = fs::File::create(&tmp_path).map_err(|e| format!("Failed to create state file: {}", e))?;
     file.write_all(json_string.as_bytes())
         .map_err(|e| format!("Failed to write state file: {}", e))?;
+    file.sync_all().map_err(|e| format!("Failed to sync state file: {}", e))?;
+    fs::rename(&tmp_path, &state_path).map_err(|e| format!("Failed to replace state file: {}", e))?;
 
     eprintln!("[STATE] Saved state to: {:?}", state_path);
     Ok(())
+}
+
+/// Working directories of all terminals, used to detect `cd` and save promptly.
+pub fn snapshot_cwds(tab_bar: &TabBarGui) -> Vec<Option<PathBuf>> {
+    tab_bar
+        .get_all_terminals()
+        .iter()
+        .map(|t| t.lock().ok().and_then(|t| t.get_cwd()))
+        .collect()
 }
 
 /// Traverse all terminals and capture their output history into the cache.
